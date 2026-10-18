@@ -20,12 +20,14 @@ fallback. The application icon combines the panel's red square frame with the
 route glyph.
 
 The planned standard view uses a separate compact window: connection state,
-profile name, one main action, small traffic/session statistics and a fixed
+profile name, one main action, small traffic/session/probe-loss statistics and a fixed
 status bar for the current operation. Keep navigation rails, large section
 headings, tables and diagnostic panels in the advanced view. Preserve the same
 palette, focus treatment and readable text in both. Save bounds separately;
 validate compact sizing against the available work area and DPI rather than
-inheriting the full window's minimum size. See the staged UI requirements in
+inheriting the full window's minimum size. Label direct and VPN probe loss
+separately, with unknown/stale measurements shown as unavailable rather than 0%.
+Keep measurement details in a tooltip. See the staged UI requirements in
 [the reliability plan](ROUTING-RELIABILITY-PLAN.md#этап-9-стандартный-и-расширенный-интерфейс).
 
 Brand red must not turn successful diagnostics into errors. State always has a
