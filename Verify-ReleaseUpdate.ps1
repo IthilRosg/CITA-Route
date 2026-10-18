@@ -1,6 +1,7 @@
 ﻿$ErrorActionPreference='Stop'
 $project=$PSScriptRoot
 . (Join-Path $project 'FileStorage.ps1')
+$version=(Read-JsonFile (Join-Path $project 'product.json')).version
 $base=Join-Path $project ('runtime\release-install-tests-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $base -Force | Out-Null
 try{
@@ -25,7 +26,7 @@ try{
         Write-JsonFile (Join-Path $fixture 'data\connection.json') @{SourceProfile='Keep my WG'}
         Write-JsonFile (Join-Path $fixture 'runtime\session.json') @{running=($scenario -eq 'active-session')}
         $entries=@($files | ForEach-Object {$source=Join-Path $package $_;@{path=$_;bytes=(Get-Item -LiteralPath $source).Length;sha256=(Get-FileHash -LiteralPath $source).Hash}})
-        Write-JsonFile (Join-Path $package 'manifest.json') @{version='0.3.0';architecture='win-x64';selfContained=$true;files=$entries}
+        Write-JsonFile (Join-Path $package 'manifest.json') @{version=$version;architecture='win-x64';selfContained=$true;files=$entries}
         function Get-Process {param($Name,$Id,$ErrorAction) return $null}
         function Get-Service {param($Name,$ErrorAction) return $null}
         function Start-Process {param($FilePath,$WindowStyle) return $null}
@@ -33,7 +34,7 @@ try{
         try{
             if($scenario -eq 'locked-file-rollback'){$lock=[IO.File]::Open((Join-Path $fixture 'SmartRouting.ps1'),'Open','ReadWrite','None')}
             $failed=$false
-            try{& (Join-Path $fixture 'Install-Release.ps1') -Package $package -Version '0.3.0' -GuiPid 9999999 -GuiStartedUtc ([DateTime]::UtcNow.ToString('o'))}catch{$failed=$true}
+            try{& (Join-Path $fixture 'Install-Release.ps1') -Package $package -Version $version -GuiPid 9999999 -GuiStartedUtc ([DateTime]::UtcNow.ToString('o'))}catch{$failed=$true}
         }finally{if($lock){$lock.Dispose()}}
         if($scenario -eq 'active-session'){
             if(-not $failed -or (Test-Path -LiteralPath (Join-Path $fixture 'logs\release-update-last.json'))){throw 'An active session was not rejected before mutation.'}

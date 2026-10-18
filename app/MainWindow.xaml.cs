@@ -48,6 +48,19 @@ public partial class MainWindow : Window
         RadioButton[] buttons={NavOverview,NavConnections,NavRules,NavLogs,NavSettings};buttons[index].IsChecked=true;
         Pages.SelectedIndex=index;UpdateLayout();
     }
+    public void PreviewSettingsEnd()
+    {
+        if(!_render)return;
+        PreviewPage(4);
+        ScrollViewer? FindScroll(DependencyObject element)
+        {
+            if(element is ScrollViewer scroll)return scroll;
+            for(int index=0;index<VisualTreeHelper.GetChildrenCount(element);index++)
+                if(FindScroll(VisualTreeHelper.GetChild(element,index)) is { } found)return found;
+            return null;
+        }
+        FindScroll(Pages)?.ScrollToEnd();UpdateLayout();
+    }
     public MainWindow(string root,bool render)
     {
         _root=root;_render=render;_backend=new Backend(root);
@@ -190,8 +203,9 @@ public partial class MainWindow : Window
     private void SetStatus(string label,bool connected)
     {
         StatusLabel.Text=label.ToUpperInvariant();SidebarState.Text=label;
-        StatusBadge.Background=new SolidColorBrush((Color)ColorConverter.ConvertFromString(connected?"#283D29":"#27343C"));
-        StatusLabel.Foreground=new SolidColorBrush((Color)ColorConverter.ConvertFromString(connected?"#C0EF86":"#AFBEC9"));SidebarDot.Fill=StatusLabel.Foreground;
+        bool attention=label.Contains("восстанов",StringComparison.OrdinalIgnoreCase)||label.Contains("не проверен",StringComparison.OrdinalIgnoreCase)||label.Contains("недоступ",StringComparison.OrdinalIgnoreCase);
+        StatusBadge.Background=ConsoleTheme.Brush(connected?"#19221B":attention?"#2A231A":"#1B191B");
+        StatusLabel.Foreground=connected?ConsoleTheme.Ok:attention?ConsoleTheme.Warn:ConsoleTheme.Dim;SidebarDot.Fill=StatusLabel.Foreground;
     }
     private void UpdateFeedState()
     {
@@ -214,8 +228,9 @@ public partial class MainWindow : Window
     private void Notice(string text,bool error=false)
     {
         NoticeBorder.Visibility=Visibility.Visible;NoticeText.Text=text;
-        NoticeBorder.Background=new SolidColorBrush((Color)ColorConverter.ConvertFromString(error?"#352724":"#263026"));
-        NoticeBorder.BorderBrush=new SolidColorBrush((Color)ColorConverter.ConvertFromString(error?"#68463B":"#3C4D32"));
+        NoticeBorder.Background=ConsoleTheme.Brush(error?"#2D1718":"#1E191B");
+        NoticeBorder.BorderBrush=ConsoleTheme.Brush(error?"#8F2C2B":"#554548");
+        NoticeText.Foreground=error?ConsoleTheme.Brush("#FFC2BD"):ConsoleTheme.Text;
     }
     private void Event(string text){_events.Insert(0,Format.Time+"  "+text);if(_events.Count>50)_events.RemoveAt(_events.Count-1);}
     private async Task ToggleAsync(){if(_busy)return;if(_rescueState.BlocksRouting){Notice("Автономный тест управляет сетью. Дождись восстановления.");return;}if(!_engineRunning && (!_rescue.Installed || !File.Exists(Path.Combine(_root,"data","connection.json")) || File.Exists(Path.Combine(_root,"data","pending-agent-update.json")))){PreviewPage(4);await DiscoverConnectionsAsync();Notice("Выбери профиль WireSock и нажми «Применить подключение». Затем можно подключаться.");return;}await PerformActionAsync(_engineRunning?"Stop":"Start");}
@@ -225,6 +240,7 @@ public partial class MainWindow : Window
         catch{_rescueState=new RescueState{Phase="RecoveryFailed",LastMessage="Не удалось прочитать состояние службы."};}
         string phase=_rescueState.Phase switch{"Testing"=>"Выполняется тест","Armed"=>"Подготовка теста","Restoring"=>"Восстановление","RecoveryFailed"=>"Требуется восстановление","Restored"=>_rescueState.Passed?"Проверка пройдена":"Тест не пройден · очистка завершена",_=>"Готово к проверке"};
         RescueStatusLabel.Text=_rescue.Installed?_rescueState.TestName+" · "+phase:"Служба не установлена";
+        RescueStatusLabel.Foreground=_rescueState.Phase=="RecoveryFailed"?ConsoleTheme.Red:_rescueState.Active?ConsoleTheme.Warn:_rescueState.Passed?ConsoleTheme.Ok:ConsoleTheme.Dim;
         if(_rescueState.Active)
         {var remaining=_rescueState.ReturnDeadlineUtc-DateTime.UtcNow;RescueStatusLabel.Text+=" · резерв возврата до "+Math.Max(0,(int)remaining.TotalSeconds)+" сек.";}
         RescueDetailLabel.Text=string.Join(Environment.NewLine,_rescueState.Results.Select(r=>(r.Informational?"· ":r.Success?"✓ ":"✕ ")+r.Label+" · "+Backend.Redact(r.Detail)));
@@ -238,6 +254,7 @@ public partial class MainWindow : Window
     }
     private void RefreshPolicyState()
     {
+        PolicyStateLabel.Foreground=ConsoleTheme.Dim;
         RoutingModeInput.IsEnabled=AllowListedDpiBox.IsEnabled=!_engineRunning&&!_busy&&!_rescueState.BlocksRouting;
         try
         {
@@ -248,6 +265,7 @@ public partial class MainWindow : Window
             var session=AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession());
             bool sameSession=_engineRunning && state.GetProperty("epoch").GetString()!.StartsWith(session.Id+":",StringComparison.Ordinal);
             bool live=sameSession && (DateTime.UtcNow-updated).TotalSeconds<10;
+            PolicyStateLabel.Foreground=!live?ConsoleTheme.Dim:phase=="Error"?ConsoleTheme.Red:phase is "Applying" or "NetworkChanged"?ConsoleTheme.Warn:phase is "Auto" or "Lists"?ConsoleTheme.Ok:ConsoleTheme.Dim;
             PolicyStateLabel.Text=sameSession && phase=="NetworkChanged"?"Сеть изменилась · ожидается восстановление":sameSession && phase=="Error"?"Ошибка контроллера · ожидается восстановление":!live || phase=="Stopped"?"Контроллер маршрутов остановлен":phase=="Applying"?"Подтверждается применение маршрутов":phase=="Auto"?"Авто · выбираются новые маршруты":"Режим списков · VPN для ограничений";
             if(live && phase=="Applying" && state.TryGetProperty("publication",out var pendingPublication) && pendingPublication.GetProperty("phase").GetString()=="ApplyFailed")PolicyStateLabel.Text="Новые правила не подтверждены · ожидается повторная проверка";
             var bytes=state.GetProperty("bytes");
@@ -338,9 +356,9 @@ public partial class MainWindow : Window
     private void Navigate_Click(object sender,RoutedEventArgs e)
     {
         if(Pages==null || sender is not RadioButton button)return;int page=int.Parse((string)button.Tag);Pages.SelectedIndex=page;
-        string[] titles={"Обзор сети","Активные соединения","Правила маршрутизации","Журнал","Настройки"};
-        string[] subtitles={"Твой интернет. Под нужным маршрутом.","Что подключено и каким путём идёт трафик.","Ограниченные сайты через VPN. Остальное напрямую.","Состояние подключения и результаты проверок.","Поведение приложения и текущее подключение."};
-        PageTitle.Text=titles[page];PageSubtitle.Text=subtitles[page];if(_ready&&page==3)ShowLogs();
+        string[] titles={"ОБЗОР СЕТИ","СОЕДИНЕНИЯ","МАРШРУТЫ","ЖУРНАЛ","НАСТРОЙКИ"};
+        string[] subtitles={"Состояние сети, трафик и выбор маршрутов.","Что подключено и каким путём идёт трафик.","Ограниченные сайты через VPN. Остальное напрямую.","Состояние подключения и результаты проверок.","Поведение приложения и текущее подключение."};
+        PageEyebrow.Text=new[]{"01 / NETWORK OVERVIEW","02 / CONNECTION REGISTER","03 / ROUTING POLICY","04 / EVENT JOURNAL","05 / SYSTEM CONFIGURATION"}[page];PageTitle.Text=titles[page];PageSubtitle.Text=subtitles[page];if(_ready&&page==3)ShowLogs();
     }
     private void AllConnections_Click(object sender,RoutedEventArgs e)=>NavConnections.IsChecked=true;
     private void ConnectionSearch_Changed(object sender,TextChangedEventArgs e){if(_ready)UpdateConnectionGrids();}

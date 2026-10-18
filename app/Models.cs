@@ -93,7 +93,7 @@ public sealed class ConnectionRow
     public bool IsVpn{get;set;}
     public bool IsDpi{get;set;}
     public string Route=>IsVpn?"VPN":IsDpi?"DPI":"Напрямую";
-    public string RouteColor=>IsVpn?"#C0EF86":IsDpi?"#EAC880":"#77B6FF";
+    public string RouteColor=>IsVpn?"#E8443F":IsDpi?"#D7AD67":"#86A9C8";
     public string Rule{get;set;}="";
     public long Upload{get;set;}
     public long Download{get;set;}
@@ -133,7 +133,7 @@ public sealed class Snapshot
         }
     }
 }
-public sealed class UserRule { public string Domain{get;set;}="";public string Target{get;set;}="VPN";public string Color=>Target=="VPN"?"#C0EF86":"#77B6FF"; }
+public sealed class UserRule { public string Domain{get;set;}="";public string Target{get;set;}="VPN";public string Color=>Target=="VPN"?"#E8443F":"#86A9C8"; }
 public static class DomainRules
 {
     public static string Normalize(string input)

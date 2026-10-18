@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
@@ -27,7 +27,7 @@ public partial class MainWindow
             ProfileInput.ItemsSource=_inventory.Profiles;
             ProfileInput.SelectedItem=_inventory.Profiles.Contains(selected)?selected:_inventory.Profiles.Contains(_inventory.SelectedProfile)?_inventory.SelectedProfile:_inventory.Profiles.Length==1?_inventory.Profiles[0]:null;
             ExpectedEgressInput.Text=_inventory.ExpectedEgressIp;
-            ConnectionSetupLabel.Text=string.IsNullOrEmpty(_inventory.Message)?(_inventory.Profiles.Length==0?"Профилей нет. Импортируй свой .conf из WireGuard или AmneziaWG.":"Выбери свой исходный профиль. RoutePilot создаёт отдельную управляемую копию."):_inventory.Message;
+            ConnectionSetupLabel.Text=string.IsNullOrEmpty(_inventory.Message)?(_inventory.Profiles.Length==0?"Профилей нет. Импортируй свой .conf из WireGuard или AmneziaWG.":"Выбери свой исходный профиль. CITA Route создаёт отдельную управляемую копию."):_inventory.Message;
         }
         catch(Exception ex){ConnectionSetupLabel.Text=Backend.Redact(ex.Message);}
         finally{_discovering=false;}

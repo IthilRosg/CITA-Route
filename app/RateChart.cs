@@ -11,19 +11,19 @@ public sealed class RateChart : FrameworkElement
 {
     private List<RatePoint> _points=new();
     public void SetPoints(IEnumerable<RatePoint> points){_points=points.ToList();InvalidateVisual();}
-    private static readonly Brush Muted=new SolidColorBrush(Color.FromRgb(120,139,154));
-    private static readonly Brush Down=new SolidColorBrush(Color.FromRgb(192,239,134));
-    private static readonly Brush Up=new SolidColorBrush(Color.FromRgb(119,182,255));
+    private static readonly Brush Muted=ConsoleTheme.Dim;
+    private static readonly Brush Down=ConsoleTheme.Red;
+    private static readonly Brush Up=ConsoleTheme.Blue;
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);
         double w=Math.Max(20,ActualWidth-65),h=Math.Max(20,ActualHeight-28);
         double max=Math.Max(128*1024,_points.Select(p=>Math.Max(p.Upload,p.Download)).DefaultIfEmpty().Max()*1.18);
-        void Label(string text,double x,double y)=>dc.DrawText(new FormattedText(text,CultureInfo.GetCultureInfo("ru-RU"),FlowDirection.LeftToRight,new Typeface("Segoe UI"),10,Muted,VisualTreeHelper.GetDpi(this).PixelsPerDip),new Point(x,y));
+        void Label(string text,double x,double y)=>dc.DrawText(new FormattedText(text,CultureInfo.GetCultureInfo("ru-RU"),FlowDirection.LeftToRight,new Typeface("Consolas"),10,Muted,VisualTreeHelper.GetDpi(this).PixelsPerDip),new Point(x,y));
         for(int i=0;i<=3;i++)
         {
             double y=8+i*(h-8)/3;
-            dc.DrawLine(new Pen(new SolidColorBrush(Color.FromRgb(38,51,62)),1),new Point(0,y),new Point(w,y));
+            dc.DrawLine(new Pen(ConsoleTheme.Line,1),new Point(0,y),new Point(w,y));
             Label(Format.Rate(max*(1-i/3.0)),w+9,y-7);
         }
         Label("−60 с",0,h+8);Label("сейчас",w-36,h+8);

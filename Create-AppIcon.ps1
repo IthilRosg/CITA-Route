@@ -1,27 +1,25 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 $assetPath = Join-Path $PSScriptRoot 'app\Assets'
 New-Item -ItemType Directory -Path $assetPath -Force | Out-Null
 $iconBitmap = New-Object Drawing.Bitmap(256,256)
 $iconGraphics = [Drawing.Graphics]::FromImage($iconBitmap)
 $iconGraphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
-$iconGraphics.Clear([Drawing.Color]::Transparent)
+$iconGraphics.Clear([Drawing.Color]::FromArgb(12,12,13))
+$iconBrush = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(232,68,63))
 $iconShape = New-Object Drawing.Drawing2D.GraphicsPath
-$iconShape.AddArc(8,8,88,88,180,90)
-$iconShape.AddArc(160,8,88,88,270,90)
-$iconShape.AddArc(160,160,88,88,0,90)
-$iconShape.AddArc(8,160,88,88,90,90)
-$iconShape.CloseFigure()
-$iconBrush = New-Object Drawing.SolidBrush([Drawing.Color]::FromArgb(192,239,134))
-$iconGraphics.FillPath($iconBrush,$iconShape)
-$iconPen = New-Object Drawing.Pen([Drawing.Color]::FromArgb(20,35,24),14)
-$iconPen.StartCap = $iconPen.EndCap = [Drawing.Drawing2D.LineCap]::Round
-$iconPen.LineJoin = [Drawing.Drawing2D.LineJoin]::Round
-$iconGraphics.DrawLine($iconPen,72,194,72,72)
-$iconGraphics.DrawLine($iconPen,72,72,186,72)
-$iconGraphics.DrawLine($iconPen,72,136,186,136)
-$iconGraphics.DrawLines($iconPen,[Drawing.Point[]]@((New-Object Drawing.Point(158,44)),(New-Object Drawing.Point(186,72)),(New-Object Drawing.Point(158,100))))
-$iconGraphics.DrawLines($iconPen,[Drawing.Point[]]@((New-Object Drawing.Point(158,108)),(New-Object Drawing.Point(186,136)),(New-Object Drawing.Point(158,164))))
+$iconShape.AddRectangle((New-Object Drawing.Rectangle(24,24,208,208)))
+$framePen = New-Object Drawing.Pen([Drawing.Color]::FromArgb(232,68,63),14)
+$iconGraphics.DrawRectangle($framePen,24,24,208,208)
+$framePen.Dispose()
+$iconPen = New-Object Drawing.Pen([Drawing.Color]::FromArgb(240,234,219),13)
+$iconPen.StartCap = $iconPen.EndCap = [Drawing.Drawing2D.LineCap]::Square
+$iconPen.LineJoin = [Drawing.Drawing2D.LineJoin]::Miter
+$iconGraphics.DrawLine($iconPen,82,185,82,81)
+$iconGraphics.DrawLine($iconPen,82,81,181,81)
+$iconGraphics.DrawLine($iconPen,82,137,181,137)
+$iconGraphics.DrawLines($iconPen,[Drawing.Point[]]@((New-Object Drawing.Point(157,57)),(New-Object Drawing.Point(181,81)),(New-Object Drawing.Point(157,105))))
+$iconGraphics.DrawLines($iconPen,[Drawing.Point[]]@((New-Object Drawing.Point(157,113)),(New-Object Drawing.Point(181,137)),(New-Object Drawing.Point(157,161))))
 $iconPng = New-Object IO.MemoryStream
 $iconBitmap.Save($iconPng,[Drawing.Imaging.ImageFormat]::Png)
 $iconPngBytes = $iconPng.ToArray()

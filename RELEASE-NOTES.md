@@ -1,11 +1,9 @@
-CITA Route is the Windows routing client in the CITA family, alongside AWG CITA.
+CITA Route 0.3.1 — Sector Console visual update.
 
-- WireSock discovery, profile selection and `.conf` import.
-- Direct / TLS-fragmentation / VPN adaptive routing, traffic statistics and recovery.
-- Stable GitHub Releases update checks, verified downloads and disconnected-only installation.
-- Clean self-contained Windows x64 package; .NET is included.
-- Source build bootstrap, CI tests, package manifest and SHA256SUMS.txt.
+- Interface aligned with AWG CITA's SIGNALIS-inspired visual language: near-black panels, warm white text, red accents, sharp borders and numbered navigation.
+- New square CITA application/tray icon, larger section headings and monospaced counters.
+- Matching charts, connection tables, checkboxes, popups and keyboard focus indicators.
+- Green confirms a healthy state; amber indicates verification/recovery and red marks errors or the primary action.
+- Pages verified at 1360×900 and 1120×760. Routing behavior and VPN configuration are unchanged.
 
-Extract the complete ZIP and run RoutePilot.exe. The legacy executable/service names are retained for compatibility. WireSock must be installed separately.
-
-Adaptive DPI covers IPv4 TCP/443. AWG 3.1 and every provider's block conditions are not yet validated. The Windows binaries are not code signed.
+Extract the complete ZIP and run RoutePilot.exe. Existing users can install through Settings → Updates after disconnecting, then Apply connection to refresh the protected agent. Personal profiles and rules are preserved.

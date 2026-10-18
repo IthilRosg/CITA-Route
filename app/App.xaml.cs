@@ -41,6 +41,7 @@ public partial class App : Application
             args.Handled = true;
         };
         var window = new MainWindow(root,render);
+        if(render && e.Args.Contains("--compact")){window.Width=1120;window.Height=760;}
         MainWindow = window;
         window.Show();
         if (!render)
@@ -61,8 +62,16 @@ public partial class App : Application
                 var bitmap = new RenderTargetBitmap((int)window.ActualWidth,(int)window.ActualHeight,96,96,PixelFormats.Pbgra32);
                 bitmap.Render(window);
                 var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
-                string name=page==0?"routepilot.png":"routepilot-"+names[page]+".png";
+                string prefix=e.Args.Contains("--compact")?"routepilot-compact":"routepilot";
+                string name=page==0?prefix+".png":prefix+"-"+names[page]+".png";
                 using(var stream = File.Create(Path.Combine(root,"artifacts",name)))encoder.Save(stream);
+            }
+            if(e.Args.Contains("--render-all"))
+            {
+                window.PreviewSettingsEnd();await System.Threading.Tasks.Task.Delay(150);window.UpdateLayout();
+                var bitmap=new RenderTargetBitmap((int)window.ActualWidth,(int)window.ActualHeight,96,96,PixelFormats.Pbgra32);bitmap.Render(window);
+                var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                using var stream=File.Create(Path.Combine(root,"artifacts",e.Args.Contains("--compact")?"routepilot-compact-updates.png":"routepilot-updates.png"));encoder.Save(stream);
             }
             window.ExitApplication();
         }
