@@ -11,6 +11,7 @@ public static class SelfTests
     public static void Run(string root)
     {
         ReleaseUpdateTests.Run(root);
+        Task.Run(()=>ConnectionSetupTests.Run(root)).GetAwaiter().GetResult();
         static void Assert(bool condition,string message){if(!condition)throw new Exception(message);}
         var history=new TrafficHistory();
         var first=history.Apply("one",100,200,"2026-10-17");Assert(first.Up==100 && first.Down==200,"First engine snapshot");
@@ -87,6 +88,6 @@ public static class SelfTests
             if(!Path.GetFullPath(actionFolder).StartsWith(allowed,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Unsafe test cleanup path");
             if(Directory.Exists(actionFolder))Directory.Delete(actionFolder,true);
         }
-        Directory.CreateDirectory(Path.Combine(root,"logs"));File.WriteAllText(Path.Combine(root,"logs","app-self-test.log"),"PASS: counters, restart persistence, midnight, domain validation, IDN, suffix boundaries, API parsing, x86 process paths, malformed API handling, running router without statistics API, PID validation, real Windows PowerShell operation reports, quoted paths.");
+        Directory.CreateDirectory(Path.Combine(root,"logs"));File.WriteAllText(Path.Combine(root,"logs","app-self-test.log"),"PASS: counters, restart persistence, midnight, domain validation, IDN, suffix boundaries, API parsing, x86 process paths, malformed API handling, running router without statistics API, PID validation, real Windows PowerShell operation reports, setup/import argument transfer, empty optional values, Cyrillic and quoted paths.");
     }
 }
