@@ -23,6 +23,7 @@ public static class Program
             if(args.Length==2 && args[0]=="--prepare-policy"){PolicyWorker.Prepare(args[1]);return 0;}
             if(args.Length==2 && args[0]=="--integration-policy"){await PolicyIntegration.Run(args[1]);return 0;}
             if(args.Length==2 && args[0]=="--optimization-integration"){await PolicyEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==2 && args[0]=="--component-integration"){await ComponentRecoveryTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--optimization-live"){await PolicyLiveCheck.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==3 && args[0]=="--optimization-auto"){await PolicyAutoCheck.Run(Path.GetFullPath(args[1]),args[2]);return 0;}
             if(args.Length is <1 or >2 || args[0] is not ("status" or "dry-run" or "test-guard-restart" or "test-vpnus" or "test-wiresock" or "test-system" or "recover"))
@@ -42,7 +43,7 @@ public static class Program
             var value=JsonSerializer.Deserialize<AgentReply>(reply,Storage.Json)??throw new InvalidDataException("Empty reply.");
             Console.WriteLine(JsonSerializer.Serialize(value,Storage.Json));return value.Success?0:1;
         }
-        catch(Exception ex){Console.Error.WriteLine(args.Contains("--self-test") || args.Contains("--optimization-integration")?ex.ToString():ex.Message);return 1;}
+        catch(Exception ex){Console.Error.WriteLine(args.Contains("--self-test") || args.Contains("--optimization-integration") || args.Contains("--component-integration")?ex.ToString():ex.Message);return 1;}
     }
 }
 public static class PipeMessages

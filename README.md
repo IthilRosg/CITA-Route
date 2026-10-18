@@ -53,6 +53,7 @@ Install the .NET 8 SDK on Windows, then use Windows PowerShell:
 ./Bootstrap.ps1
 ./Build-All.ps1
 ./Verify-Portable.ps1
+./Verify-ComponentRecovery.ps1 -Engine
 ./Verify-Optimization.ps1
 ./Build-Portable.ps1
 ```
@@ -62,6 +63,8 @@ Install the .NET 8 SDK on Windows, then use Windows PowerShell:
 The resulting `dist/CITA-Route-VERSION-win-x64.zip` includes the runtime, public data, source and third-party license material. `dist/SHA256SUMS.txt` is the stable updater's checksum asset. Local data, private configs, logs and binaries are ignored by Git.
 
 `Verify-All.ps1` and VPNUS fault-injection checks are advanced, disruptive diagnostics for a prepared test machine. CI uses offline fixtures and separate loopback engines instead.
+
+The component recovery work on this branch keeps the direct router alive during bridge/VPN repair. Unknown WireSock status pauses the bridge conservatively; it never authorizes switching a foreign profile. Control HTTPS failures are rechecked and reported without restarting the TUN. Retries are bounded and Stop supersedes late callbacks. `Verify-ComponentRecovery.ps1 -Engine` verifies one established direct TCP socket across a real loopback bridge restart, and refuses VPN-only connections while paused. This does not validate live WireSock interception, UDP/QUIC, physical network changes or gap-free VPN flow migration. See [the staged reliability plan](docs/ROUTING-RELIABILITY-PLAN.md).
 
 `./Measure-Resources.ps1 -Seconds 120 -IntervalSeconds 10` passively records the main GUI, agent, router, bridge and WireSock process CPU/memory/handle counters in `logs/`. It does not generate traffic or change networking. Shared working sets cannot be summed as unique RAM, and this sampler does not fully attribute short-lived PowerShell/CLI helpers. Use a longer controlled run for leak investigations.
 

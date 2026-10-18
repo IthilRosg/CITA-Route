@@ -32,6 +32,7 @@ jobs:
           ./Verify-Portable.ps1
           ./Verify-ReleaseUpdate.ps1
           ./Verify-Prepare.ps1
+          ./Verify-ComponentRecovery.ps1 -Engine
           ./Verify-Optimization.ps1
           if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}
           ./Build-Portable.ps1
