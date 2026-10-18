@@ -26,7 +26,7 @@ public partial class App : Application
             catch (Exception ex) { File.WriteAllText(Path.Combine(root,"logs","app-self-test.log"),ex.ToString()); Shutdown(1); }
             return;
         }
-        bool render = e.Args.Contains("--render") || e.Args.Contains("--render-all");
+        bool render = e.Args.Contains("--render") || e.Args.Contains("--render-all") || e.Args.Contains("--render-update");
         if (!render)
         {
             string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(root)))[..16];
@@ -53,6 +53,17 @@ public partial class App : Application
             while(window.IsRefreshing)await System.Threading.Tasks.Task.Delay(50);
             await window.RefreshAsync();
             Directory.CreateDirectory(Path.Combine(root,"artifacts"));
+            if(e.Args.Contains("--render-update"))
+            {
+                var version=new Version(ReleaseUpdates.Current.Major,ReleaseUpdates.Current.Minor,ReleaseUpdates.Current.Build+1);
+                var prompt=new UpdatePrompt(new ReleaseUpdate(version,"v"+version,new Uri("https://github.com/IthilRosg/CITA-Route/releases"),new Uri("https://github.com/archive.zip"),new Uri("https://github.com/SHA256SUMS.txt"),"preview.zip",219000000,
+                    "• Обновление сохраняется между запусками.\n• Автоустановка ждёт отключения маршрута.\n• Последний профиль восстанавливается автоматически.\n\nПрофили и пользовательские правила сохраняются."),false){Owner=window};
+                prompt.Show();await System.Threading.Tasks.Task.Delay(150);prompt.UpdateLayout();
+                var preview=new RenderTargetBitmap((int)prompt.ActualWidth,(int)prompt.ActualHeight,96,96,PixelFormats.Pbgra32);preview.Render(prompt);
+                var output=new PngBitmapEncoder();output.Frames.Add(BitmapFrame.Create(preview));
+                using(var file=File.Create(Path.Combine(root,"artifacts","update-popup.png")))output.Save(file);
+                prompt.Close();window.ExitApplication();return;
+            }
             string[] names={"overview","connections","rules","logs","settings"};
             for(int page=0;page<(e.Args.Contains("--render-all")?5:1);page++)
             {

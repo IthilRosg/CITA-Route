@@ -1,14 +1,22 @@
 ﻿[CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$Package,[Parameter(Mandatory=$true)][string]$Version,
-      [int]$GuiPid=0,[string]$GuiStartedUtc='', [switch]$ValidateOnly)
+      [int]$GuiPid=0,[string]$GuiStartedUtc='', [switch]$ValidateOnly,
+      [string]$OperationId='', [string]$ManifestSha256='')
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 . (Join-Path $root 'FileStorage.ps1')
+if($OperationId -and $OperationId -notmatch '^[a-f0-9]{32}$'){throw 'Invalid update operation identity.'}
+function Write-UpdateHandoff([string]$Phase,[string]$Message=''){
+    if($OperationId){Write-JsonFile (Join-Path $root ('runtime\update-handoff-'+$OperationId+'.json')) @{id=$OperationId;guiPid=$GuiPid;phase=$Phase;message=$Message;updatedUtc=[DateTime]::UtcNow.ToString('o')}}
+}
+trap{try{Write-UpdateHandoff 'Failed' $_.Exception.Message}catch{};throw}
 . (Join-Path $root 'AgentLease.ps1')
 $packagePath=[IO.Path]::GetFullPath($Package).TrimEnd('\')
 $updatesPrefix=[IO.Path]::GetFullPath((Join-Path $root 'runtime\updates')).TrimEnd('\')+'\'
 if(-not $packagePath.StartsWith($updatesPrefix,[StringComparison]::OrdinalIgnoreCase)){throw 'Update package must be staged inside this installation.'}
 $desired=[version]$Version
+if($OperationId -and -not $ManifestSha256){throw 'Missing verified manifest identity.'}
+if($ManifestSha256 -and ($ManifestSha256 -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileHash -LiteralPath (Join-Path $packagePath 'manifest.json')).Hash -ne $ManifestSha256)){throw 'Release manifest changed after verification.'}
 $manifest=Read-JsonFile (Join-Path $packagePath 'manifest.json')
 if([version]$manifest.version -ne $desired -or $manifest.architecture -ne 'win-x64' -or -not $manifest.selfContained){throw 'Release manifest does not match the requested update.'}
 $names=@{}
@@ -31,7 +39,7 @@ Assert-Disconnected
 if($ValidateOnly){Write-Output 'PASS: verified release payload; disconnected installation only; no files changed.';exit 0}
 $setupLock=$null;$upgradeLock=$null;$controlLock=$null;$coordinated=$false;$applied=New-Object 'System.Collections.Generic.List[object]'
 $backup=Join-Path $root ('runtime\update-backup-'+[guid]::NewGuid().ToString('N'))
-$report=@{version=$Version;success=$false;restored=$false;startedUtc=[DateTime]::UtcNow.ToString('o');backup=$backup}
+$report=@{version=$Version;operationId=$OperationId;success=$false;restored=$false;startedUtc=[DateTime]::UtcNow.ToString('o');backup=$backup}
 try{
     if(Get-Service RoutePilotRescue -ErrorAction SilentlyContinue){Invoke-AgentCoordinator 'begin-operation';$coordinated=$true}
     $setupLock=[IO.File]::Open((Join-Path $root 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','None')
@@ -42,8 +50,10 @@ try{
     $gui=Get-Process -Id $GuiPid -ErrorAction SilentlyContinue
     if($gui){
         if($gui.Path -ne (Join-Path $root 'RoutePilot.exe') -or [Math]::Abs(($gui.StartTime.ToUniversalTime()-[DateTime]::Parse($GuiStartedUtc).ToUniversalTime()).TotalMilliseconds) -gt 100){throw 'Update caller identity changed.'}
+        Write-UpdateHandoff 'Ready'
         if(-not $gui.WaitForExit(25000)){throw 'Close the interface before updating.'}
     }
+    elseif($OperationId){throw 'GUI exited before update ownership was acknowledged.'}
     Assert-NoAgentRun;Assert-Disconnected
     New-Item -ItemType Directory -Path $backup -Force | Out-Null
     foreach($name in $files){
@@ -65,6 +75,7 @@ try{
     $report.success=$true
 }catch{
     $report.error=$_.Exception.Message;$restoreErrors=@()
+    Write-UpdateHandoff 'Failed' $report.error
     for($index=$applied.Count-1;$index -ge 0;$index--){
         $entry=$applied[$index]
         try{if($entry.Existed){Copy-Item -LiteralPath $entry.Backup -Destination $entry.Target -Force}else{Remove-Item -LiteralPath $entry.Target -Force -ErrorAction SilentlyContinue}}

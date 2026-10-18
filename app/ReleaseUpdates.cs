@@ -13,7 +13,7 @@ using System.Threading.Tasks;
 
 namespace RoutePilot;
 
-public sealed record ReleaseUpdate(Version Version,string Tag,Uri Page,Uri Archive,Uri Checksums,string FileName,long Bytes);
+public sealed record ReleaseUpdate(Version Version,string Tag,Uri Page,Uri Archive,Uri Checksums,string FileName,long Bytes,string Notes="");
 
 public sealed class ReleaseUpdates
 {
@@ -59,7 +59,8 @@ public sealed class ReleaseUpdates
             return uri;
         }
         var page=new Uri("https://github.com/"+Repository+"/releases/tag/"+tag);
-        return new(version,tag,page,Asset(archives[0],name),Asset(sums[0],"SHA256SUMS.txt"),name,length);
+        string notes=release.TryGetProperty("body",out var body)?body.GetString()??"":"";
+        return new(version,tag,page,Asset(archives[0],name),Asset(sums[0],"SHA256SUMS.txt"),name,length,notes[..Math.Min(notes.Length,4000)].Replace("\0",""));
     }
     public static int Compare(Version first,Version second)=>new Version(first.Major,first.Minor,Math.Max(0,first.Build)).CompareTo(new Version(second.Major,second.Minor,Math.Max(0,second.Build)));
     public static string ExpectedHash(string text,string name)
@@ -84,8 +85,8 @@ public sealed class ReleaseUpdates
             await using(var input=await response.Content.ReadAsStreamAsync(token))
             await using(var output=new FileStream(archive,FileMode.CreateNew,FileAccess.Write,FileShare.None,65536,true))
             {
-                byte[] buffer=new byte[65536];long total=0;int count;
-                while((count=await input.ReadAsync(buffer,token))>0){total+=count;if(total>update.Bytes || total>MaximumDownload)throw new InvalidDataException("Превышен размер обновления.");await output.WriteAsync(buffer.AsMemory(0,count),token);progress?.Report((int)(100*total/update.Bytes));}
+                byte[] buffer=new byte[65536];long total=0;int count,lastPercent=-1;
+                while((count=await input.ReadAsync(buffer,token))>0){total+=count;if(total>update.Bytes || total>MaximumDownload)throw new InvalidDataException("Превышен размер обновления.");await output.WriteAsync(buffer.AsMemory(0,count),token);int percent=(int)(100*total/update.Bytes);if(percent!=lastPercent){lastPercent=percent;progress?.Report(percent);}}
                 if(total!=update.Bytes)throw new InvalidDataException("Архив загружен не полностью.");
             }
             await using(var input=File.OpenRead(archive))if(Convert.ToHexString(await SHA256.HashDataAsync(input,token))!=expected)throw new InvalidDataException("SHA-256 не совпал. Установка запрещена.");
@@ -96,6 +97,33 @@ public sealed class ReleaseUpdates
             return package;
         }
         catch{if(File.Exists(archive))File.Delete(archive);throw;}
+    }
+    public async Task<(string Package,string ManifestHash)> Restore(PreparedRelease prepared,string root,CancellationToken token)
+    {
+        if(!System.Text.RegularExpressions.Regex.IsMatch(prepared.Tag,@"^v\d+\.\d+\.\d+$"))throw new InvalidDataException("Некорректный журнал обновления.");
+        using var response=await _http.GetAsync("https://api.github.com/repos/"+Repository+"/releases/tags/"+prepared.Tag,token);TrustedResponse(response);response.EnsureSuccessStatusCode();
+        using var document=JsonDocument.Parse(await ReadBounded(response,1024*1024,token));
+        var update=Parse(document.RootElement,new Version(0,0,0))??throw new InvalidDataException("Выпуск больше не доступен в стабильном канале.");
+        if(update.Tag!=prepared.Tag || Compare(update.Version,Current)<=0)throw new InvalidDataException("Обновление уже установлено или устарело.");
+        string package=UpdateJournal.StagedPath(root,prepared.Package);
+        string archive=UpdateJournal.StagedPath(root,prepared.Archive);
+        if(Path.GetFileName(archive)!=update.FileName)throw new InvalidDataException("Архив не соответствует версии.");
+        using var sums=await _http.GetAsync(update.Checksums,token);TrustedResponse(sums);sums.EnsureSuccessStatusCode();
+        string expected=ExpectedHash(System.Text.Encoding.UTF8.GetString(await ReadBounded(sums,65536,token)),update.FileName);
+        await using(var input=File.OpenRead(archive))
+            if(input.Length!=update.Bytes || Convert.ToHexString(await SHA256.HashDataAsync(input,token))!=expected)throw new InvalidDataException("Сохранённый архив повреждён.");
+        string manifestHash=VerifyExtractedArchive(archive,package,update.Version);
+        return(package,manifestHash);
+    }
+    internal static string VerifyExtractedArchive(string archive,string package,Version version)
+    {
+        using var zip=ZipFile.OpenRead(archive);
+        var manifests=zip.Entries.Where(e=>Path.GetFileName(e.FullName)=="manifest.json").ToArray();
+        if(manifests.Length!=1 || manifests[0].Length>4*1024*1024)throw new InvalidDataException("Некорректный manifest архива.");
+        using var original=manifests[0].Open();string expected=Convert.ToHexString(SHA256.HashData(original));
+        using(var extracted=File.OpenRead(Path.Combine(package,"manifest.json")))
+            if(Convert.ToHexString(SHA256.HashData(extracted))!=expected)throw new InvalidDataException("Manifest изменён после распаковки.");
+        VerifyPackage(package,version);return expected;
     }
     public static void Extract(string archive,string directory)
     {

@@ -1,9 +1,10 @@
-CITA Route 0.3.2 — connection setup fix.
+CITA Route 0.4.0 — updates and remembered connections.
 
-- Fixed Apply connection and profile import failing with a missing argument for ImportPath, SourceProfile or ExpectedEgressIp under Windows PowerShell 5.1.
-- Empty optional settings now survive the elevated parent/child process boundary; leaving the expected VPN exit IP empty remains supported.
-- Automatic WireSock discovery omits an empty CLI argument.
-- Discovery uses UTF-8 output so Cyrillic profile names and paths are preserved on non-Russian Windows installations.
-- Regression checks run the actual setup command against an isolated fixture, including Cyrillic, spaces, apostrophes, literal shell characters, explicit exit IP, import and failure reporting. Tests do not modify WireSock, services or network settings.
+- New release popup in the Sector Console style, with background notifications that do not steal focus from games or calls.
+- Downloaded updates survive application restart. Archives and extracted manifests are reverified against the trusted release before installation.
+- Automatic installation waits until routing and diagnostics are stopped, including routing owned by another copy. The GUI exits only after the installer acknowledges exclusive ownership. Failed installation rolls back; protected service updates still use normal UAC through Apply connection.
+- Last applied/confirmed profile is remembered per user outside the release folder. Restoring a selection never connects or silently changes the protected agent. Missing profiles are reported rather than replaced by another profile.
+- Hidden-window telemetry polls less often; unchanged preferences/history are not repeatedly written; download progress updates are coalesced.
+- Regression checks cover restart persistence, foreign/active sessions, installer handoff, changed manifests, profiles across folders, Unicode and rollback.
 
-Extract the complete ZIP and run RoutePilot.exe. Existing users can install through Settings → Updates after disconnecting, then Apply connection to refresh the protected agent. Personal profiles and rules are preserved.
+Upgrade from 0.3.2 through Settings → Updates while disconnected, or extract the complete ZIP. After upgrading, Apply connection updates the protected agent with Windows confirmation. Personal configurations and rules are preserved. The routing recovery improvements are being developed separately from this UI/update release.

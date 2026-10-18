@@ -70,7 +70,7 @@ public sealed class TrafficHistory
         return(up,down);
     }
 }
-public sealed class Preferences { public bool CloseToTray{get;set;}=true; public int RefreshSeconds{get;set;}=1; }
+public sealed class Preferences { public bool CloseToTray{get;set;}=true; public int RefreshSeconds{get;set;}=1; public bool AutoInstallUpdates{get;set;}=true; }
 public sealed class RoutingPolicyPreferences { public string Mode{get;set;}="Auto";public bool AllowListedDpi{get;set;} }
 public sealed class EngineSession
 {

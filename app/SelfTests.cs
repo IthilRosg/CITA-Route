@@ -12,6 +12,7 @@ public static class SelfTests
     {
         ReleaseUpdateTests.Run(root);
         Task.Run(()=>ConnectionSetupTests.Run(root)).GetAwaiter().GetResult();
+        Task.Run(()=>UpdateWorkflowTests.Run(root)).GetAwaiter().GetResult();
         static void Assert(bool condition,string message){if(!condition)throw new Exception(message);}
         var history=new TrafficHistory();
         var first=history.Apply("one",100,200,"2026-10-17");Assert(first.Up==100 && first.Down==200,"First engine snapshot");

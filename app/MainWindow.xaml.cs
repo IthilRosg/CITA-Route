@@ -42,6 +42,7 @@ public partial class MainWindow : Window
     private bool _egressVerified;
     private DateTime _lastEgress=DateTime.MinValue;
     private RoutingPolicyPreferences _routingPolicy=new();
+    private string _savedHistory="",_savedPreferences="";
     public bool IsRefreshing=>_refreshing||_discovering;
     public void PreviewPage(int index)
     {
@@ -72,6 +73,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _preferences.RefreshSeconds=Math.Clamp(_preferences.RefreshSeconds,1,3);
         CloseToTrayBox.IsChecked=_preferences.CloseToTray;RefreshIntervalInput.SelectedIndex=_preferences.RefreshSeconds-1;
+        InitializeUpdates();
         RoutingModeInput.SelectedIndex=_routingPolicy.Mode=="Auto"?1:0;AllowListedDpiBox.IsChecked=_routingPolicy.AllowListedDpi;
         _rules=DomainRules.Read(Path.Combine(root,"force-direct.txt")).Select(d=>new UserRule{Domain=d,Target="Напрямую"}).Concat(
             DomainRules.Read(Path.Combine(root,"force-vpn.txt")).Select(d=>new UserRule{Domain=d,Target="VPN"})).ToList();
@@ -80,9 +82,9 @@ public partial class MainWindow : Window
         Pages.SelectedIndex=0;
         if(!render)CreateTray();
         _timer.Interval=TimeSpan.FromSeconds(_preferences.RefreshSeconds);
-        _timer.Tick+=async(_,_)=>await RefreshAsync();
+        _timer.Tick+=async(_,_)=>{UpdateTelemetryInterval();await RefreshAsync();};
         _timer.Tick+=async(_,_)=>{if((DateTime.UtcNow-_lastUpdateCheck).TotalHours>=6)await CheckUpdatesAsync();};
-        Loaded+=async(_,_)=>{await DiscoverConnectionsAsync();if(!render)_timer.Start();await RefreshAsync();if(!render)_=CheckUpdatesAsync();};
+        Loaded+=async(_,_)=>{await DiscoverConnectionsAsync();if(!render){UpdateTelemetryInterval();_timer.Start();}await RefreshAsync();if(!render)_=CheckUpdatesAsync();};
         Closing+=OnClosing;
         NavOverview.IsChecked=true;
         if(NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.Name=="VPNUS" && n.OperationalStatus==OperationalStatus.Up))
@@ -99,8 +101,10 @@ public partial class MainWindow : Window
         menu.Items.Add("Выйти, оставить маршрут",null,(_,_)=>Dispatcher.Invoke(ExitApplication));
         _tray=new Forms.NotifyIcon{Text="CITA Route · отключено",Visible=true,ContextMenuStrip=menu,Icon=System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!)??System.Drawing.SystemIcons.Application};
         _tray.DoubleClick+=(_,_)=>Dispatcher.Invoke(ShowWindow);
+        _tray.BalloonTipClicked+=(_,_)=>Dispatcher.Invoke(ShowWindow);
     }
-    public void ShowWindow(){Show();WindowState=WindowState.Normal;Activate();}
+    public void ShowWindow(){Show();WindowState=WindowState.Normal;Activate();UpdateTelemetryInterval();_=RefreshAsync();}
+    private void UpdateTelemetryInterval()=>_timer.Interval=TimeSpan.FromSeconds(IsVisible&&WindowState!=WindowState.Minimized?_preferences.RefreshSeconds:8);
     private void OnClosing(object? sender,CancelEventArgs e)
     {
         if(_busy){e.Cancel=true;Notice("Дождись завершения текущей операции.");return;}
@@ -115,7 +119,12 @@ public partial class MainWindow : Window
     private void SaveData()
     {
         if(_render)return;
-        try{AppPaths.Write(Path.Combine(_root,"data","traffic.json"),_history);AppPaths.Write(Path.Combine(_root,"data","preferences.json"),_preferences);}
+        try
+        {
+            string history=JsonSerializer.Serialize(_history,AppPaths.Json),preferences=JsonSerializer.Serialize(_preferences,AppPaths.Json);
+            if(history!=_savedHistory){AppPaths.Write(Path.Combine(_root,"data","traffic.json"),_history);_savedHistory=history;}
+            if(preferences!=_savedPreferences){AppPaths.Write(Path.Combine(_root,"data","preferences.json"),_preferences);_savedPreferences=preferences;}
+        }
         catch(IOException){FooterStatus.Text="Не удалось сохранить локальную историю.";}
     }
     private void UpdateHistoryLabels()
@@ -164,6 +173,7 @@ public partial class MainWindow : Window
             if(snapshot!=null)
             {
                 vpnReady=_vpnConnected && session.BridgeReady && _egressVerified;
+                if(vpnReady)RememberVerifiedProfile(session);
                 string epoch=string.IsNullOrWhiteSpace(session.Id)?"unmanaged-"+_history.CreatedUtc.Ticks:session.Id;
                 var now=DateTime.UtcNow;
                 double elapsed=(now-_lastAt).TotalSeconds;
@@ -199,6 +209,7 @@ public partial class MainWindow : Window
             if(Pages.SelectedIndex==3)ShowLogs();
         }
         finally{_refreshing=false;}
+        if(!_render&&!_exiting){if(_pendingUpdatePrompt)await ShowUpdatePromptAsync();await TryAutoInstallAsync();}
     }
     private void SetStatus(string label,bool connected)
     {
@@ -246,7 +257,7 @@ public partial class MainWindow : Window
         RescueDetailLabel.Text=string.Join(Environment.NewLine,_rescueState.Results.Select(r=>(r.Informational?"· ":r.Success?"✓ ":"✕ ")+r.Label+" · "+Backend.Redact(r.Detail)));
         if(_rescueState.Phase=="RecoveryFailed")RescueDetailLabel.Text+=Environment.NewLine+Backend.Redact(_rescueState.LastMessage);
         InstallRescueButton.IsEnabled=!_busy&&!_engineRunning&&!_rescueState.BlocksRouting;
-        ProfileInput.IsEnabled=FindWireSockButton.IsEnabled=BrowseCliButton.IsEnabled=ImportProfileButton.IsEnabled=ApplyConnectionButton.IsEnabled=ExpectedEgressInput.IsEnabled=!_busy&&!_engineRunning&&!_rescueState.BlocksRouting;
+        ProfileInput.IsEnabled=FindWireSockButton.IsEnabled=BrowseCliButton.IsEnabled=ImportProfileButton.IsEnabled=ApplyConnectionButton.IsEnabled=ExpectedEgressInput.IsEnabled=!_busy&&!_discovering&&!_engineRunning&&!_rescueState.BlocksRouting;
         GuardTestButton.IsEnabled=_rescue.Installed&&!_busy&&!_engineRunning&&!_rescueState.BlocksRouting;
         WireSockTestButton.IsEnabled=VpnusTestButton.IsEnabled=SystemTestButton.IsEnabled=GuardTestButton.IsEnabled && RoutePilot.Agent.NetworkProbe.Vpnus!=null;
         if(!_engineRunning && RoutePilot.Agent.NetworkProbe.Vpnus==null)RescueDetailLabel.Text+="\nРасширенные автономные тесты требуют настроенного VPNUS. Обычный маршрут и встроенная проверка HTTPS работают без него.";
@@ -400,7 +411,7 @@ public partial class MainWindow : Window
     private void OpenReadme_Click(object sender,RoutedEventArgs e)=>OpenPath(Path.Combine(_root,"README.md"));
     private void Preferences_Changed(object sender,RoutedEventArgs e)
     {
-        if(!_ready)return;_preferences.CloseToTray=CloseToTrayBox.IsChecked==true;_preferences.RefreshSeconds=Math.Max(1,RefreshIntervalInput.SelectedIndex+1);_timer.Interval=TimeSpan.FromSeconds(_preferences.RefreshSeconds);SaveData();
+        if(!_ready)return;_preferences.CloseToTray=CloseToTrayBox.IsChecked==true;_preferences.RefreshSeconds=Math.Max(1,RefreshIntervalInput.SelectedIndex+1);UpdateTelemetryInterval();SaveData();
     }
     private void TitleDrag(object sender,MouseButtonEventArgs e){if(e.ClickCount==2)WindowState=WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;else if(e.ButtonState==MouseButtonState.Pressed)try{DragMove();}catch(InvalidOperationException){}}
     private void Minimize_Click(object sender,RoutedEventArgs e)=>WindowState=WindowState.Minimized;

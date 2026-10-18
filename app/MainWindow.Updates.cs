@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -10,13 +12,39 @@ namespace RoutePilot;
 public partial class MainWindow
 {
     private ReleaseUpdate? _release;
-    private DateTime _lastUpdateCheck=DateTime.MinValue;
-    private bool _updateChecking,_updateDownloading;
-    private string? _downloadedPackage;
+    private DateTime _lastUpdateCheck=DateTime.MinValue,_lastAutoAttempt=DateTime.MinValue;
+    private bool _updateChecking,_updateDownloading,_updateInstalling,_updatePromptOpen,_pendingUpdatePrompt;
+    private UpdateState _updates=new();
     private readonly CancellationTokenSource _updateLifetime=new();
+    private void InitializeUpdates()
+    {
+        _updates=UpdateJournal.Read(_root);AutoInstallUpdatesBox.IsChecked=_preferences.AutoInstallUpdates;
+        if(_render)return;
+        if(_updates.Prepared is { } prepared && Version.TryParse(prepared.Tag.TrimStart('v'),out var version) && ReleaseUpdates.Compare(version,ReleaseUpdates.Current)<=0)
+        {_updates.Phase="Installed";_updates.Prepared=null;SaveUpdates();}
+        else if(_updates.Phase is "Installing" or "Verifying" or "Downloading")
+        {
+            _updates.Phase="Failed";_updates.Error="Предыдущая установка не завершена. Повтори установку вручную.";
+            SaveUpdates();
+        }
+        Activated+=async(_,_)=>{if(_pendingUpdatePrompt)await ShowUpdatePromptAsync();};
+        RefreshUpdateControls();
+    }
+    private void SaveUpdates(){if(!_render)UpdateJournal.Save(_root,_updates);}
+    private void RefreshUpdateControls()
+    {
+        DownloadUpdateButton.Visibility=_release!=null?Visibility.Visible:Visibility.Collapsed;
+        InstallUpdateButton.Visibility=_updates.Prepared!=null?Visibility.Visible:Visibility.Collapsed;
+        DownloadUpdateButton.IsEnabled=!_updateDownloading&&!_updateInstalling;
+        InstallUpdateButton.IsEnabled=!_updateDownloading&&!_updateInstalling;
+        if(_updates.Phase=="Failed")UpdateStatusLabel.Text="Обновление отложено: "+Backend.Redact(_updates.Error);
+        else if(_updates.Phase=="WaitingForNetwork")UpdateStatusLabel.Text="Пакет готов. Повторная проверка GitHub ожидает доступ к интернету.";
+        else if(_updates.Prepared!=null && _updates.Phase is "Verified" or "WaitingForDisconnect")
+            UpdateStatusLabel.Text=_preferences.AutoInstallUpdates?"Пакет "+_updates.Prepared.Tag+" готов. Автоустановка после отключения маршрута.":"Пакет "+_updates.Prepared.Tag+" готов к ручной установке.";
+    }
     private async Task CheckUpdatesAsync(bool manual=false)
     {
-        if(_render||_updateChecking||_updateDownloading||_exiting)return;
+        if(_render||_updateChecking||_updateDownloading||_updateInstalling||_exiting)return;
         _updateChecking=true;_lastUpdateCheck=DateTime.UtcNow;
         try
         {
@@ -25,43 +53,127 @@ public partial class MainWindow
             using var http=ReleaseUpdates.CreateClient(_engineAvailable);
             _release=await new ReleaseUpdates(http).Check(timeout.Token);
             UpdateStatusLabel.Text=_release==null?"Новых стабильных версий нет. Текущая: "+ReleaseUpdates.Current.ToString(3):"Доступна CITA Route "+_release.Version.ToString(3);
-            DownloadUpdateButton.Visibility=_release!=null?Visibility.Visible:Visibility.Collapsed;
-            if(_release!=null && manual)Notice("Доступно обновление "+_release.Version.ToString(3)+". Его можно загрузить в настройках.");
+            RefreshUpdateControls();
+            if(_release!=null && (manual||_updates.NotifiedTag!=_release.Tag))
+            {
+                _updates.NotifiedTag=_release.Tag;SaveUpdates();_pendingUpdatePrompt=true;
+                if(IsVisible && IsActive && WindowState!=WindowState.Minimized)await ShowUpdatePromptAsync();
+                else if(_tray!=null){_tray.BalloonTipTitle="CITA Route "+_release.Version.ToString(3);_tray.BalloonTipText="Доступно обновление. Открой приложение для загрузки.";_tray.ShowBalloonTip(7000);}
+            }
         }
         catch(OperationCanceledException){if(!_exiting)UpdateStatusLabel.Text="Проверка обновлений не завершена. Можно повторить позже.";}
-        catch(Exception){UpdateStatusLabel.Text="GitHub Releases временно недоступен. Текущее подключение продолжает работать.";}
+        catch(Exception){if(!_exiting)UpdateStatusLabel.Text="GitHub Releases временно недоступен. Можно повторить проверку позже.";}
         finally{_updateChecking=false;}
+    }
+    private async Task ShowUpdatePromptAsync()
+    {
+        if(!_pendingUpdatePrompt||_updatePromptOpen||_release==null||_busy||_updateInstalling||_updateDownloading||_rescueState.BlocksRouting||_exiting||!IsVisible||!IsActive||WindowState==WindowState.Minimized)return;
+        _pendingUpdatePrompt=false;_updatePromptOpen=true;
+        bool ready=_updates.Prepared?.Tag==_release.Tag;
+        try
+        {
+            var prompt=new UpdatePrompt(_release,ready){Owner=this};prompt.ShowDialog();
+            if(prompt.Accepted){if(ready)await InstallUpdateAsync(true);else await DownloadUpdateAsync();}
+            else if(ready){_updates.DeferredUntilUtc=DateTime.UtcNow.AddHours(4);SaveUpdates();UpdateStatusLabel.Text="Автоустановка отложена на 4 часа. Можно установить вручную.";}
+        }
+        finally{_updatePromptOpen=false;}
     }
     private async void CheckUpdates_Click(object sender,RoutedEventArgs e)=>await CheckUpdatesAsync(true);
     private void OpenReleases_Click(object sender,RoutedEventArgs e)=>OpenPath((_release?.Page??new Uri("https://github.com/"+ReleaseUpdates.Repository+"/releases")).AbsoluteUri);
-    private async void DownloadUpdate_Click(object sender,RoutedEventArgs e)
+    private async void DownloadUpdate_Click(object sender,RoutedEventArgs e)=>await DownloadUpdateAsync();
+    private async Task DownloadUpdateAsync()
     {
-        if(_release==null||_updateDownloading||_busy)return;
-        _updateDownloading=true;DownloadUpdateButton.IsEnabled=false;
+        if(_release==null||_updateDownloading||_updateInstalling||_busy)return;
+        var release=_release;_updateDownloading=true;DownloadUpdateButton.IsEnabled=false;
+        _updates.Phase="Downloading";_updates.Prepared=null;_updates.Error="";_updates.DeferredUntilUtc=DateTime.MinValue;_updates.NetworkRetries=0;_updates.NextRetryUtc=DateTime.MinValue;SaveUpdates();
         try
         {
             using var timeout=CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token);timeout.CancelAfter(TimeSpan.FromMinutes(20));
             using var http=ReleaseUpdates.CreateClient(_engineAvailable);
-            _downloadedPackage=await new ReleaseUpdates(http).Download(_release,_root,new Progress<int>(p=>UpdateStatusLabel.Text="Загрузка обновления: "+p+"%"),timeout.Token);
-            UpdateStatusLabel.Text="Обновление проверено. Для установки отключи маршрут. Профили и правила сохраняются.";
-            InstallUpdateButton.Visibility=Visibility.Visible;
+            string package=await new ReleaseUpdates(http).Download(release,_root,new Progress<int>(p=>{if(!_exiting)UpdateStatusLabel.Text="Загрузка обновления: "+p+"%";}),timeout.Token);
+            _updates.Prepared=UpdateJournal.Prepare(_root,release,package);_updates.Phase="Verified";SaveUpdates();
         }
-        catch(OperationCanceledException){UpdateStatusLabel.Text="Загрузка отменена или истекло время ожидания.";}
-        catch(Exception ex){UpdateStatusLabel.Text="Обновление не готово: "+Backend.Redact(ex.Message);}
-        finally{_updateDownloading=false;DownloadUpdateButton.IsEnabled=true;}
+        catch(OperationCanceledException){_updates.Phase="Failed";_updates.Error="Загрузка отменена или истекло время ожидания.";SaveUpdates();}
+        catch(Exception ex){_updates.Phase="Failed";_updates.Error=Backend.Redact(ex.Message);SaveUpdates();}
+        finally{_updateDownloading=false;RefreshUpdateControls();}
+        await TryAutoInstallAsync();
     }
-    private void InstallUpdate_Click(object sender,RoutedEventArgs e)
+    private async Task TryAutoInstallAsync()
     {
-        if(_busy||_updateDownloading||_downloadedPackage==null||_release==null)return;
-        if(_engineRunning||_rescueState.BlocksRouting){Notice("Отключи маршрут и заверши диагностику перед установкой обновления.");return;}
+        if(_render||_exiting||_updatePromptOpen||_updates.DeferredUntilUtc>DateTime.UtcNow||_updates.NextRetryUtc>DateTime.UtcNow||!_preferences.AutoInstallUpdates||_updates.Prepared==null||_updates.Phase is not ("Verified" or "WaitingForDisconnect" or "WaitingForNetwork") || (DateTime.UtcNow-_lastAutoAttempt).TotalSeconds<10)return;
+        _lastAutoAttempt=DateTime.UtcNow;
+        await InstallUpdateAsync(false);
+    }
+    private async void InstallUpdate_Click(object sender,RoutedEventArgs e)=>await InstallUpdateAsync(true);
+    private async Task InstallUpdateAsync(bool manual)
+    {
+        if(_busy||_updateDownloading||_updateInstalling||_updates.Prepared==null||_exiting)return;
+        if(manual){_updates.DeferredUntilUtc=DateTime.MinValue;_updates.NextRetryUtc=DateTime.MinValue;_updates.NetworkRetries=0;}
+        RefreshRescueState();
+        string? blocked=UpdateJournal.BlockReason(_root,_busy,_engineRunning,_rescueState.BlocksRouting,UpdateJournal.GlobalEngineRunning());
+        if(blocked!=null)
+        {
+            if(_updates.Phase!="Failed" && _updates.Phase!="WaitingForDisconnect"){_updates.Phase="WaitingForDisconnect";SaveUpdates();}
+            UpdateStatusLabel.Text=blocked;if(manual)Notice(blocked);return;
+        }
+        _updateInstalling=true;_busy=true;RefreshRescueState();ConnectButton.IsEnabled=false;
+        Process? installer=null;Task<string>? stdout=null,stderr=null;
         try
         {
+            var prepared=_updates.Prepared;
+            _updates.Phase="Verifying";_updates.Error="";SaveUpdates();UpdateStatusLabel.Text="Повторно проверяю выпуск и сохранённый пакет…";
+            using var timeout=CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token);timeout.CancelAfter(TimeSpan.FromMinutes(2));
+            using var http=ReleaseUpdates.CreateClient(false);
+            var verified=await Task.Run(()=>new ReleaseUpdates(http).Restore(prepared,_root,timeout.Token),timeout.Token);
+            string id=Guid.NewGuid().ToString("N"),handoff=Path.Combine(_root,"runtime","update-handoff-"+id+".json");
             using var self=Process.GetCurrentProcess();
             string Literal(string value)=>"'"+value.Replace("'","''")+"'";
-            string command="& "+Literal(Path.Combine(_root,"Install-Release.ps1"))+" -Package "+Literal(_downloadedPackage)+" -Version "+Literal(_release.Version.ToString(3))+" -GuiPid "+self.Id+" -GuiStartedUtc "+Literal(self.StartTime.ToUniversalTime().ToString("O"));
-            var info=new ProcessStartInfo("powershell.exe"){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=_root,Arguments="-NoProfile -ExecutionPolicy Bypass -EncodedCommand "+Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(command))};
-            Process.Start(info)?.Dispose();ExitApplication();
+            string command="& "+Literal(Path.Combine(_root,"Install-Release.ps1"))+" -Package "+Literal(verified.Package)+" -Version "+Literal(prepared.Tag[1..])+" -GuiPid "+self.Id+" -GuiStartedUtc "+Literal(self.StartTime.ToUniversalTime().ToString("O"))+" -OperationId "+id+" -ManifestSha256 "+verified.ManifestHash;
+            var info=new ProcessStartInfo("powershell.exe"){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=_root,RedirectStandardOutput=true,RedirectStandardError=true,Arguments="-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "+Convert.ToBase64String(Encoding.Unicode.GetBytes(command))};
+            _updates.Phase="Installing";_updates.OperationId=id;SaveUpdates();
+            installer=Process.Start(info)??throw new IOException("Не удалось запустить установку.");
+            stdout=installer.StandardOutput.ReadToEndAsync();stderr=installer.StandardError.ReadToEndAsync();
+            while(true)
+            {
+                timeout.Token.ThrowIfCancellationRequested();
+                if(File.Exists(handoff))
+                {
+                    var state=AppPaths.Read(handoff,()=>new UpdateHandoff());
+                    if(state.Id==id && state.GuiPid==self.Id)
+                    {
+                        if(state.Phase=="Ready"){_busy=false;ExitApplication();return;}
+                        if(state.Phase=="Failed")throw new IOException(state.Message);
+                    }
+                }
+                if(installer.HasExited)throw new IOException("Установщик завершился до подтверждения. Подробности: logs/release-update-last.json.");
+                await Task.Delay(100,timeout.Token);
+            }
         }
-        catch(Exception ex){Notice("Не удалось запустить установку: "+Backend.Redact(ex.Message),true);}
+        catch(Exception ex)
+        {
+            if(installer!=null && !installer.HasExited){try{installer.Kill(true);}catch{}}
+            bool network=installer==null && (ex is System.Net.Http.HttpRequestException or OperationCanceledException) && !_exiting;
+            _updates.Error=Backend.Redact(ex.GetBaseException().Message);
+            if(network)UpdateJournal.DeferNetwork(_updates,DateTime.UtcNow);
+            else _updates.Phase="Failed";
+            SaveUpdates();if(manual||_updates.Phase=="Failed")Notice("Обновление не установлено: "+_updates.Error,true);
+        }
+        finally
+        {
+            // Streams are drained asynchronously; the installer is deliberately
+            // allowed to outlive this GUI after acknowledging exclusive ownership.
+            installer?.Dispose();_updateInstalling=false;_busy=false;
+            if(!_exiting){ConnectButton.IsEnabled=true;RefreshRescueState();RefreshUpdateControls();}
+        }
+    }
+    private void AutoInstallUpdates_Changed(object sender,RoutedEventArgs e)
+    {
+        if(!_ready||_render)return;
+        _preferences.AutoInstallUpdates=AutoInstallUpdatesBox.IsChecked==true;SaveData();RefreshUpdateControls();
+        if(_preferences.AutoInstallUpdates)_=TryAutoInstallAsync();
+    }
+    private sealed class UpdateHandoff
+    {
+        public string Id{get;set;}="";public string Phase{get;set;}="";public int GuiPid{get;set;}public string Message{get;set;}="";
     }
 }

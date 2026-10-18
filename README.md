@@ -13,7 +13,8 @@ The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspire
 - Routes listed restricted destinations through VPN and other traffic directly.
 - Auto mode compares direct HTTPS, TLS record fragmentation and VPN for eligible failing IPv4 TCP/443 connections, with direct access preferred.
 - Provides connection statistics, application/domain rules, logs and automatic recovery of a running session.
-- Checks GitHub Releases at startup and every six hours. Updates download with SHA-256 verification and install only while disconnected.
+- Shows new-release notifications at startup and every six hours. Downloads survive restart and can install automatically once disconnected, with an installer ownership handshake and rollback.
+- Restores the last applied/confirmed WireSock profile across app restarts and release folders; restoring a selection never connects automatically.
 
 ## Install
 
@@ -29,9 +30,11 @@ Your original profile is preserved. Private keys stay in your WireSock installat
 
 ## Updates
 
-The stable channel is `IthilRosg/CITA-Route` GitHub Releases. Open Settings to check, download and install an update. Downloads and extracted files are bounded and verified; another repository's assets and unsafe archive paths are rejected. Installation backs up replaced public files and rolls them back on failure. Personal rules, profiles, keys, statistics and preferences are retained.
+The stable channel is `IthilRosg/CITA-Route` GitHub Releases. A popup offers a new version while the window is active; background notifications do not steal focus. The same release is not repeatedly announced. Open Settings to check or download again. Downloaded packages survive restart and are reverified against fresh trusted release metadata, including the archive's manifest identity, before installation. Another repository's assets and unsafe archive paths are rejected. Installation backs up replaced public files and rolls them back on failure. Personal rules, profiles, keys, statistics and preferences are retained.
 
-Disconnect the route before installation. After the application restarts, **Apply connection** updates its protected Windows agent using the normal UAC transaction. The updater never silently disconnects a route, switches VPNUS, or reconnects a previously disconnected session. SHA-256 is checked against release metadata delivered over HTTPS; releases are not currently code signed.
+Automatic installation of a downloaded package is enabled by default and waits for the route and diagnostics to stop. Another copy's engine also blocks installation. Disable this in Settings if manual installation is preferred; choosing Later for an already downloaded release postpones automatic installation for four hours. The GUI exits only after the installer confirms exclusive ownership. After the application restarts, **Apply connection** updates its protected Windows agent using the normal UAC transaction. The updater never silently disconnects a route, switches VPNUS, or reconnects a previously disconnected session. SHA-256 is checked against release metadata delivered over HTTPS; releases are not currently code signed.
+
+Profile history contains only profile/CLI metadata in `%LOCALAPPDATA%\CITA\Route\profile-history.json`, not configuration keys. A missing remembered profile is reported rather than silently replaced. A restored selection in a new release folder still needs Apply connection; it does not transfer ownership of another running copy's service.
 
 ## Scope and compatibility
 
@@ -59,6 +62,8 @@ Install the .NET 8 SDK on Windows, then use Windows PowerShell:
 The resulting `dist/CITA-Route-VERSION-win-x64.zip` includes the runtime, public data, source and third-party license material. `dist/SHA256SUMS.txt` is the stable updater's checksum asset. Local data, private configs, logs and binaries are ignored by Git.
 
 `Verify-All.ps1` and VPNUS fault-injection checks are advanced, disruptive diagnostics for a prepared test machine. CI uses offline fixtures and separate loopback engines instead.
+
+`./Measure-Resources.ps1 -Seconds 120 -IntervalSeconds 10` passively records the main GUI, agent, router, bridge and WireSock process CPU/memory/handle counters in `logs/`. It does not generate traffic or change networking. Shared working sets cannot be summed as unique RAM, and this sampler does not fully attribute short-lived PowerShell/CLI helpers. Use a longer controlled run for leak investigations.
 
 ## Maintenance
 
