@@ -10,6 +10,7 @@ public static class AgentTests
     {
         void Assert(bool condition,string message){if(!condition)throw new Exception(message);}
         Assert(!NetworkProbe.ManagedProfileConnected("Connected to server from profile SmartRouting-AWG2\nConnected to server from profile Other"),"Conflicting profile identities must not prove the managed VPN.");
+        Assert(!NetworkProbe.ManagedProfileConnected("Connected to server from profile Other profile SmartRouting-AWG2"),"A profile keyword inside a foreign name must not hide the real name.");
         Assert(!NetworkProbe.ManagedProfileConnected("Not connected to server using profile SmartRouting-AWG2"),"Negative status must not match the Connected substring.");
         using(var values=JsonDocument.Parse("{\"ExpectedEgressIp\":\"8.8.8.8\",\"WireSockCliPath\":\"test\"}"))
         {

@@ -34,7 +34,7 @@ try {
     $script:identityStatus='';$script:identityDisconnects=0
     function Read-WireSockStatus {$script:identityStatus}
     function Invoke-WireSock($Arguments){Assert ($Arguments[0] -eq 'disconnect') 'Unexpected identity-test CLI mutation';$script:identityDisconnects++}
-    foreach($identity in @('Connected to server from profile SmartRouting-AWG2-copy',"Connected to server from profile SmartRouting-AWG2`nConnected to server from profile Other",'Connecting from profile Other','Unknown')){
+    foreach($identity in @('Connected to server from profile SmartRouting-AWG2-copy','Connected to server from profile Other profile SmartRouting-AWG2',"Connected to server from profile SmartRouting-AWG2`nConnected to server from profile Other",'Connecting from profile Other','Unknown')){
         $script:identityStatus=$identity;Disconnect-ManagedWireSock
         Assert ($script:identityDisconnects -eq 0) 'Stop/cleanup disconnected a foreign or unverified profile.'
     }

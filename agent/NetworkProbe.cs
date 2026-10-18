@@ -65,11 +65,13 @@ public static class NetworkProbe
                 ?new(true,"Verified","HTTPS/IPv4 через выбранный выход WireSock подтверждён.")
                 :new(false,"EgressMismatch","IP выхода отличается от выбранного профиля. Проверь настройки подключения.");
     }
-    public static bool ManagedProfileConnected(string status)=>
-        System.Text.RegularExpressions.Regex.Matches(status,@"(?im)^.*(?:profile|профиля)[ \t]+\S.*$").Count==1 &&
-        System.Text.RegularExpressions.Regex.IsMatch(status,@"(?im)^.*(?:profile|профиля)\s+SmartRouting-AWG2\s*$") &&
-        !System.Text.RegularExpressions.Regex.IsMatch(status,@"\b(?:Not connected|NotConnected|Disconnected|Disconnecting|Connecting)\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
-        System.Text.RegularExpressions.Regex.IsMatch(status,@"Connected to|Подключено к серверу",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    public static bool ManagedProfileConnected(string status)
+    {
+        var names=System.Text.RegularExpressions.Regex.Matches(status,@"(?im)^.*?\b(?:profile|профиля)[ \t]+([^\r\n]+?)[ \t]*$");
+        return names.Count==1 && string.Equals(names[0].Groups[1].Value.Trim(),"SmartRouting-AWG2",StringComparison.OrdinalIgnoreCase) &&
+            !System.Text.RegularExpressions.Regex.IsMatch(status,@"\b(?:Not connected|NotConnected|Disconnected|Disconnecting|Connecting)\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+            System.Text.RegularExpressions.Regex.IsMatch(status,@"Connected to|Подключено к серверу",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
     public static string? ReportedEgress(string status)
     {
         var match=System.Text.RegularExpressions.Regex.Match(status,@"(?im)^\s*(?:Внешний (?:адрес|IP)|External (?:IP(?: address)?|address))\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})(?:[,\s]|$)");

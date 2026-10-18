@@ -44,7 +44,7 @@ function Read-HelperOutput([string]$Image,[string]$Arguments) {
 function Read-WireSockStatus { return Read-HelperOutput $cli 'status' }
 
 function Test-WireSockManagedProfile([string]$Status,[string]$Profile) {
-    $names=[regex]::Matches($Status,'(?im)^.*(?:profile|\u043f\u0440\u043e\u0444\u0438\u043b\u044f)\s+(.+?)\s*$')
+    $names=[regex]::Matches($Status,'(?im)^.*?\b(?:profile|\u043f\u0440\u043e\u0444\u0438\u043b\u044f)[ \t]+([^\r\n]+?)[ \t]*$')
     return $names.Count -eq 1 -and [string]::Equals($names[0].Groups[1].Value.Trim(),$Profile,[StringComparison]::OrdinalIgnoreCase)
 }
 
