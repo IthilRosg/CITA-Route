@@ -39,7 +39,7 @@ foreach($name in @('sing-box-LICENSE.txt','GPL-3.0.txt','sing-box-1.14.3-source.
 }
 # Include the engine's build settings without a user's configuration.
 & (Join-Path $root 'runtime\smart-router.exe') version | Set-Content -LiteralPath (Join-Path $stage 'licenses\engine-version.txt') -Encoding UTF8
-$forbidden=@(Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object {$_.Extension -in @('.conf','.log') -or $_.Name -in @('session.json','controller-token.txt','connection.json','traffic.json','policy-cache.json','agent-config.json','router.json','bridge.json')})
+$forbidden=@(Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object {$_.Extension -in @('.conf','.log') -or $_.Name -in @('udp-quality.json','session.json','controller-token.txt','connection.json','traffic.json','policy-cache.json','agent-config.json','router.json','bridge.json')})
 if($forbidden.Count){throw 'Private files detected in distribution staging.'}
 $files=@(Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {@{path=$_.FullName.Substring($stage.Length+1);bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}})
 . (Join-Path $root 'FileStorage.ps1')

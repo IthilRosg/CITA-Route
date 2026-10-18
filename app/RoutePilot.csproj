@@ -15,4 +15,5 @@
     <DebugType>embedded</DebugType>
   </PropertyGroup>
   <ItemGroup><Compile Include="..\agent\NetworkProbe.cs" Link="NetworkProbe.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="..\agent\UdpQualityModels.cs" Link="UdpQualityModels.cs" /></ItemGroup>
 </Project>

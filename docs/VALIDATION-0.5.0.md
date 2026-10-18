@@ -31,6 +31,18 @@ disconnected and no candidate service was installed over the active session.
 - Existing optimization integration passed. Preview bitmaps cover five compact
   states and all advanced pages. Preview mode avoids live backend polling and
   preference writes.
+- Optional UDP quality collector: authenticated loopback probes measured the
+  controlled 2/10 missing replies independently on Direct and VPN. Tests cover
+  duplicate/reordered/late replies, cancellation, bounded windows, configuration,
+  profile/network/session/bridge freshness and independent Direct measurements
+  after lost VPN proof. No replies are unavailable, not proven 100% loss.
+- Actual engine UDP integration: Direct and nested SOCKS paths each returned 8/10
+  controlled replies; stopping the fixture bridge produced no Direct fallback,
+  while Direct continued. The separate production reflector returned 10/10 with
+  the correct key and none with another key. No TUN/WireSock was changed.
+- Fixed repeated setup: protected ProgramData storage and application-root
+  ownership are now distinct. Matching connection settings skip setup; a different
+  portable folder or protected egress setting still requires setup.
 
 ## Resources
 
@@ -54,9 +66,9 @@ does not validate candidate installation or the new live recovery code.
 
 ## Remaining release gates and limitations
 
-- Loss fields intentionally say **not measured**. Stage 6's controlled UDP
-  reflector/collector is not implemented. There are no fabricated 0% results or
-  packet-loss estimates derived from HTTPS.
+- UDP quality remains optional until a real controlled reflector is deployed
+  and configured. Full remote TUN → WireSock → reflector, IPv6, QUIC and PMTU
+  remain unvalidated. The local fixtures do not satisfy all stage 6 gates.
 - Validate real WireSock installation, native UAC approval/refusal, driver
   interception, failure recovery and simultaneous app traffic on a separate PC.
   The local chat connection is not a fault-injection testbed.

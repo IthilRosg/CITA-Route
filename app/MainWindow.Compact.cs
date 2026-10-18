@@ -155,7 +155,7 @@ public partial class MainWindow
     sealed class AppliedConnection
     {
         public string CliPath{get;set;}="";public string SourceProfile{get;set;}="";public string ExpectedEgressIp{get;set;}="";
-        public string WireSockCliPath{get;set;}="";public string WireSockSourceProfile{get;set;}="";public string DataDirectory{get;set;}="";
+        public string WireSockCliPath{get;set;}="";public string WireSockSourceProfile{get;set;}="";public string DataDirectory{get;set;}="";public string AppRoot{get;set;}="";
     }
     bool NeedsConnectionSetup(ConnectionSelection selection)
     {
@@ -171,9 +171,13 @@ public partial class MainWindow
         catch(System.IO.FileNotFoundException){return true;}
         var local=AppPaths.Read(Path.Combine(_root,"data","connection.json"),()=>new AppliedConnection());
         var agent=AppPaths.Read(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"RoutePilot","Agent","agent-config.json"),()=>new AppliedConnection());
-        return local.SourceProfile!=selection.Profile || !string.Equals(local.CliPath,selection.Cli,StringComparison.OrdinalIgnoreCase) || local.ExpectedEgressIp!=selection.Egress ||
-            agent.WireSockSourceProfile!=selection.Profile || !string.Equals(agent.WireSockCliPath,selection.Cli,StringComparison.OrdinalIgnoreCase) || !string.Equals(Path.TrimEndingDirectorySeparator(agent.DataDirectory),Path.TrimEndingDirectorySeparator(_root),StringComparison.OrdinalIgnoreCase);
+        return !ConnectionBindingMatches(local,agent,selection,_root,Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"RoutePilot"));
     }
+    static bool ConnectionBindingMatches(AppliedConnection local,AppliedConnection agent,ConnectionSelection selection,string root,string dataRoot)=>
+        local.SourceProfile==selection.Profile && string.Equals(local.CliPath,selection.Cli,StringComparison.OrdinalIgnoreCase) && local.ExpectedEgressIp==selection.Egress &&
+        agent.WireSockSourceProfile==selection.Profile && string.Equals(agent.WireSockCliPath,selection.Cli,StringComparison.OrdinalIgnoreCase) && agent.ExpectedEgressIp==selection.Egress &&
+        string.Equals(Path.TrimEndingDirectorySeparator(agent.DataDirectory),Path.TrimEndingDirectorySeparator(dataRoot),StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(Path.TrimEndingDirectorySeparator(agent.AppRoot),Path.TrimEndingDirectorySeparator(root),StringComparison.OrdinalIgnoreCase);
     private async void ChooseCompactProfile_Click(object sender,RoutedEventArgs e)
     {
         if(_render||_busy||_engineRunning||_rescueState.BlocksRouting)return;

@@ -10,6 +10,8 @@ app/bin/
 app/obj/
 agent/bin/
 agent/obj/
+tools/**/bin/
+tools/**/obj/
 data/
 artifacts/
 .codegraph/

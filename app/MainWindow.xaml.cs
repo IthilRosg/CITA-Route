@@ -78,6 +78,7 @@ public partial class MainWindow : Window
         _preferences.RefreshSeconds=Math.Clamp(_preferences.RefreshSeconds,1,3);
         CloseToTrayBox.IsChecked=_preferences.CloseToTray;RefreshIntervalInput.SelectedIndex=_preferences.RefreshSeconds-1;
         InitializeUpdates();
+        InitializeQuality();
         RoutingModeInput.SelectedIndex=_routingPolicy.Mode=="Auto"?1:0;AllowListedDpiBox.IsChecked=_routingPolicy.AllowListedDpi;
         _rules=DomainRules.Read(Path.Combine(root,"force-direct.txt")).Select(d=>new UserRule{Domain=d,Target="Напрямую"}).Concat(
             DomainRules.Read(Path.Combine(root,"force-vpn.txt")).Select(d=>new UserRule{Domain=d,Target="VPN"})).ToList();
@@ -148,6 +149,7 @@ public partial class MainWindow : Window
             var session=AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession());
             var cachedHealth=SessionHealthCache.Read(_root,session,DateTime.UtcNow);
             bool owned=session.Running && !string.IsNullOrWhiteSpace(session.Id) && _backend.EngineRunning(session);
+            RefreshQuality(session,owned);
             if(_compact&&!owned){_vpnConnected=false;}
             else if(_compact&&owned&&cachedHealth.Watch is {} liveWatch)
             {

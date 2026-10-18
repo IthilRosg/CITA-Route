@@ -50,12 +50,7 @@ public static class PolicySafety
     public static bool Pinned(string domain)=>new[]{"openai.com","chatgpt.com","oaiusercontent.com","oaistatic.com","sora.com","t.me","telegram.org","telegram.me","tdesktop.com"}.Any(s=>Matches(domain,s));
     public static bool Valid(PolicyKey key)=>Domain(key.Domain)==key.Domain && key.Port==443 && key.Protocol=="tcp" && !string.IsNullOrWhiteSpace(key.Application) && Path.IsPathFullyQualified(key.Application);
     public static bool Live(PolicyDecision d,string epoch,DateTime now)=>d.Key.Epoch==epoch && d.ExpiresUtc>now && d.CheckedUtc<=now && d.ExpiresUtc-d.CheckedUtc<=TimeSpan.FromMinutes(16) && Valid(d.Key);
-    public static bool Public(IPAddress ip)
-    {
-        if(ip.AddressFamily!=System.Net.Sockets.AddressFamily.InterNetwork)return false;
-        byte[] b=ip.GetAddressBytes();
-        return b[0] is not (0 or 10 or 127) && b[0]<224 && !(b[0]==169 && b[1]==254) && !(b[0]==172 && b[1] is >=16 and <=31) && !(b[0]==192 && b[1]==168) && !(b[0]==100 && b[1] is >=64 and <=127) && !(b[0]==198 && b[1] is 18 or 19) && !(b[0]==192 && b[1]==0 && b[2] is 0 or 2) && !(b[0]==198 && b[1]==51 && b[2]==100) && !(b[0]==203 && b[1]==0 && b[2]==113);
-    }
+    public static bool Public(IPAddress ip)=>Quality.UdpQualityOptions.PublicIpv4(ip);
 }
 
 public sealed class PolicyWorker
@@ -121,6 +116,7 @@ public sealed class PolicyWorker
         string log=Path.Combine(root,"logs","router.log");
         worker._offset=File.Exists(log)?new FileInfo(log).Length:0;
         string terminalPhase="Stopped";
+        Task quality=UdpQualityWorker.Run(root,session.Id,worker._fingerprint,worker._ports,cancel.Token);
         try
         {
             worker.RefreshListed();worker.LoadCache();worker.LoadActiveBindings();
@@ -162,7 +158,7 @@ public sealed class PolicyWorker
         {terminalPhase="Error";worker.Event("Контроллер остановлен: "+ex.GetBaseException().Message);throw;}
         finally
         {
-            cancel.Cancel();await Task.WhenAll(worker._pending.Values.Select(async t=>{try{await t;}catch{}}));
+            cancel.Cancel();await quality;await Task.WhenAll(worker._pending.Values.Select(async t=>{try{await t;}catch{}}));
             // Keep the last applied rules across a controller crash/restart.
             // Start/Stop owns the engine; an old controller never clears a newer generation.
             try{if(Storage.Read<PolicySession>(worker.Runtime("session.json")).Id==session.Id)worker.Status(terminalPhase);}catch{}

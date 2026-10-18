@@ -68,6 +68,7 @@ public sealed class AgentConfig
     public string UserSid{get;set;}="";
     public string UserProfile{get;set;}="";
     public string DataDirectory{get;set;}="";
+    public string AppRoot{get;set;}="";
     public string WireSockSourceProfile{get;set;}="";
     public string WireSockCliPath{get;set;}="";
     public string SourceEndpoint{get;set;}="";

@@ -113,6 +113,7 @@ public sealed class EngineSession
     public string Id{get;set;}="";
     public string Mode{get;set;}="";
     public string SourceProfile{get;set;}="";
+    public string NetworkSignature{get;set;}="";
     public DateTime StartedUtc{get;set;}
 }
 public sealed class ConnectionRow

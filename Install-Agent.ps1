@@ -60,7 +60,7 @@ try {
     $endpoint=Read-JsonFile (Join-Path $PSScriptRoot 'runtime\connection-endpoint.json')
     if(-not $connection.SourceProfile){throw 'Select a source WireSock profile and prepare the connection first.'}
     if($endpoint.SourceProfile -ne $connection.SourceProfile){throw 'Prepared profile does not match the selection. Apply the connection again.'}
-    $config = @{UserSid=$UserSid;UserProfile=$UserProfile;DataDirectory=$dataRoot;WireSockSourceProfile=$connection.SourceProfile;WireSockCliPath=$wireSockCli;EndpointIp=$endpoint.Ip;EndpointPort=$endpoint.Port;SourceEndpoint=$endpoint.SourceEndpoint;ExpectedEgressIp=$connection.ExpectedEgressIp}
+    $config = @{UserSid=$UserSid;UserProfile=$UserProfile;DataDirectory=$dataRoot;AppRoot=$PSScriptRoot;WireSockSourceProfile=$connection.SourceProfile;WireSockCliPath=$wireSockCli;EndpointIp=$endpoint.Ip;EndpointPort=$endpoint.Port;SourceEndpoint=$endpoint.SourceEndpoint;ExpectedEgressIp=$connection.ExpectedEgressIp}
     $configSource = Join-Path $PSScriptRoot 'runtime\agent-install-config.json'
     [IO.File]::WriteAllText($configSource,($config | ConvertTo-Json),(New-Object Text.UTF8Encoding($false)))
     $files += @{Source=$configSource;Name='agent-config.json'},@{Source=(Join-Path $PSScriptRoot 'runtime\router.json');Name='production-router.json'}

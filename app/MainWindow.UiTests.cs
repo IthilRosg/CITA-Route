@@ -12,6 +12,14 @@ public partial class MainWindow
     {
         if(!_render)throw new InvalidOperationException("UI fixtures require preview mode.");
         static void Assert(bool condition,string text){if(!condition)throw new Exception(text);}
+        var selection=new ConnectionSelection(@"C:\Program Files\WireSock\cli.exe","fixture","");
+        var local=new AppliedConnection{SourceProfile=selection.Profile,CliPath=selection.Cli};
+        var applied=new AppliedConnection{WireSockSourceProfile=selection.Profile,WireSockCliPath=selection.Cli,DataDirectory=@"C:\ProgramData\RoutePilot",AppRoot=_root};
+        Assert(ConnectionBindingMatches(local,applied,selection,_root,@"C:\ProgramData\RoutePilot"),"A configured connection must not request setup because its protected data directory differs from the workspace.");
+        applied.AppRoot=_root+"-other";
+        Assert(!ConnectionBindingMatches(local,applied,selection,_root,@"C:\ProgramData\RoutePilot"),"Another portable installation must apply its own protected connection.");applied.AppRoot=_root;
+        applied.ExpectedEgressIp="1.1.1.1";
+        Assert(!ConnectionBindingMatches(local,applied,selection,_root,@"C:\ProgramData\RoutePilot"),"A different protected egress setting requires setup.");
         ApplyView(true,false);Show();UpdateLayout();
         Assert(Width<=460 && Height<=520 && CompactHost.IsVisible && !AdvancedHost.IsVisible,"Compact mode must use a physically small window.");
         _inventory=new(){CliPath="fixture.exe",Profiles=new[]{"first","second"}};

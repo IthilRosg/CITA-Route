@@ -43,7 +43,7 @@ Automatic installation of a downloaded package is enabled by default and waits f
 
 Profile history contains only profile/CLI metadata in `%LOCALAPPDATA%\CITA\Route\profile-history.json`, not configuration keys. A missing remembered profile is reported rather than silently replaced. A new release folder still requires checked protected setup; restoring the selection does not transfer ownership of another running copy's service.
 
-Mini statistics cover the current CITA session. Direct and VPN probe-loss fields currently say **not measured**: the controlled UDP reflector and collector in stage 6 are not implemented yet. HTTPS failures, handshakes and traffic totals are never converted into packet-loss percentages.
+Mini statistics cover the current CITA session. The candidate includes optional independent Direct/VPN UDP probe-loss measurement using your own authenticated reflector; configure it in advanced Settings. It stays **not measured** without that server, and **check unavailable** when no valid replies arrive. HTTPS failures, handshakes and traffic totals are never converted into packet-loss percentages. See [UDP quality setup and limits](docs/UDP-QUALITY.md).
 
 ## Scope and compatibility
 
