@@ -43,6 +43,7 @@ function Get-SessionBridge($Session) {
 
 function Invoke-BridgeUpdate([bool]$Connected) {
     $session=Read-JsonFile (Join-Path $runtime 'session.json')
+    if($session.vpnHoldReason){$Connected=$false}
     $bridgeProcesses = @(Get-SessionBridge $session)
     $lostPath = Join-Path $root 'logs\connection-lost.txt'
     if (-not $Connected) {
@@ -50,7 +51,7 @@ function Invoke-BridgeUpdate([bool]$Connected) {
         $bridgeProcesses | Stop-Process -Force
         if (-not (Test-Path -LiteralPath $lostPath)) {
             [IO.File]::WriteAllText($lostPath,
-                'WireSock is reconnecting. VPN bridge is paused; direct traffic remains available. The bridge will resume automatically.')
+                'VPN bridge is paused until the selected connection is verified. Other routes were not restarted.')
         }
         return
     }

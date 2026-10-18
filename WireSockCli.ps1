@@ -43,11 +43,16 @@ function Read-HelperOutput([string]$Image,[string]$Arguments) {
 
 function Read-WireSockStatus { return Read-HelperOutput $cli 'status' }
 
+function Test-WireSockManagedProfile([string]$Status,[string]$Profile) {
+    $names=[regex]::Matches($Status,'(?im)^.*(?:profile|\u043f\u0440\u043e\u0444\u0438\u043b\u044f)\s+(.+?)\s*$')
+    return $names.Count -eq 1 -and [string]::Equals($names[0].Groups[1].Value.Trim(),$Profile,[StringComparison]::OrdinalIgnoreCase)
+}
+
 function Get-WireSockState([string]$Status,[string]$Profile) {
     $text=$Status.Trim()
     if($text -match '(?i)^(Not connected|NotConnected|No connection|Disconnected|\u041d\u0435\u0442 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f)$'){return 'Disconnected'}
     # Match a complete profile identifier, never a substring such as "...-copy".
-    $managed=$text -match ('(?im)^.*(?:profile|\u043f\u0440\u043e\u0444\u0438\u043b\u044f)\s+'+[regex]::Escape($Profile)+'\s*$')
+    $managed=Test-WireSockManagedProfile $text $Profile
     $hasProfile=$text -match '(?im)^.*(?:profile|\u043f\u0440\u043e\u0444\u0438\u043b\u044f)\s+\S.*$'
     if($hasProfile -and -not $managed){return 'Foreign'}
     if($managed -and $text -match '(?i)\b(Disconnected|NotConnected|Not connected|No connection)\b'){return 'Disconnected'}
@@ -57,7 +62,13 @@ function Get-WireSockState([string]$Status,[string]$Profile) {
 }
 
 function Get-WireSockObservation {
-    try {$state=Get-WireSockState (Read-WireSockStatus) $smartProfile}
+    $managed=$false
+    try {$status=Read-WireSockStatus;$state=Get-WireSockState $status $smartProfile;$managed=Test-WireSockManagedProfile $status $smartProfile}
     catch {$state='Unknown'}
-    return [pscustomobject]@{state=$state;checkedUtc=[DateTime]::UtcNow.ToString('o')}
+    return [pscustomobject]@{state=$state;managed=$managed;checkedUtc=[DateTime]::UtcNow.ToString('o')}
+}
+
+function Disconnect-ManagedWireSock {
+    $observation=Get-WireSockObservation
+    if($observation.managed -and $observation.state -in @('Connected','Transitioning')){Invoke-WireSock @('disconnect') | Out-Null}
 }

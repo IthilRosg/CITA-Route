@@ -13,7 +13,13 @@ public partial class MainWindow
     private bool _discovering;
     private readonly ProfileMemory _profileMemory=new();
     private string _rememberedSession="";
-    private async Task DiscoverConnectionsAsync(string cli="")
+    private Task? _discoveryWork;
+    private Task DiscoverConnectionsAsync(string cli="")
+    {
+        if(_discoveryWork is {IsCompleted:false})return _discoveryWork;
+        return _discoveryWork=DiscoverConnectionsCoreAsync(cli);
+    }
+    private async Task DiscoverConnectionsCoreAsync(string cli)
     {
         if(_discovering)return;_discovering=true;RefreshRescueState();
         string selected=ProfileInput.SelectedItem as string??"";
@@ -38,13 +44,14 @@ public partial class MainWindow
             else if(ProfileInput.SelectedItem==null && _profileMemory.Preferred(_inventory.CliPath,_inventory.SelectedProfile).Length>0)ConnectionSetupLabel.Text="Последний профиль пока не найден. Повтори поиск или выбери другой профиль явно.";
         }
         catch(Exception ex){ConnectionSetupLabel.Text=Backend.Redact(ex.Message);}
-        finally{_discovering=false;RefreshRescueState();}
+        finally{_discovering=false;RefreshRescueState();SyncCompact();}
     }
     private async void FindWireSock_Click(object sender,RoutedEventArgs e)=>await DiscoverConnectionsAsync();
     private void ProfileInput_SelectionChanged(object sender,System.Windows.Controls.SelectionChangedEventArgs e)
     {
         if(!_ready||_discovering)return;
         ExpectedEgressInput.Text=(ProfileInput.SelectedItem as string)==_inventory.SelectedProfile?_inventory.ExpectedEgressIp:"";
+        SyncCompact();
     }
     private void RememberVerifiedProfile(EngineSession session)
     {

@@ -12,8 +12,16 @@ public static class SelfTests
     {
         ReleaseUpdateTests.Run(root);
         Task.Run(()=>ConnectionSetupTests.Run(root)).GetAwaiter().GetResult();
+        Task.Run(()=>ConnectionOperationTests.Run(root)).GetAwaiter().GetResult();
         Task.Run(()=>UpdateWorkflowTests.Run(root)).GetAwaiter().GetResult();
         static void Assert(bool condition,string message){if(!condition)throw new Exception(message);}
+        var healthSession=new EngineSession{Running=true,BridgeReady=true,Id="current",BridgeGeneration=4};
+        var cachedHealth=new SessionHealthState{SessionId="current",BridgeGeneration=4,Healthy=true,UpdatedUtc=DateTime.UtcNow};
+        Assert(SessionHealthCache.Matches(healthSession,cachedHealth,DateTime.UtcNow),"Current fresh health must be reusable by GUI without duplicate probe.");
+        cachedHealth.BridgeGeneration=3;Assert(!SessionHealthCache.Matches(healthSession,cachedHealth,DateTime.UtcNow),"Old bridge result must not prove a new bridge.");
+        cachedHealth.BridgeGeneration=4;cachedHealth.UpdatedUtc=DateTime.UtcNow.AddMinutes(-2);Assert(!SessionHealthCache.Matches(healthSession,cachedHealth,DateTime.UtcNow),"Stale health must expire.");
+        cachedHealth.UpdatedUtc=DateTime.UtcNow.AddMinutes(1);Assert(!SessionHealthCache.Matches(healthSession,cachedHealth,DateTime.UtcNow),"Future health must not prove connectivity.");
+        cachedHealth.UpdatedUtc=DateTime.UtcNow;healthSession.Running=false;Assert(!SessionHealthCache.Matches(healthSession,cachedHealth,DateTime.UtcNow),"Manual Stop must invalidate cached health.");
         var history=new TrafficHistory();
         var first=history.Apply("one",100,200,"2026-10-17");Assert(first.Up==100 && first.Down==200,"First engine snapshot");
         var repeat=history.Apply("one",100,200,"2026-10-17");Assert(repeat.Up==0 && repeat.Down==0,"Duplicate must not double count");
@@ -60,6 +68,7 @@ public static class SelfTests
             using var backend=new Backend(root);
             var session=new EngineSession{Running=true,RouterPid=probe.Id,StartedUtc=DateTime.UtcNow};
             Assert(backend.EngineRunning(session),"A running router must remain detectable without a statistics API");
+            session.RouterStartedUtc=DateTime.UtcNow.AddDays(-1);Assert(!backend.EngineRunning(session),"Same-name PID reuse must not count as an owned router.");session.RouterStartedUtc=DateTime.MinValue;
             session.Running=false;Assert(!backend.EngineRunning(session),"A stopped session must not appear active");
             session.Running=true;session.RouterPid=Environment.ProcessId;
             Assert(!backend.EngineRunning(session),"A reused PID from another process must not appear as the router");
@@ -89,6 +98,9 @@ public static class SelfTests
             if(!Path.GetFullPath(actionFolder).StartsWith(allowed,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Unsafe test cleanup path");
             if(Directory.Exists(actionFolder))Directory.Delete(actionFolder,true);
         }
-        Directory.CreateDirectory(Path.Combine(root,"logs"));File.WriteAllText(Path.Combine(root,"logs","app-self-test.log"),"PASS: counters, restart persistence, midnight, domain validation, IDN, suffix boundaries, API parsing, x86 process paths, malformed API handling, running router without statistics API, PID validation, real Windows PowerShell operation reports, setup/import argument transfer, empty optional values, Cyrillic and quoted paths.");
+        string uiFolder=Path.Combine(root,"runtime","ui-fixture-"+Guid.NewGuid().ToString("N"));
+        try{new MainWindow(uiFolder,true).VerifyPresentation();}
+        finally{if(Directory.Exists(uiFolder))Directory.Delete(uiFolder,true);}
+        Directory.CreateDirectory(Path.Combine(root,"logs"));File.WriteAllText(Path.Combine(root,"logs","app-self-test.log"),"PASS: counters, restart persistence, midnight, domain validation, IDN, suffix boundaries, API parsing, x86 process paths, malformed API handling, router identity, actual Windows PowerShell setup/Start/Stop reports, cooperative cancellation and cleanup, Unicode/quoted/empty arguments, compact/advanced physical sizes and retained connection state, duplicate-start prevention, stale UI progress rejection.");
     }
 }

@@ -2,6 +2,7 @@ using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -9,6 +10,8 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace RoutePilot;
 
@@ -25,11 +28,19 @@ public sealed class Backend : IDisposable
         {
             using var process=Process.GetProcessById(session.RouterPid);
             if(process.HasExited || process.ProcessName!="smart-router")return false;
-            try{return string.Equals(process.MainModule?.FileName,Path.Combine(_root,"runtime","smart-router.exe"),StringComparison.OrdinalIgnoreCase);}
-            catch(Win32Exception){return Math.Abs((process.StartTime.ToUniversalTime()-session.StartedUtc.ToUniversalTime()).TotalSeconds)<15;}
+            if(session.RouterStartedUtc!=DateTime.MinValue && Math.Abs((process.StartTime.ToUniversalTime()-session.RouterStartedUtc.ToUniversalTime()).TotalMilliseconds)>=100)return false;
+            using var handle=OpenProcess(0x1000,false,process.Id);
+            var path=new StringBuilder(32768);int size=path.Capacity;
+            return !handle.IsInvalid && QueryFullProcessImageName(handle,0,path,ref size) &&
+                string.Equals(path.ToString(),Path.Combine(_root,"runtime","smart-router.exe"),StringComparison.OrdinalIgnoreCase);
         }
         catch(Exception ex)when(ex is ArgumentException or InvalidOperationException or Win32Exception){return false;}
     }
+    [DllImport("kernel32.dll",SetLastError=true)]
+    static extern SafeProcessHandle OpenProcess(uint access,bool inherit,int processId);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+    [return:MarshalAs(UnmanagedType.Bool)]
+    static extern bool QueryFullProcessImageName(SafeProcessHandle handle,int flags,StringBuilder path,ref int size);
     private HttpRequestMessage Request(HttpMethod method,string endpoint)
     {
         var message=new HttpRequestMessage(method,"http://127.0.0.1:20810/"+endpoint);
@@ -42,13 +53,14 @@ public sealed class Backend : IDisposable
         using var request=Request(HttpMethod.Get,"connections");using var response=await _http.SendAsync(request);
         response.EnsureSuccessStatusCode();return Snapshot.Parse(await response.Content.ReadAsStringAsync());
     }
-    public async Task<(bool Verified,string Message)> VerifyVpnEgressAsync()
+    public async Task<(bool Verified,string Message)> VerifyVpnEgressAsync(CancellationToken cancellation=default)
     {
         try
         {
             if(RoutePilot.Agent.NetworkProbe.Vpnus!=null)return(false,"Обнаружен VPNUS: независимый выход WireSock не подтверждён.");
-            return await RoutePilot.Agent.NetworkProbe.CheckEgress();
+            return await RoutePilot.Agent.NetworkProbe.CheckEgress(cancellation);
         }
+        catch(OperationCanceledException)when(cancellation.IsCancellationRequested){throw;}
         catch(Exception ex){return(false,"Не подтверждён VPN-выход: "+ex.Message);}
     }
     public async Task CloseConnectionAsync(string id)
@@ -64,8 +76,8 @@ public sealed class Backend : IDisposable
         using var outputBytes=new MemoryStream();using var errorBytes=new MemoryStream();
         Task output=process.StandardOutput.BaseStream.CopyToAsync(outputBytes),error=process.StandardError.BaseStream.CopyToAsync(errorBytes);
         using var cancel=new CancellationTokenSource(timeout);
-        try{await process.WaitForExitAsync(cancel.Token);}catch(OperationCanceledException){try{process.Kill(true);}catch{}throw new TimeoutException("Истекло время ожидания ответа.");}
-        await Task.WhenAll(output,error);
+        try{await process.WaitForExitAsync(cancel.Token);await Task.WhenAll(output,error).WaitAsync(cancel.Token);}
+        catch(OperationCanceledException){try{process.Kill(true);}catch{}throw new TimeoutException("Истекло время ожидания ответа.");}
         string Decode(byte[] bytes)
         {
             try{return new UTF8Encoding(false,true).GetString(bytes);}
@@ -81,29 +93,8 @@ public sealed class Backend : IDisposable
     }
     public async Task<(bool Success,string Message)> ActionAsync(string action,bool elevated)
     {
-        if(action is not ("Start" or "Stop" or "UpdateRules"))throw new ArgumentException("Unknown action");
-        string script=Path.Combine(_root,"SmartRouting.ps1").Replace("'","''");
-        string state=Path.Combine(_root,"runtime","operation.json").Replace("'","''");
-        string log=Path.Combine(_root,"logs","last-action.log").Replace("'","''");
-        string operation=Guid.NewGuid().ToString("N");
-        // All interpolated values are local paths escaped as PowerShell literals or closed action names.
-        string storage=Path.Combine(_root,"FileStorage.ps1").Replace("'","''");
-        string command="$ErrorActionPreference='Stop'; . '"+storage+"'; "+
-            "function Report($s,$m){Write-JsonFile '"+state+"' @{id='"+operation+"';state=$s;message=$m}}; "+
-            "Report 'running' '';try{ & '"+script+"' -Action "+action+" *>&1 | Out-File -LiteralPath '"+log+"' -Encoding utf8;Report 'complete' '';exit 0}catch{Report 'failed' $_.Exception.Message;exit 1}";
-        var info=new ProcessStartInfo("powershell.exe"){WorkingDirectory=_root,UseShellExecute=elevated,CreateNoWindow=!elevated,WindowStyle=ProcessWindowStyle.Hidden};
-        if(elevated)info.Verb="runas";
-        info.Arguments="-NoProfile -ExecutionPolicy Bypass -EncodedCommand "+Convert.ToBase64String(Encoding.Unicode.GetBytes(command));
-        using var process=Process.Start(info)??throw new InvalidOperationException("Не удалось запустить управление сетью.");
-        using var cancellation=new CancellationTokenSource(90000);
-        await process.WaitForExitAsync(cancellation.Token);
-        try
-        {
-            using var report=JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(_root,"runtime","operation.json")));
-            if(report.RootElement.GetProperty("id").GetString()==operation)
-                return(report.RootElement.GetProperty("state").GetString()=="complete",Redact(report.RootElement.GetProperty("message").GetString()??""));
-        }catch{}
-        return(false,"Операция не завершена. Подробности есть в журнале.");
+        var result=await ConnectionOperation.Run(_root,action,elevated);
+        return(result.Success,result.Message);
     }
     public async Task<string> CheckDomainAsync(string input)
     {
@@ -119,6 +110,14 @@ public sealed class Backend : IDisposable
         return "Напрямую · правило по умолчанию";
     }
     public static string Redact(string text)=>Regex.Replace(text,@"[A-Za-z0-9+/]{43}=","[ключ скрыт]");
+    public static string FriendlyHealth(string code,bool healthy)=>healthy?"Соединение через выбранный VPN проверено.":code switch
+    {
+        "EgressMismatch"=>"Выход VPN отличается от профиля. Проверь подключение.",
+        "ProfileChanged" or "ProfileNotConnected"=>"Выбранный профиль WireSock не подтверждён.",
+        "MissingExpectedEgress"=>"Укажи IP выхода VPN в расширенных настройках подключения.",
+        "InvalidConfiguration"=>"Требуется настройка подключения.",
+        _=>"Проверяем доступность соединения. Маршрут целиком не перезапускается."
+    };
     public string ReadLog()
     {
         var result=new StringBuilder();
@@ -132,7 +131,11 @@ public sealed class Backend : IDisposable
                 result.AppendLine();
             }
         }catch(IOException){}catch(JsonException){}
-        foreach(string file in new[]{"diagnostics.log","last-action.log","connection-lost.txt","recovery.log","recovery-error.log","cleanup-error.log","router.log","bridge.log","smart-router-startup.log","feeds-startup.log"})
+        var files=new[]{"diagnostics.log","last-action.log","connection-setup.log","connection-lost.txt","recovery.log","recovery-error.log","cleanup-error.log","router.log","bridge.log","smart-router-startup.log","feeds-startup.log"};
+        var operation=AppPaths.Read(Path.Combine(_root,"logs","last-operation.json"),()=>new ConnectionResult());
+        if(Guid.TryParseExact(operation.Id,"N",out _))
+            files=Directory.GetFiles(Path.Combine(_root,"logs"),"operation-"+operation.Id+"-*.log").Select(p=>Path.GetFileName(p)).Concat(files).ToArray();
+        foreach(string file in files)
         {
             string path=Path.Combine(_root,"logs",file);if(!File.Exists(path))continue;
             result.AppendLine("── "+file+" · "+File.GetLastWriteTime(path).ToString("dd.MM HH:mm:ss")+" ──");
@@ -155,6 +158,14 @@ public sealed class Backend : IDisposable
         if(message.Contains("Another network operation"))return "Другая сетевая операция ещё выполняется. Дождись её завершения.";
         if(message.Contains("Another WireSock profile"))return "В WireSock подключён другой профиль. Сначала отключи его в WireSock, затем подключи RoutePilot.";
         if(message.Contains("No active physical"))return "Нет активного подключения Wi-Fi или Ethernet.";
+        if(message.Contains("CLI was not found"))return "WireSock не найден. Выбери его в окне подключения.";
+        if(message.Contains("WireSock state could not be verified"))return "Статус WireSock пока не подтверждён. Подожди или проверь его службу.";
+        if(message.Contains("Stop the current RoutePilot engine"))return "Другая копия CITA Route управляет сетью. Сначала отключи маршрут в ней.";
+        if(message.Contains("Disconnect RoutePilot before"))return "Перед настройкой отключи действующий маршрут CITA Route. Подробности — в журнале.";
+        if(message.Contains("Select an existing WireSock"))return "Профиль больше не доступен. Выбери другой профиль подключения.";
+        if(message.Contains("EgressMismatch"))return "Выход VPN отличается от профиля. Проверь IP выхода в расширенных настройках.";
+        if(message.Contains("data path did not pass"))return "VPN не прошёл проверку HTTPS. Проверь профиль и доступность сервера.";
+        if(message.Contains("Connection operation cancelled"))return "Подключение отменено.";
         return string.IsNullOrWhiteSpace(message)?"Операция не завершена. Открой журнал.":message;
     }
     public void Dispose()=>_http.Dispose();

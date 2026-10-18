@@ -67,6 +67,7 @@ function Repair-SessionVpn([string]$ExpectedId) {
     # Caller owns the rescue lease AND network-control.lock. No router/policy restart.
     if(-not(Test-RecoverySession $ExpectedId)){return}
     $session=Read-JsonFile (Join-Path $runtime 'session.json')
+    if($session.vpnHoldReason){return}
     if(-not @(Get-SessionRouter $session).Count){return}
     $signature=Get-SessionNetworkSignature
     if($signature -ne $session.networkSignature){throw 'Network changed; component repair deferred.'}
@@ -116,12 +117,27 @@ function Complete-SessionHealthProbe($Probe,$Session) {
     if($Probe.sessionId -ne $Session.id -or $Probe.bridgeGeneration -ne $Session.bridgeGeneration -or -not $Session.running -or -not $Session.bridgeReady){Stop-SessionHealthProbe $Probe;return @{discarded=$true}}
     if(-not $Probe.process.HasExited -and ([DateTime]::UtcNow-$Probe.startedUtc).TotalSeconds -lt 20){return $null}
     try {
-        $healthy=$false
+        $healthy=$false;$code='Unverified'
         if($Probe.process.HasExited -and $Probe.process.ExitCode -eq 0 -and $Probe.output.IsCompleted -and $Probe.errorOutput.IsCompleted){
-            try{$result=$Probe.output.GetAwaiter().GetResult() | ConvertFrom-Json;$healthy=$result.healthy -eq $true}catch{}
+            try{$result=$Probe.output.GetAwaiter().GetResult() | ConvertFrom-Json;$healthy=$result.healthy -eq $true;if($result.code -in @('Verified','StatusUnavailable','ProfileNotConnected','ProfileChanged','MissingExpectedEgress','EgressMismatch','ControlHttpsUnavailable','InvalidConfiguration')){$code=$result.code}}catch{}
         }
-        return @{discarded=$false;sessionId=$Session.id;bridgeGeneration=$Session.bridgeGeneration;healthy=$healthy;message=$(if($healthy){'Managed VPN HTTPS verified.'}else{'VPN HTTPS could not be verified; no full network restart requested.'});updatedUtc=[DateTime]::UtcNow.ToString('o')}
+        return @{discarded=$false;sessionId=$Session.id;bridgeGeneration=$Session.bridgeGeneration;healthy=$healthy;code=$code;message=$(if($healthy){'Managed VPN HTTPS verified.'}else{'VPN HTTPS could not be verified; no full network restart requested.'});updatedUtc=[DateTime]::UtcNow.ToString('o')}
     }finally{Stop-SessionHealthProbe $Probe}
+}
+
+function Set-UnsafeVpnHold($Health) {
+    if($Health.healthy -or $Health.code -ne 'EgressMismatch'){return}
+    $held=$null;$leased=$false
+    try {
+        Invoke-AgentCoordinator 'begin-operation';$leased=$true
+        $held=[IO.File]::Open((Join-Path $runtime 'network-control.lock'),'OpenOrCreate','ReadWrite','None')
+        if(-not(Test-RecoverySession $Health.sessionId)){return}
+        $current=Read-JsonFile (Join-Path $runtime 'session.json')
+        if($current.bridgeGeneration -ne $Health.bridgeGeneration){return}
+        $current|Add-Member -NotePropertyName vpnHoldReason -NotePropertyValue 'EgressMismatch' -Force
+        Write-JsonFile (Join-Path $runtime 'session.json') $current
+        Invoke-BridgeUpdate $false
+    }finally{if($held){$held.Dispose()};if($leased){Invoke-AgentCoordinator 'end-operation'}}
 }
 
 function Watch-Session([string]$WatchScript) {
@@ -169,6 +185,19 @@ function Watch-Session([string]$WatchScript) {
             if($signature -ne 'unavailable' -and $session.networkSignature -and $signature -ne $session.networkSignature){$networkMismatch++}else{$networkMismatch=0}
             if($observation.state -eq 'Disconnected'){$disconnected++}else{$disconnected=0}
             $action=Get-WatchRecoveryAction $routerAlive $networkMismatch $observation.state $disconnected
+            # A busy coordinator must not lose a confirmed mismatch. Retry only
+            # a fresh result from this exact session and bridge generation.
+            if(-not $session.vpnHoldReason){
+                try{
+                    $pendingHealth=Read-JsonFile (Join-Path $runtime 'session-health.json')
+                    $healthAge=([DateTime]::UtcNow-[DateTime]::Parse($pendingHealth.updatedUtc).ToUniversalTime()).TotalSeconds
+                    if($pendingHealth.code -eq 'EgressMismatch' -and $pendingHealth.sessionId -eq $session.id -and $pendingHealth.bridgeGeneration -eq $session.bridgeGeneration -and $healthAge -ge -2 -and $healthAge -lt 90){
+                        Set-UnsafeVpnHold $pendingHealth
+                        $session=Read-JsonFile (Join-Path $runtime 'session.json')
+                    }
+                }catch{}
+            }
+            if($session.vpnHoldReason){$action='Observe'}
             if($action -ne 'Observe'){
                 Stop-SessionHealthProbe $probe;$probe=$null;$healthySince=$null
                 if($budget[$action] -lt 3 -and [DateTime]::UtcNow -ge $nextAttempt){
@@ -185,7 +214,7 @@ function Watch-Session([string]$WatchScript) {
             # Pause on Unknown/Foreign as well as Disconnected: this bridge has no
             # independently enforced VPN-only egress when WireSock is unavailable.
             $bridgeAlive=@(Get-SessionBridge $session).Count -gt 0
-            $needsBridge=if($connected){-not $bridgeAlive -or -not $session.bridgeReady}else{$bridgeAlive -or $session.bridgeReady}
+            $needsBridge=if($connected -and -not $session.vpnHoldReason){-not $bridgeAlive -or -not $session.bridgeReady}else{$bridgeAlive -or $session.bridgeReady}
             if($needsBridge -and (-not $connected -or ($budget.Bridge -lt 3 -and [DateTime]::UtcNow -ge $nextBridge))){
                 try {
                     $attempted=Update-WireSockBridge $connected $session.id -ReportAttempt
@@ -204,12 +233,16 @@ function Watch-Session([string]$WatchScript) {
                     $probe=$null
                     if(-not $completed.discarded){
                         Write-JsonFile (Join-Path $runtime 'session-health.json') $completed
+                        if($completed.code -eq 'EgressMismatch'){
+                            try{Set-UnsafeVpnHold $completed}catch{}
+                            $session=Read-JsonFile (Join-Path $runtime 'session.json')
+                        }
                         if($completed.healthy){$healthFailures=0}else{$healthFailures++}
                         $nextHealth=[DateTime]::UtcNow.AddSeconds($(if($healthFailures -eq 1){5}else{30}))
                     }
                 }
             }
-            if($connected -and $session.bridgeReady -and -not $probe -and [DateTime]::UtcNow -ge $nextHealth){
+            if($connected -and $session.bridgeReady -and -not $session.vpnHoldReason -and -not $probe -and [DateTime]::UtcNow -ge $nextHealth){
                 try{$probe=Start-SessionHealthProbe $session}
                 catch{$healthFailures++;$nextHealth=[DateTime]::UtcNow.AddSeconds(30)}
             }
@@ -227,7 +260,8 @@ function Watch-Session([string]$WatchScript) {
                 $nextPolicy=[DateTime]::UtcNow.AddSeconds((Get-RecoveryDelay $budget.Policy))
             }
             $phase='Watching';$reason=''
-            if($observation.state -eq 'Foreign'){$phase='NeedsAttention';$reason='Another WireSock profile is active'}
+            if($session.vpnHoldReason){$phase='NeedsAttention';$reason='VPN exit mismatch; disconnect and check selected profile'}
+            elseif($observation.state -eq 'Foreign'){$phase='NeedsAttention';$reason='Another WireSock profile is active'}
             elseif(-not $connected){$phase='Suspect';$reason='Managed VPN connection is not confirmed'}
             elseif((-not $session.bridgeReady -and $budget.Bridge -ge 3) -or (-not(Test-PolicyProcess) -and $budget.Policy -ge 3)){$phase='NeedsAttention';$reason='Component retry limit reached'}
             elseif(-not $session.bridgeReady -or -not(Test-PolicyProcess)){$phase='Degraded';$reason='A component is unavailable'}

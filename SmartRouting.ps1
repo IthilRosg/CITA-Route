@@ -3,6 +3,7 @@ param(
     [ValidateSet('Prepare','ProxyOnly','Start','Stop','Status','Watch','UpdateRules','SyncProfile','Reconnect','RepairVpn')]
     [string]$Action = 'Start',
     [string]$ExpectedSessionId = '',
+    [ValidatePattern('^([a-fA-F0-9]{32})?$')][string]$OperationId = '',
     [switch]$Setup
 )
 
@@ -55,6 +56,7 @@ function Connect-WireSock {
     try {
         $deadline = [DateTime]::UtcNow.AddSeconds(35)
         while ([DateTime]::UtcNow -lt $deadline) {
+            Assert-ConnectionOperation
             if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
             $observation=Get-WireSockObservation
             if($observation.state -eq 'Connected'){return}
@@ -379,6 +381,7 @@ function Prepare-Configuration {
 }
 
 function Start-Helper([string]$Exe,[string]$Config) {
+    Assert-ConnectionOperation
     if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Helper start cancelled by Stop.'}
     $startupLog = Join-Path $root ('logs\' + [IO.Path]::GetFileNameWithoutExtension($Exe) + '-startup.log')
     $process = Start-Process -FilePath $Exe -ArgumentList @('run','-c',('"' + $Config + '"'),'--disable-color') `
@@ -388,6 +391,7 @@ function Start-Helper([string]$Exe,[string]$Config) {
     $deadline=[DateTime]::UtcNow.AddSeconds(8)
     $ready=$false
     do {
+        Assert-ConnectionOperation
         if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){$process | Stop-Process -Force;throw 'Helper start cancelled by Stop.'}
         if($process.HasExited){throw "Helper exited: $Exe. See the logs folder."}
         $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $process.Id | ForEach-Object LocalPort)
@@ -403,6 +407,7 @@ if ($Action -eq 'Watch') {
     exit
 }
 if ($Action -eq 'UpdateRules') {
+    Write-ConnectionProgress 'UpdatingRules'
     Invoke-AgentCoordinator 'begin-operation'
     try { Update-RuleFeeds } finally { Invoke-AgentCoordinator 'end-operation' }
     exit
@@ -469,10 +474,10 @@ if ($Action -eq 'Reconnect') {
     if($wireState -eq 'Connected'){Invoke-WireSock @('disconnect') | Out-Null}
 }
 if ($Action -eq 'Stop') {
+    Write-ConnectionProgress 'Stopping'
     Stop-OurProcesses
     Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;bridgeReady=$false;stoppedUtc=[DateTime]::UtcNow.ToString('o')}
-    $statusText = (Invoke-WireSock @('status')) -join ' '
-    if ($statusText -match [regex]::Escape($smartProfile)) { Invoke-WireSock @('disconnect') }
+    Disconnect-ManagedWireSock
     Write-Host 'Smart routing stopped. The original WireSock profile is unchanged.'
     exit
 }
@@ -485,14 +490,16 @@ if ($Action -eq 'Start') {
 }
 if ((Get-OurProcesses).Count) { throw 'Smart routing is already running. Stop it before restarting.' }
 if($Action -in @('Start','ProxyOnly')){
-    $existingStatus=(Invoke-WireSock @('status')) -join ' '
-    if($existingStatus -notmatch [regex]::Escape($smartProfile) -and $existingStatus.Trim() -notmatch '(?i)^(Нет подключения|Not connected|No connection)$'){
+    $startupObservation=Get-WireSockObservation
+    if($startupObservation.state -eq 'Foreign'){
         throw 'Another WireSock profile is in use. Disconnect it in WireSock before starting RoutePilot.'
     }
+    if($startupObservation.state -notin @('Connected','Disconnected')){throw 'WireSock state could not be verified. Wait and check the WireSock service.'}
 }
 if($Action -in @('Start','ProxyOnly')){Stop-OurProcesses}
 if($Action -in @('Start','ProxyOnly')){Remove-Item -LiteralPath (Join-Path $runtime 'stop.request') -Force -ErrorAction SilentlyContinue}
 try {
+Write-ConnectionProgress 'Preparing'
 Prepare-Configuration
 if ($Action -eq 'Prepare') { exit }
 if ($Action -eq 'SyncProfile') {
@@ -504,6 +511,7 @@ $occupied=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | W
 if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupied.LocalPort | Sort-Object -Unique) -join ', '))}
 
     Sync-WireSockProfile $smartProfile (Join-Path $private ($smartProfile + '.conf')) (Join-Path $private 'profile-backups')
+    Write-ConnectionProgress 'Connecting'
     Connect-WireSock
     if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
     Invoke-WireSock @('status')
@@ -511,9 +519,11 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
         & (Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe') --prepare-policy $root
         if($LASTEXITCODE -ne 0){throw 'The checked policy snapshot could not be prepared.'}
     }
+    Write-ConnectionProgress 'StartingBridge'
     $bridgeProcess = Start-Helper $bridgeExe (Join-Path $runtime 'bridge.json')
     $sessionMode=if($Action -eq 'Reconnect'){$previous.mode}else{$Action}
     $configFile = if ($sessionMode -eq 'ProxyOnly') { 'router-proxy.json' } else { 'router.json' }
+    Write-ConnectionProgress 'StartingRouter'
     $routerProcess = Start-Helper $routerExe (Join-Path $runtime $configFile)
     Write-JsonFile (Join-Path $runtime 'session.json') @{
         running=$true;id=[guid]::NewGuid().ToString('N');startedUtc=[DateTime]::UtcNow.ToString('o')
@@ -521,18 +531,23 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
         bridgePid=$bridgeProcess.Id;bridgeStartedUtc=$bridgeProcess.StartTime.ToUniversalTime().ToString('o');bridgeGeneration=1;bridgeReady=$false;mode=$sessionMode;sourceProfile=$sourceProfile
         recovering=$true;recoveryParentId=$(if($Action -eq 'Reconnect'){$ExpectedSessionId}else{''});networkSignature=(Get-SessionNetworkSignature)
     }
+    Write-ConnectionProgress 'ApplyingPolicy'
     Start-PolicyController
     $startedSession=Read-JsonFile (Join-Path $runtime 'session.json')
     $policyDeadline=[DateTime]::UtcNow.AddSeconds(30);$policyReady=$false
     do {
+        Assert-ConnectionOperation
+        if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
         try {$policyState=Read-JsonFile (Join-Path $runtime 'policy-state.json');$policyReady=$policyState.epoch.StartsWith($startedSession.id+':') -and $policyState.phase -in @('Auto','Lists')}catch{}
         if(-not $policyReady){Start-Sleep -Milliseconds 150}
     }while(-not $policyReady -and [DateTime]::UtcNow -lt $policyDeadline)
     if(-not $policyReady){throw 'The routing controller did not become ready.'}
+    Write-ConnectionProgress 'Verifying'
     $health=& (Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe') --session-health | ConvertFrom-Json
+    Assert-ConnectionOperation
     if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
     if(-not $health.healthy){throw 'The AWG2 data path did not pass HTTPS verification.'}
-    Write-JsonFile (Join-Path $runtime 'session-health.json') @{sessionId=$startedSession.id;healthy=$true;message=$health.message;updatedUtc=[DateTime]::UtcNow.ToString('o')}
+    Write-JsonFile (Join-Path $runtime 'session-health.json') @{sessionId=$startedSession.id;bridgeGeneration=$startedSession.bridgeGeneration;healthy=$true;code='Verified';message=$health.message;updatedUtc=[DateTime]::UtcNow.ToString('o')}
     $startedSession.recovering=$false;$startedSession.bridgeReady=$true
     Write-JsonFile (Join-Path $runtime 'session.json') $startedSession
     Remove-Item -LiteralPath (Join-Path $root 'logs\connection-lost.txt'),(Join-Path $root 'logs\recovery-error.log') -Force -ErrorAction SilentlyContinue
@@ -554,8 +569,7 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
             $previous | Add-Member -NotePropertyName bridgeReady -NotePropertyValue $false -Force
             Write-JsonFile (Join-Path $runtime 'session.json') $previous
         }else{Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;bridgeReady=$false;stoppedUtc=[DateTime]::UtcNow.ToString('o')}}
-        $failedStatus = (Invoke-WireSock @('status')) -join ' '
-        if ($failedStatus -match [regex]::Escape($smartProfile)) { Invoke-WireSock @('disconnect') | Out-Null }
+        Disconnect-ManagedWireSock
     } catch { [IO.File]::WriteAllText((Join-Path $root 'logs\cleanup-error.log'),$_.Exception.Message) }
     throw $startFailure
 }

@@ -15,7 +15,7 @@ public static class Program
             if(args.Length==1 && args[0]=="--self-test"){await AgentTests.Run();return 0;}
             if(args.Length==1 && args[0]=="--service"){NativeService.Run();return 0;}
             if(args.Length==1 && args[0]=="--configure-service-recovery"){ServiceRecovery.Configure();return 0;}
-            if(args.Length==1 && args[0]=="--session-health"){var health=await NetworkProbe.CheckEgress();Console.WriteLine(JsonSerializer.Serialize(new{healthy=health.Verified,message=health.Message}));return 0;}
+            if(args.Length==1 && args[0]=="--session-health"){var health=await NetworkProbe.CheckEgressDetailed();Console.WriteLine(JsonSerializer.Serialize(new{schema=2,healthy=health.Verified,code=health.Code,message=health.Message}));return 0;}
             if(args.Length>=1 && args[0]=="--probe-worker"){await ProbeWorker.Run(args);return 0;}
             if(args.Length==2 && args[0]=="--cleanup-worker"){await ProbeWorker.Cleanup(args[1]);return 0;}
             if(args.Length==2 && args[0]=="--policy-worker"){await PolicyWorker.Run(args[1]);return 0;}

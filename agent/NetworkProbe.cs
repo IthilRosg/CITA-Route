@@ -11,19 +11,30 @@ using System.Net.Sockets;
 
 namespace RoutePilot.Agent;
 
+public sealed record EgressHealth(bool Verified,string Code,string Message);
+
 public static class NetworkProbe
 {
-    public static async Task<(bool Verified,string Message)> CheckEgress()
+    public static async Task<(bool Verified,string Message)> CheckEgress(CancellationToken cancellation=default)
+    {
+        var result=await CheckEgressDetailed(cancellation);return(result.Verified,result.Message);
+    }
+    public static async Task<EgressHealth> CheckEgressDetailed(CancellationToken cancellation=default)
     {
         try
         {
             string config=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"RoutePilot","Agent","agent-config.json");
-            using var settings=System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(config));
-            return await VerifyConfiguredEgress(settings.RootElement,ReadWireSockStatus,async()=>(await Trace("socks5://127.0.0.1:20808")).Ip);
+            using var settings=System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(config,cancellation));
+            return await VerifyConfiguredEgressDetailed(settings.RootElement,image=>ReadWireSockStatus(image,cancellation),async()=>(await Trace("socks5://127.0.0.1:20808",cancellation:cancellation)).Ip,cancellation);
         }
-        catch(Exception ex){return(false,"Не подтверждён VPN-выход: "+ex.GetBaseException().Message);}
+        catch(OperationCanceledException)when(cancellation.IsCancellationRequested){throw;}
+        catch(Exception){return new(false,"InvalidConfiguration","Проверь настройку выбранного подключения.");}
     }
     internal static async Task<(bool Verified,string Message)> VerifyConfiguredEgress(System.Text.Json.JsonElement values,Func<string,Task<string>> readStatus,Func<Task<IPAddress>> trace)
+    {
+        var result=await VerifyConfiguredEgressDetailed(values,readStatus,trace);return(result.Verified,result.Message);
+    }
+    internal static async Task<EgressHealth> VerifyConfiguredEgressDetailed(System.Text.Json.JsonElement values,Func<string,Task<string>> readStatus,Func<Task<IPAddress>> trace,CancellationToken cancellation=default)
     {
             string expected;
             string? cli=null;
@@ -31,37 +42,49 @@ public static class NetworkProbe
             {
                 expected=configured.GetString()??"";
                 cli=values.GetProperty("WireSockCliPath").GetString();
-                string status=await readStatus(cli!);
-                if(!ManagedProfileConnected(status))return(false,"Выбранный профиль RoutePilot в WireSock не подключён.");
-                if(string.IsNullOrEmpty(expected))expected=ReportedEgress(status)??throw new IOException("WireSock не сообщил внешний IPv4. Укажи IP выхода VPN в настройках подключения.");
+                string status;
+                try{status=await readStatus(cli!);}catch(OperationCanceledException)when(cancellation.IsCancellationRequested){throw;}catch(Exception){return new(false,"StatusUnavailable","Не удалось прочитать состояние WireSock. Проверка будет повторена.");}
+                if(!ManagedProfileConnected(status))return new(false,"ProfileNotConnected","Выбранный профиль CITA Route в WireSock не подключён.");
+                if(string.IsNullOrEmpty(expected))expected=ReportedEgress(status)??"";
+                if(expected.Length==0)return new(false,"MissingExpectedEgress","WireSock не сообщил внешний IPv4. Укажи IP выхода VPN в настройках подключения.");
             }
             else expected=values.GetProperty("EndpointIp").GetString()!; // Existing protected installations.
-            var vpn=await trace();
-            if(cli!=null && !ManagedProfileConnected(await readStatus(cli)))return(false,"Профиль WireSock сменился во время проверки.");
+            IPAddress vpn;
+            try{vpn=await trace();}catch(OperationCanceledException)when(cancellation.IsCancellationRequested){throw;}catch(Exception){return new(false,"ControlHttpsUnavailable","Контрольная проверка HTTPS временно не прошла.");}
+            if(cli!=null)
+            {
+                string status;
+                try{status=await readStatus(cli);}catch(OperationCanceledException)when(cancellation.IsCancellationRequested){throw;}catch(Exception){return new(false,"StatusUnavailable","Состояние WireSock после проверки не подтверждено.");}
+                if(!ManagedProfileConnected(status))return new(false,"ProfileChanged","Профиль WireSock сменился во время проверки.");
+                if(string.IsNullOrEmpty(values.GetProperty("ExpectedEgressIp").GetString()) && ReportedEgress(status)!=expected)
+                    return new(false,"ProfileChanged","Выход WireSock изменился во время проверки; повторяем проверку.");
+            }
             // A VPN can use a separate NAT exit. Compare with the selected client's
             // reported exit (or an explicit protected assertion), never its UDP endpoint.
             return vpn.ToString()==expected
-                ?(true,"HTTPS/IPv4 через выбранный выход WireSock подтверждён.")
-                :(false,"HTTPS работает, но IP выхода не совпадает с проверяемым профилем WireSock.");
+                ?new(true,"Verified","HTTPS/IPv4 через выбранный выход WireSock подтверждён.")
+                :new(false,"EgressMismatch","IP выхода отличается от выбранного профиля. Проверь настройки подключения.");
     }
     public static bool ManagedProfileConnected(string status)=>
+        System.Text.RegularExpressions.Regex.Matches(status,@"(?im)^.*(?:profile|профиля)[ \t]+\S.*$").Count==1 &&
         System.Text.RegularExpressions.Regex.IsMatch(status,@"(?im)^.*(?:profile|профиля)\s+SmartRouting-AWG2\s*$") &&
+        !System.Text.RegularExpressions.Regex.IsMatch(status,@"\b(?:Not connected|NotConnected|Disconnected|Disconnecting|Connecting)\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
         System.Text.RegularExpressions.Regex.IsMatch(status,@"Connected to|Подключено к серверу",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     public static string? ReportedEgress(string status)
     {
         var match=System.Text.RegularExpressions.Regex.Match(status,@"(?im)^\s*(?:Внешний (?:адрес|IP)|External (?:IP(?: address)?|address))\s*:\s*(\d{1,3}(?:\.\d{1,3}){3})(?:[,\s]|$)");
         return match.Success && IPAddress.TryParse(match.Groups[1].Value,out var ip) && ip.AddressFamily==AddressFamily.InterNetwork?ip.ToString():null;
     }
-    static async Task<string> ReadWireSockStatus(string image)
+    static async Task<string> ReadWireSockStatus(string image,CancellationToken cancellation)
     {
         var info=new ProcessStartInfo(image){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
         info.ArgumentList.Add("status");
         using var process=Process.Start(info)??throw new IOException("Не удалось проверить WireSock.");
         using var output=new MemoryStream();using var error=new MemoryStream();
         var stdout=process.StandardOutput.BaseStream.CopyToAsync(output);var stderr=process.StandardError.BaseStream.CopyToAsync(error);
-        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(4));
+        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(cancellation);timeout.CancelAfter(TimeSpan.FromSeconds(4));
         try{await process.WaitForExitAsync(timeout.Token);}catch{try{process.Kill(true);}catch{}throw;}
-        await Task.WhenAll(stdout,stderr);
+        await Task.WhenAll(stdout,stderr).WaitAsync(timeout.Token);
         if(process.ExitCode!=0)throw new IOException("WireSock status недоступен.");
         System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
         try{return new System.Text.UTF8Encoding(false,true).GetString(output.ToArray());}

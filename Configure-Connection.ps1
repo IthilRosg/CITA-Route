@@ -1,8 +1,10 @@
 ﻿[CmdletBinding()]
 param([ValidateSet('Discover','Apply','Import')][string]$Action='Discover',
-    [string]$SourceProfile='', [string]$CliPath='', [string]$ImportPath='', [string]$ExpectedEgressIp='', [string]$UserSid='', [string]$UserProfile='')
+    [string]$SourceProfile='', [string]$CliPath='', [string]$ImportPath='', [string]$ExpectedEgressIp='', [string]$UserSid='', [string]$UserProfile='',
+    [ValidatePattern('^([a-fA-F0-9]{32})?$')][string]$OperationId='')
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
+$runtime=Join-Path $root 'runtime'
 if(-not $UserSid){$UserSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value}
 if(-not $UserProfile){$UserProfile=$env:USERPROFILE}
 . (Join-Path $root 'FileStorage.ps1')
@@ -27,6 +29,7 @@ New-Item -ItemType Directory -Path (Join-Path $root 'data'),(Join-Path $root 'ru
 $setupLock=$null
 try{
     $setupLock=[IO.File]::Open((Join-Path $root 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','None')
+    Write-ConnectionProgress 'Preparing'
     $sessionPath=Join-Path $root 'runtime\session.json'
     if((Test-Path -LiteralPath $sessionPath) -and (Read-JsonFile $sessionPath).running){throw 'Disconnect RoutePilot before selecting another connection.'}
     if(Get-Process -Name 'smart-router','vpn-bridge' -ErrorAction SilentlyContinue){throw 'Stop the current RoutePilot engine before setup.'}
@@ -53,9 +56,11 @@ try{
     $settingsPath=Join-Path $root 'data\connection.json'
     $old=if(Test-Path -LiteralPath $settingsPath){[IO.File]::ReadAllText($settingsPath)}else{$null}
     try{
+        Assert-ConnectionOperation
         Write-JsonFile $settingsPath @{Version=1;SourceProfile=$SourceProfile;CliPath=$cli;ExpectedEgressIp=$ExpectedEgressIp;UserSid=$UserSid}
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'SmartRouting.ps1') -Action Prepare -Setup
         if($LASTEXITCODE -ne 0){throw 'Connection preparation failed. Check WireSock transparent mode and the selected profile.'}
+        Write-ConnectionProgress 'Installing'
         # Run separately: a failed installer must not exit this transaction before rollback.
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Install-Agent.ps1') -UserSid $UserSid -UserProfile $UserProfile
         if($LASTEXITCODE -ne 0){throw 'Protected service installation failed. See logs/agent-install.log.'}

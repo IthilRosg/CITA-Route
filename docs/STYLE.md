@@ -19,10 +19,10 @@ sections and generous headings in Bahnschrift SemiCondensed with Windows font
 fallback. The application icon combines the panel's red square frame with the
 route glyph.
 
-The interaction reference for the planned compact view is
+The interaction reference for the compact view in the 0.5.0 candidate is
 [WireSock Secure Connect](https://wiresock.net/documentation/wiresock-secure-connect/get-started.html).
 Retain CITA's SIGNALIS-inspired palette and typography.
-The planned standard view uses a separate compact window: connection state,
+The standard view uses a separate 420 × 490 DIP window: connection state,
 profile name, one main action, small traffic/session/probe-loss statistics and a fixed
 status bar for the current operation. Keep navigation rails, large section
 headings, tables and diagnostic panels in the advanced view. Preserve the same
@@ -38,7 +38,10 @@ text label alongside colour. Preserve keyboard focus outlines, scrollable tables
 wrapping descriptions and readable popup backgrounds. Avoid flicker or animations
 over operational information.
 
-Preview every page using `RoutePilot.exe --render-all` and the minimum-size matrix
-using `RoutePilot.exe --render-all --compact`. Images are local artifacts and may
-contain real connection metadata; do not publish live captures. The renderer does
-not change routes or save user preferences.
+Preview advanced pages using `RoutePilot.exe --render-all`; use
+`RoutePilot.exe --render-all --compact` for compact disconnected, connecting,
+connected, recovering and attention states. Compact previews contain synthetic
+metadata; the renderer does not poll the live backend, change routes or save
+user preferences. Real captures may contain personal metadata and must not be
+published. Hardware checks at 125/150/200% DPI and on multiple monitors remain
+separate from bitmap previews.

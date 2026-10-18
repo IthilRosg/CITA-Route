@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Net.NetworkInformation;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -38,11 +39,14 @@ public partial class MainWindow : Window
     private RescueClient _rescue=null!;
     private RescueState _rescueState=new();
     private Task<(bool Verified,string Message)>? _egressCheck;
+    private CancellationTokenSource? _egressLifetime;
     private string _egressEpoch="",_egressMessage="VPN-выход ещё не проверен.";
     private bool _egressVerified;
     private DateTime _lastEgress=DateTime.MinValue;
+    private DateTime _fallbackVerifiedAt=DateTime.MinValue;
     private RoutingPolicyPreferences _routingPolicy=new();
     private string _savedHistory="",_savedPreferences="";
+    private string _connectionStatus="Отключено";
     public bool IsRefreshing=>_refreshing||_discovering;
     public void PreviewPage(int index)
     {
@@ -79,16 +83,17 @@ public partial class MainWindow : Window
             DomainRules.Read(Path.Combine(root,"force-vpn.txt")).Select(d=>new UserRule{Domain=d,Target="VPN"})).ToList();
         UpdateRulesGrid();UpdateHistoryLabels();
         _ready=true;
+        ApplyView(render?false:_preferences.ViewMode!="Advanced",false);
         Pages.SelectedIndex=0;
         if(!render)CreateTray();
         _timer.Interval=TimeSpan.FromSeconds(_preferences.RefreshSeconds);
         _timer.Tick+=async(_,_)=>{UpdateTelemetryInterval();await RefreshAsync();};
         _timer.Tick+=async(_,_)=>{if((DateTime.UtcNow-_lastUpdateCheck).TotalHours>=6)await CheckUpdatesAsync();};
-        Loaded+=async(_,_)=>{await DiscoverConnectionsAsync();if(!render){UpdateTelemetryInterval();_timer.Start();}await RefreshAsync();if(!render)_=CheckUpdatesAsync();};
+        Loaded+=async(_,_)=>{if(render)return;await DiscoverConnectionsAsync();UpdateTelemetryInterval();_timer.Start();await RefreshAsync();_=CheckUpdatesAsync();};
         Closing+=OnClosing;
         NavOverview.IsChecked=true;
-        if(NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.Name=="VPNUS" && n.OperationalStatus==OperationalStatus.Up))
-            Notice("VPNUS работает. Кнопка «Проверить» запустит автономный тест и автоматически вернёт VPNUS после проверки.");
+        LocationChanged+=(_,_)=>CapturePlacement();SizeChanged+=(_,_)=>CapturePlacement();
+        IsVisibleChanged+=(_,_)=>{UpdateTelemetryInterval();SyncConnectionButtons();};StateChanged+=(_,_)=>{UpdateTelemetryInterval();SyncConnectionButtons();};
     }
     private void CreateTray()
     {
@@ -108,17 +113,18 @@ public partial class MainWindow : Window
     private void OnClosing(object? sender,CancelEventArgs e)
     {
         if(_busy){e.Cancel=true;Notice("Дождись завершения текущей операции.");return;}
-        if(!_exiting && !_render && _preferences.CloseToTray){e.Cancel=true;Hide();return;}
+        if(!_exiting && !_render && _preferences.CloseToTray){e.Cancel=true;SaveData();Hide();return;}
         if(!_exiting)ExitApplication();
     }
     public void ExitApplication()
     {
-        if(_busy){ShowWindow();Notice("Дождись завершения текущей операции.");return;}
-        if(_exiting)return;_exiting=true;_updateLifetime.Cancel();_timer.Stop();SaveData();_tray?.Dispose();_backend.Dispose();Application.Current.Shutdown();
+        if(_busy&&!_render){ShowWindow();Notice("Дождись завершения текущей операции.");return;}
+        if(_exiting)return;_exiting=true;_connectionCancellation?.Cancel();_connectionCancellation?.Dispose();_updateLifetime.Cancel();_egressLifetime?.Cancel();_egressLifetime?.Dispose();_timer.Stop();SaveData();_tray?.Dispose();_backend.Dispose();Application.Current.Shutdown();
     }
     private void SaveData()
     {
         if(_render)return;
+        CapturePlacement();
         try
         {
             string history=JsonSerializer.Serialize(_history,AppPaths.Json),preferences=JsonSerializer.Serialize(_preferences,AppPaths.Json);
@@ -135,44 +141,57 @@ public partial class MainWindow : Window
     }
     public async Task RefreshAsync()
     {
-        if(!_ready || _refreshing || _exiting || _suppressTelemetry)return;
+        if(_render||!_ready || _refreshing || _exiting || _suppressTelemetry)return;
         _refreshing=true;
         try
         {
-            if((DateTime.UtcNow-_lastService).TotalSeconds>=5)
+            var session=AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession());
+            var cachedHealth=SessionHealthCache.Read(_root,session,DateTime.UtcNow);
+            bool owned=session.Running && !string.IsNullOrWhiteSpace(session.Id) && _backend.EngineRunning(session);
+            if(_compact&&!owned){_vpnConnected=false;}
+            else if(_compact&&owned&&cachedHealth.Watch is {} liveWatch)
+            {
+                _vpnConnected=liveWatch.WireSockState=="Connected";
+                WireSockStatusLabel.Text="WireSock · "+liveWatch.WireSockState;
+            }
+            else if((DateTime.UtcNow-_lastService).TotalSeconds>=5)
             {
                 _lastService=DateTime.UtcNow;
                 try{_serviceStatus=await _backend.WireSockStatusAsync();}catch{_serviceStatus="Служба WireSock временно недоступна";}
                 if(_exiting)return;
                 WireSockStatusLabel.Text=_serviceStatus;
-                _vpnConnected=_serviceStatus.Contains("SmartRouting-AWG2",StringComparison.OrdinalIgnoreCase) &&
-                    (_serviceStatus.Contains("Подключено к серверу",StringComparison.OrdinalIgnoreCase) || _serviceStatus.Contains("Connected to",StringComparison.OrdinalIgnoreCase));
+                _vpnConnected=RoutePilot.Agent.NetworkProbe.ManagedProfileConnected(_serviceStatus);
             }
             Snapshot? snapshot=null;
-            try{snapshot=await _backend.SnapshotAsync();}catch(Exception ex)when(ex is System.Net.Http.HttpRequestException or TaskCanceledException or IOException or JsonException){}
+            if(owned)try{snapshot=await _backend.SnapshotAsync();}catch(Exception ex)when(ex is System.Net.Http.HttpRequestException or TaskCanceledException or IOException or JsonException){}
             if(_exiting)return;
-            var session=AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession());
+            if(!owned)snapshot=null;
             _engineAvailable=snapshot!=null;
-            _engineRunning=_engineAvailable || _backend.EngineRunning(session) || (session.Running && session.Recovering);
+            _engineRunning=owned || (session.Running && session.Recovering && cachedHealth.Watch?.Phase=="Recovering");
             _bridgeReady=session.BridgeReady;
             RefreshRescueState();
-            RefreshPolicyState();
-            string egressEpoch=session.Id+":"+session.BridgePid;
+            if(!_compact)RefreshPolicyState();
+            string egressEpoch=session.Id+":"+session.BridgePid+":"+session.BridgeGeneration;
             if(_egressEpoch!=egressEpoch || !_engineAvailable || !_vpnConnected)
-            {_egressVerified=false;_egressMessage="VPN-выход ещё не проверен.";if(_egressEpoch!=egressEpoch){_egressEpoch=egressEpoch;_egressCheck=null;_lastEgress=DateTime.MinValue;}}
+            {_egressVerified=false;_fallbackVerifiedAt=DateTime.MinValue;_egressMessage="VPN-выход ещё не проверен.";if(_egressEpoch!=egressEpoch){_egressEpoch=egressEpoch;_egressLifetime?.Cancel();_egressLifetime?.Dispose();_egressLifetime=null;_egressCheck=null;_lastEgress=DateTime.MinValue;}}
             if(_engineAvailable && _vpnConnected && session.BridgeReady && !_rescueState.BlocksRouting)
             {
-                if(_egressCheck?.IsCompleted==true)
+                if(cachedHealth.Health is {} cached)
+                {_egressVerified=cached.Healthy;_fallbackVerifiedAt=DateTime.MinValue;_egressMessage=Backend.FriendlyHealth(cached.Code,cached.Healthy);}
+                else if(cachedHealth.Watching){_egressVerified=false;_egressMessage="Ожидаем проверку текущего соединения.";}
+                else if(!SessionHealthCache.Fresh(_fallbackVerifiedAt,DateTime.UtcNow,35)){_egressVerified=false;_egressMessage="Свежая проверка соединения ещё не получена.";}
+                if(cachedHealth.Watching && _egressCheck!=null){_egressLifetime?.Cancel();_egressCheck=null;}
+                if(!cachedHealth.Watching && cachedHealth.Health==null && _egressCheck?.IsCompleted==true)
                 {
-                    var health=await _egressCheck;_egressVerified=health.Verified;_egressMessage=health.Message;_egressCheck=null;
+                    try{var health=await _egressCheck;_egressVerified=health.Verified;_fallbackVerifiedAt=health.Verified?DateTime.UtcNow:DateTime.MinValue;_egressMessage=health.Message;}catch(OperationCanceledException){}finally{_egressCheck=null;}
                 }
-                if(_egressCheck==null && (DateTime.UtcNow-_lastEgress).TotalSeconds>=30)
-                {_lastEgress=DateTime.UtcNow;_egressCheck=_backend.VerifyVpnEgressAsync();}
+                if(!cachedHealth.Watching && cachedHealth.Health==null && _egressCheck==null && (DateTime.UtcNow-_lastEgress).TotalSeconds>=30)
+                {_lastEgress=DateTime.UtcNow;_egressLifetime?.Dispose();_egressLifetime=new();_egressCheck=_backend.VerifyVpnEgressAsync(_egressLifetime.Token);}
             }
             bool vpnReady=false;
             if(snapshot!=null)
             {
-                vpnReady=_vpnConnected && session.BridgeReady && _egressVerified;
+                vpnReady=_vpnConnected && session.BridgeReady && _egressVerified && string.IsNullOrEmpty(session.VpnHoldReason);
                 if(vpnReady)RememberVerifiedProfile(session);
                 string epoch=string.IsNullOrWhiteSpace(session.Id)?"unmanaged-"+_history.CreatedUtc.Ticks:session.Id;
                 var now=DateTime.UtcNow;
@@ -184,7 +203,8 @@ public partial class MainWindow : Window
                 _lastAt=now;_lastEpoch=epoch;_lastUpload=snapshot.Upload;_lastDownload=snapshot.Download;
                 _points.Add(new RatePoint(now,upload,download));_points.RemoveAll(p=>(now-p.Time).TotalSeconds>60);
                 DownloadRateLabel.Text=Format.Rate(download);UploadRateLabel.Text=Format.Rate(upload);
-                _connections=snapshot.Connections.OrderByDescending(c=>c.Download+c.Upload).ToList();
+                _connections=_compact?snapshot.Connections:snapshot.Connections.OrderByDescending(c=>c.Download+c.Upload).ToList();
+                CompactTraffic.Text=Format.Bytes(snapshot.Upload+snapshot.Download);
                 int vpn=_connections.Count(c=>c.IsVpn),dpi=_connections.Count(c=>c.IsDpi),direct=_connections.Count-vpn-dpi;
                 ConnectionCountLabel.Text=_connections.Count.ToString();VpnCountLabel.Text=vpn.ToString();DirectCountLabel.Text=direct.ToString()+(dpi>0?" + "+dpi+" DPI":"");VpnShareBar.Value=_connections.Count==0?0:(double)vpn/_connections.Count;
                 UptimeLabel.Text=session.Running?Format.Uptime(session.StartedUtc):"—";
@@ -194,27 +214,35 @@ public partial class MainWindow : Window
             else
             {
                 _lastAt=DateTime.MinValue;_connections.Clear();
+                CompactTraffic.Text="—";
                 DownloadRateLabel.Text=UploadRateLabel.Text=ConnectionCountLabel.Text=VpnCountLabel.Text=DirectCountLabel.Text="—";VpnShareBar.Value=0;UptimeLabel.Text="—";
                 SetStatus(_engineRunning?"Статистика недоступна":"Отключено",false);
                 FooterStatus.Text=_engineRunning?"Маршрутизатор запущен · API статистики недоступен":"Маршрутизатор остановлен · "+Format.Time;
                 _points.RemoveAll(p=>(DateTime.UtcNow-p.Time).TotalSeconds>60);
             }
-            TrafficChart.SetPoints(_points);UpdateConnectionGrids();UpdateHistoryLabels();UpdateFeedState();
+            if(!_compact){TrafficChart.SetPoints(_points);UpdateConnectionGrids();UpdateFeedState();}UpdateHistoryLabels();
             if(session.Running && session.Recovering){SetStatus("Автовосстановление",false);FooterStatus.Text="Маршрутизатор переподключается автоматически. «Отключить» отменит повторные попытки.";}
+            if(!string.IsNullOrEmpty(session.VpnHoldReason)){_egressVerified=false;SetStatus("Проверь подключение",false);FooterStatus.Text="Выход VPN не совпал с профилем. Отключи маршрут и проверь настройки подключения.";}
+            else if(cachedHealth.Watch?.Phase=="NeedsAttention"){SetStatus("Требуется внимание",false);FooterStatus.Text="Автовосстановление исчерпало попытки. Подробности — в расширенном журнале.";}
             if(_rescueState.Active){SetStatus("Автономный тест",false);FooterStatus.Text="Служба проверяет сеть и контролирует возврат VPNUS. Результаты — в настройках.";}
-            if(!_busy){ConnectButton.Content=_engineRunning?"Отключить":"Подключить";ConnectButton.IsEnabled=!_rescueState.BlocksRouting;}
+            if(vpnReady)_lastNoticeError=false;
+            _pendingConnectionOperation=ConnectionOperation.Active(_root)&&!_busy;
+            if(_pendingConnectionOperation){SetStatus("Ожидается завершение",false);FooterStatus.Text="Предыдущая операция завершается. Подробности — в журнале.";}
+            if(_busy&&_operationPhase.Length>0&&_operationPhase!="UpdatingRules")SetStatus(_operationPhase=="Cancelling"?"Отмена подключения":_operationPhase=="Stopping"?"Отключение…":"Подключение…",false);
+            SyncCompact();
             if(_trayToggle!=null){_trayToggle.Text=_engineRunning?"Отключить":"Подключить";_trayToggle.Enabled=!_busy&&!_rescueState.BlocksRouting;}
             if(_tray!=null)_tray.Text="CITA Route · "+(vpnReady?"подключено":_engineRunning?(_engineAvailable?"восстановление VPN":"нет статистики"):"отключено");
             if((DateTime.UtcNow-_lastSave).TotalSeconds>5){_lastSave=DateTime.UtcNow;SaveData();}
-            if(Pages.SelectedIndex==3)ShowLogs();
+            if(!_compact&&Pages.SelectedIndex==3)ShowLogs();
         }
         finally{_refreshing=false;}
         if(!_render&&!_exiting){if(_pendingUpdatePrompt)await ShowUpdatePromptAsync();await TryAutoInstallAsync();}
     }
     private void SetStatus(string label,bool connected)
     {
+        _connectionStatus=label;
         StatusLabel.Text=label.ToUpperInvariant();SidebarState.Text=label;
-        bool attention=label.Contains("восстанов",StringComparison.OrdinalIgnoreCase)||label.Contains("не проверен",StringComparison.OrdinalIgnoreCase)||label.Contains("недоступ",StringComparison.OrdinalIgnoreCase);
+        bool attention=label.Contains("восстанов",StringComparison.OrdinalIgnoreCase)||label.Contains("не проверен",StringComparison.OrdinalIgnoreCase)||label.Contains("недоступ",StringComparison.OrdinalIgnoreCase)||label.StartsWith("Проверь")||label.StartsWith("Требуется")||label.StartsWith("Ожидается");
         StatusBadge.Background=ConsoleTheme.Brush(connected?"#19221B":attention?"#2A231A":"#1B191B");
         StatusLabel.Foreground=connected?ConsoleTheme.Ok:attention?ConsoleTheme.Warn:ConsoleTheme.Dim;SidebarDot.Fill=StatusLabel.Foreground;
     }
@@ -238,13 +266,14 @@ public partial class MainWindow : Window
     private void UpdateRulesGrid()=>RulesGrid.ItemsSource=_rules.OrderBy(r=>r.Domain).ToList();
     private void Notice(string text,bool error=false)
     {
+        _lastNoticeError=error;_lastNoticeAt=DateTime.UtcNow;
         NoticeBorder.Visibility=Visibility.Visible;NoticeText.Text=text;
         NoticeBorder.Background=ConsoleTheme.Brush(error?"#2D1718":"#1E191B");
         NoticeBorder.BorderBrush=ConsoleTheme.Brush(error?"#8F2C2B":"#554548");
         NoticeText.Foreground=error?ConsoleTheme.Brush("#FFC2BD"):ConsoleTheme.Text;
+        SyncCompact();
     }
     private void Event(string text){_events.Insert(0,Format.Time+"  "+text);if(_events.Count>50)_events.RemoveAt(_events.Count-1);}
-    private async Task ToggleAsync(){if(_busy)return;if(_rescueState.BlocksRouting){Notice("Автономный тест управляет сетью. Дождись восстановления.");return;}if(!_engineRunning && (!_rescue.Installed || !File.Exists(Path.Combine(_root,"data","connection.json")) || File.Exists(Path.Combine(_root,"data","pending-agent-update.json")))){PreviewPage(4);await DiscoverConnectionsAsync();Notice("Выбери профиль WireSock и нажми «Применить подключение». Затем можно подключаться.");return;}await PerformActionAsync(_engineRunning?"Stop":"Start");}
     private void RefreshRescueState()
     {
         try{_rescueState=_rescue.ReadState();}
@@ -329,13 +358,14 @@ public partial class MainWindow : Window
         Notice(action=="Start"?"Подтверди запрос Windows. Подключаю WireSock и проверяю туннель…":action=="Stop"?"Отключаю умный маршрут…":"Загружаю и проверяю списки через VPN…");
         try
         {
-            var result=await _backend.ActionAsync(action,action!="UpdateRules");
+            var result=await ConnectionOperation.Run(_root,action,action!="UpdateRules",progress:OperationProgress());
+            _pendingConnectionOperation=result.Pending;
             string message=result.Success?(action=="Start"?"Умный маршрут подключён.":action=="Stop"?"Маршрут отключён.":"Списки обновлены. Новые соединения используют свежие правила."):Backend.FriendlyError(result.Message);
             Notice(message,!result.Success);Event(message);_lastService=DateTime.MinValue;return result.Success;
         }
         catch(Win32Exception ex)when(ex.NativeErrorCode==1223){Notice("Запрос Windows отменён. Настройки сети не изменены.");return false;}
         catch(Exception ex){Notice(Backend.FriendlyError(ex.Message),true);Event(ex.Message);return false;}
-        finally{_busy=false;ConnectButton.IsEnabled=true;DiagnosticsButton.IsEnabled=true;UpdateFeedsButton.IsEnabled=true;await RefreshAsync();}
+        finally{_busy=false;_operationPhase="";++_uiOperationGeneration;ConnectButton.IsEnabled=true;DiagnosticsButton.IsEnabled=true;UpdateFeedsButton.IsEnabled=true;await RefreshAsync();SyncCompact();}
     }
     private async void Connect_Click(object sender,RoutedEventArgs e)=>await ToggleAsync();
     private async void Diagnostics_Click(object sender,RoutedEventArgs e)
@@ -413,7 +443,7 @@ public partial class MainWindow : Window
     {
         if(!_ready)return;_preferences.CloseToTray=CloseToTrayBox.IsChecked==true;_preferences.RefreshSeconds=Math.Max(1,RefreshIntervalInput.SelectedIndex+1);UpdateTelemetryInterval();SaveData();
     }
-    private void TitleDrag(object sender,MouseButtonEventArgs e){if(e.ClickCount==2)WindowState=WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;else if(e.ButtonState==MouseButtonState.Pressed)try{DragMove();}catch(InvalidOperationException){}}
+    private void TitleDrag(object sender,MouseButtonEventArgs e){if(e.ClickCount==2){if(!_compact)WindowState=WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;}else if(e.ButtonState==MouseButtonState.Pressed)try{DragMove();}catch(InvalidOperationException){}}
     private void Minimize_Click(object sender,RoutedEventArgs e)=>WindowState=WindowState.Minimized;
     private void Maximize_Click(object sender,RoutedEventArgs e)=>WindowState=WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;
     private void Close_Click(object sender,RoutedEventArgs e)=>Close();

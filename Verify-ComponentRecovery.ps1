@@ -31,6 +31,15 @@ try {
     $clock=[Diagnostics.Stopwatch]::StartNew();$timedOut=$false
     try{Read-HelperOutput (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') '-NoProfile -Command "Start-Sleep -Seconds 30"' | Out-Null}catch{$timedOut=$true}
     Assert ($timedOut -and $clock.Elapsed.TotalSeconds -lt 7) 'A stuck status helper blocked beyond its budget.'
+    $script:identityStatus='';$script:identityDisconnects=0
+    function Read-WireSockStatus {$script:identityStatus}
+    function Invoke-WireSock($Arguments){Assert ($Arguments[0] -eq 'disconnect') 'Unexpected identity-test CLI mutation';$script:identityDisconnects++}
+    foreach($identity in @('Connected to server from profile SmartRouting-AWG2-copy',"Connected to server from profile SmartRouting-AWG2`nConnected to server from profile Other",'Connecting from profile Other','Unknown')){
+        $script:identityStatus=$identity;Disconnect-ManagedWireSock
+        Assert ($script:identityDisconnects -eq 0) 'Stop/cleanup disconnected a foreign or unverified profile.'
+    }
+    $script:identityStatus='Connecting from profile SmartRouting-AWG2';Disconnect-ManagedWireSock
+    Assert ($script:identityDisconnects -eq 1) 'Cancellation left the owned handshake running.'
 
     $script:bridgeRunning=$true;$script:state='Unknown';$script:connects=0;$script:stops=0;$script:starts=0;$script:leases=0
     $script:coordinatorBusy=$false
@@ -64,6 +73,17 @@ try {
     $script:state='Disconnected';Repair-SessionVpn 'session';Update-WireSockBridge $false 'session'
     Assert ($script:connects -eq 1 -and $script:bridgeRunning) 'Stop did not suppress late recovery callbacks.'
     Remove-Item -LiteralPath (Join-Path $runtime 'stop.request')
+
+    $guarded=Read-JsonFile $path
+    $script:state='Connected'
+    Set-UnsafeVpnHold @{sessionId='old-session';bridgeGeneration=$guarded.bridgeGeneration;healthy=$false;code='EgressMismatch'}
+    Assert $script:bridgeRunning 'Old-generation health paused a newer bridge.'
+    Set-UnsafeVpnHold @{sessionId='session';bridgeGeneration=$guarded.bridgeGeneration;healthy=$false;code='ControlHttpsUnavailable'}
+    Assert $script:bridgeRunning 'Control-site failure paused a working bridge.'
+    Set-UnsafeVpnHold @{sessionId='session';bridgeGeneration=$guarded.bridgeGeneration;healthy=$false;code='EgressMismatch'}
+    Assert (-not $script:bridgeRunning -and (Read-JsonFile $path).vpnHoldReason -eq 'EgressMismatch') 'Mismatched egress was not paused.'
+    Update-WireSockBridge $true 'session'
+    Assert (-not $script:bridgeRunning) 'Automatic bridge retry bypassed the held VPN exit.'
 
     # Exercise the actual Watch loop with observations/process launches substituted.
     # This detects integration errors beyond testing the recovery decision table.

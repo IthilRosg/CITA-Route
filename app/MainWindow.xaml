@@ -1,7 +1,8 @@
-﻿<Window x:Class="RoutePilot.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:RoutePilot" xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework" Title="CITA Route — умный роутинг" Width="1360" Height="900" MinWidth="1120" MinHeight="760" Background="{StaticResource Bg}" Foreground="#F0EADB" WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize">
+<Window x:Class="RoutePilot.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:RoutePilot" xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework" Title="CITA Route — умный роутинг" Width="1360" Height="900" MinWidth="1120" MinHeight="760" Background="{StaticResource Bg}" Foreground="#F0EADB" WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize">
   <shell:WindowChrome.WindowChrome><shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0"/></shell:WindowChrome.WindowChrome>
   <Border BorderBrush="#3D3839" BorderThickness="1" CornerRadius="0">
     <Grid>
+    <Grid x:Name="AdvancedHost" Visibility="Collapsed">
       <Grid.ColumnDefinitions><ColumnDefinition Width="220"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
       <Border Background="#101011" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
         <DockPanel Margin="16,24,16,20">
@@ -19,9 +20,10 @@
             <RadioButton x:Name="NavSettings" AutomationProperties.Name="Настройки" GroupName="Nav" Style="{StaticResource Nav}" Tag="4" Checked="Navigate_Click"><StackPanel Orientation="Horizontal"><TextBlock Text="05" FontFamily="Consolas" FontSize="10" Foreground="{StaticResource Accent}" Margin="0,2,13,0"/><TextBlock Text="НАСТРОЙКИ" FontFamily="Consolas" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"/></StackPanel></RadioButton>
           </StackPanel>
           <StackPanel DockPanel.Dock="Bottom" VerticalAlignment="Bottom">
+            <Button Content="КОМПАКТНЫЙ ВИД ↗" Click="CompactView_Click" FontSize="10" Margin="0,0,0,12" AutomationProperties.Name="Компактный вид"/>
             <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Padding="8,17,0,18"><StackPanel><TextBlock Text="ПОЛИТИКА МАРШРУТОВ" FontFamily="Consolas" FontSize="9" Foreground="{StaticResource Faint}"/><TextBlock Text="Ограниченные сайты → VPN" FontSize="11" Margin="0,10,0,0"/><TextBlock Text="Остальное → напрямую" FontSize="11" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/></StackPanel></Border>
             <StackPanel Orientation="Horizontal" Margin="8,0,0,0"><Ellipse x:Name="SidebarDot" Width="6" Height="6" Fill="{StaticResource Muted}" Margin="0,0,8,0"/><TextBlock x:Name="SidebarState" Text="Отключено" FontFamily="Consolas" FontSize="11" Foreground="{StaticResource Muted}"/></StackPanel>
-            <TextBlock Text="CITA / X64 / 0.4.0" FontFamily="Consolas" FontSize="9" Foreground="{StaticResource Faint}" Margin="8,11,0,0"/>
+            <TextBlock Text="CITA / X64 / 0.5.0" FontFamily="Consolas" FontSize="9" Foreground="{StaticResource Faint}" Margin="8,11,0,0"/>
           </StackPanel>
           <Grid/>
         </DockPanel>
@@ -96,11 +98,54 @@
               <TextBlock x:Name="RescueDetailLabel" FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,0"/>
             </StackPanel></Border>
             <Border Style="{StaticResource Card}" Margin="0,0,0,16"><StackPanel><TextBlock Text="Приложение" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,10"/><CheckBox x:Name="CloseToTrayBox" Content="Сворачивать в трей при закрытии окна" Checked="Preferences_Changed" Unchecked="Preferences_Changed"/><StackPanel Orientation="Horizontal" Margin="0,12,0,0"><TextBlock Text="Обновлять статистику каждые" VerticalAlignment="Center" Margin="0,0,14,0"/><ComboBox x:Name="RefreshIntervalInput" Width="100" SelectionChanged="Preferences_Changed"><ComboBoxItem Content="1 сек." Tag="1"/><ComboBoxItem Content="2 сек." Tag="2"/><ComboBoxItem Content="3 сек." Tag="3"/></ComboBox></StackPanel><TextBlock Text="История трафика хранит только суммы. Диагностика и кэш маршрутов могут содержать домены и названия приложений. Журнал режима «Авто» ограничен 8 МБ." Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="12" Margin="0,16,0,0"/></StackPanel></Border>
-            <Border Style="{StaticResource Card}" Margin="0,0,0,16"><StackPanel><TextBlock Text="Обновления CITA Route" FontSize="18" FontWeight="SemiBold"/><TextBlock x:Name="UpdateStatusLabel" Text="Стабильные выпуски из IthilRosg/CITA-Route · GitHub Releases" Margin="0,12,0,0" TextWrapping="Wrap"/><TextBlock Text="Проверка при запуске и каждые 6 часов. Загрузка проверяется по SHA-256. Загруженное обновление устанавливается после отключения маршрута. Защищённая служба обновляется через «Применить подключение» с запросом Windows." Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0"/><CheckBox x:Name="AutoInstallUpdatesBox" Content="Автоматически устанавливать загруженное обновление после отключения" Checked="AutoInstallUpdates_Changed" Unchecked="AutoInstallUpdates_Changed" Margin="0,14,0,0"/><WrapPanel Margin="0,14,0,0"><Button Content="Проверить обновления" Click="CheckUpdates_Click" Margin="0,0,10,10"/><Button Content="История выпусков" Click="OpenReleases_Click" Margin="0,0,10,10"/><Button x:Name="DownloadUpdateButton" Content="Загрузить обновление" Click="DownloadUpdate_Click" Visibility="Collapsed" Margin="0,0,10,10"/><Button x:Name="InstallUpdateButton" Content="Установить и открыть" Click="InstallUpdate_Click" Visibility="Collapsed" Margin="0,0,0,10"/></WrapPanel></StackPanel></Border><Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="О CITA Route" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="Версия 0.4.0 · Windows desktop" Margin="0,14,0,0"/><TextBlock Text="Маршрутизатор sing-box 1.14.3 · VPN-соединение WireSock" Foreground="{StaticResource Muted}" FontSize="12" Margin="0,6,0,0"/><TextBlock Text="В режиме Авто маршруты проверяются параллельно с приоритетом прямого доступа. Проверка HTTPS не подтверждает работу всех функций сервиса." TextWrapping="Wrap" Foreground="{StaticResource Muted}" FontSize="12" Margin="0,14,0,0"/><Button Content="Открыть инструкцию" HorizontalAlignment="Left" Margin="0,16,0,0" Click="OpenReadme_Click"/></StackPanel></Border>
+            <Border Style="{StaticResource Card}" Margin="0,0,0,16"><StackPanel><TextBlock Text="Обновления CITA Route" FontSize="18" FontWeight="SemiBold"/><TextBlock x:Name="UpdateStatusLabel" Text="Стабильные выпуски из IthilRosg/CITA-Route · GitHub Releases" Margin="0,12,0,0" TextWrapping="Wrap"/><TextBlock Text="Проверка при запуске и каждые 6 часов. Загрузка проверяется по SHA-256. Загруженное обновление устанавливается после отключения маршрута. Защищённая служба обновляется через «Применить подключение» с запросом Windows." Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0"/><CheckBox x:Name="AutoInstallUpdatesBox" Content="Автоматически устанавливать загруженное обновление после отключения" Checked="AutoInstallUpdates_Changed" Unchecked="AutoInstallUpdates_Changed" Margin="0,14,0,0"/><WrapPanel Margin="0,14,0,0"><Button Content="Проверить обновления" Click="CheckUpdates_Click" Margin="0,0,10,10"/><Button Content="История выпусков" Click="OpenReleases_Click" Margin="0,0,10,10"/><Button x:Name="DownloadUpdateButton" Content="Загрузить обновление" Click="DownloadUpdate_Click" Visibility="Collapsed" Margin="0,0,10,10"/><Button x:Name="InstallUpdateButton" Content="Установить и открыть" Click="InstallUpdate_Click" Visibility="Collapsed" Margin="0,0,0,10"/></WrapPanel></StackPanel></Border><Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="О CITA Route" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="Версия 0.5.0 · Windows desktop" Margin="0,14,0,0"/><TextBlock Text="Маршрутизатор sing-box 1.14.3 · VPN-соединение WireSock" Foreground="{StaticResource Muted}" FontSize="12" Margin="0,6,0,0"/><TextBlock Text="В режиме Авто маршруты проверяются параллельно с приоритетом прямого доступа. Проверка HTTPS не подтверждает работу всех функций сервиса." TextWrapping="Wrap" Foreground="{StaticResource Muted}" FontSize="12" Margin="0,14,0,0"/><Button Content="Открыть инструкцию" HorizontalAlignment="Left" Margin="0,16,0,0" Click="OpenReadme_Click"/></StackPanel></Border>
           </StackPanel></ScrollViewer></TabItem>
         </TabControl>
         <DockPanel Grid.Row="4" Margin="30,0"><TextBlock x:Name="FooterStatus" Text="Проверка компонентов…" FontSize="10" Foreground="#8D8580" VerticalAlignment="Center"/><TextBlock Text="CITA // ROUTE TERMINAL" FontFamily="Consolas" FontSize="10" Foreground="#8D8580" HorizontalAlignment="Right" VerticalAlignment="Center"/></DockPanel>
       </Grid>
+    </Grid>
+    <Grid x:Name="CompactHost">
+      <Grid.RowDefinitions><RowDefinition Height="42"/><RowDefinition Height="*"/><RowDefinition Height="76"/></Grid.RowDefinitions>
+      <Grid Background="Transparent" MouseLeftButtonDown="TitleDrag" Margin="16,0,8,0">
+        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <TextBlock Text="CITA / ROUTE" FontFamily="Consolas" FontWeight="Bold" FontSize="13" VerticalAlignment="Center"/>
+        <StackPanel Grid.Column="1" Orientation="Horizontal">
+          <Button Content="⋮" Width="34" Padding="0" Background="Transparent" BorderThickness="0" Click="CompactMenu_Click" AutomationProperties.Name="Меню CITA Route" ToolTip="Меню и расширенный вид"/>
+          <Button Content="—" Width="34" Padding="0" Background="Transparent" BorderThickness="0" Click="Minimize_Click" AutomationProperties.Name="Свернуть"/>
+          <Button Content="×" FontSize="19" Width="34" Padding="0" Background="Transparent" BorderThickness="0" Click="Close_Click" AutomationProperties.Name="Скрыть в трей"/>
+        </StackPanel>
+      </Grid>
+      <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel Margin="22,16,22,12">
+        <StackPanel Orientation="Horizontal"><Rectangle x:Name="CompactDot" Width="7" Height="7" Fill="{StaticResource Muted}" Margin="0,0,9,0"/><TextBlock Text="АВТОМАТИЧЕСКИЙ МАРШРУТ" Style="{StaticResource Eyebrow}" FontSize="10"/></StackPanel>
+        <TextBlock x:Name="CompactState" Text="Отключено" FontFamily="Bahnschrift SemiCondensed" FontSize="30" Margin="-1,7,0,0" TextTrimming="CharacterEllipsis"/>
+        <Button x:Name="CompactProfileButton" Click="ChooseCompactProfile_Click" Background="Transparent" BorderThickness="0,0,0,1" BorderBrush="{StaticResource Line}" Padding="0,8,0,12" HorizontalContentAlignment="Stretch" Margin="0,0,0,16" AutomationProperties.Name="Выбрать профиль">
+          <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="CompactProfile" Text="Профиль будет найден при подключении" FontSize="11" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis"/><TextBlock Grid.Column="1" Text="⌄" Foreground="{StaticResource Accent}" Margin="8,0,0,0"/></Grid>
+        </Button>
+        <Button x:Name="CompactConnectButton" Content="Подключить" Style="{StaticResource Primary}" Height="44" Click="Connect_Click" AutomationProperties.Name="Подключение CITA Route"/>
+        <Grid Margin="0,22,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+          <Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+          <StackPanel Margin="0,0,8,18"><TextBlock Text="↓ ЗАГРУЗКА" Style="{StaticResource Eyebrow}" FontSize="9"/><TextBlock x:Name="CompactDownload" Text="—" FontFamily="Consolas" FontSize="19" Margin="0,5,0,0"/></StackPanel>
+          <StackPanel Grid.Column="1" Margin="8,0,0,18"><TextBlock Text="↑ ОТДАЧА" Style="{StaticResource Eyebrow}" FontSize="9"/><TextBlock x:Name="CompactUpload" Text="—" FontFamily="Consolas" FontSize="19" Margin="0,5,0,0"/></StackPanel>
+          <StackPanel Grid.Row="1" Margin="0,0,8,0"><TextBlock Text="ТРАФИК СЕССИИ" Style="{StaticResource Eyebrow}" FontSize="9"/><TextBlock x:Name="CompactTraffic" Text="—" FontFamily="Consolas" FontSize="17" Margin="0,5,0,0"/></StackPanel>
+          <StackPanel Grid.Row="1" Grid.Column="1" Margin="8,0,0,0"><TextBlock Text="ВРЕМЯ СЕССИИ" Style="{StaticResource Eyebrow}" FontSize="9"/><TextBlock x:Name="CompactUptime" Text="—" FontFamily="Consolas" FontSize="17" Margin="0,5,0,0"/></StackPanel>
+        </Grid>
+        <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Margin="0,18,0,0" Padding="0,12,0,0">
+          <StackPanel ToolTip="Не измерено: контрольный UDP-ответчик ещё не настроен. Ошибки HTTPS и состояние VPN не используются для вычисления потерь.">
+            <TextBlock Text="ПОТЕРИ ПРОБ / UDP" Style="{StaticResource Eyebrow}" FontSize="9"/>
+            <Grid Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock x:Name="CompactDirectLoss" Text="Напрямую: не измерено" FontSize="11" Foreground="{StaticResource Muted}"/><TextBlock x:Name="CompactVpnLoss" Grid.Column="1" Text="VPN: не измерено" FontSize="11" Foreground="{StaticResource Muted}" Margin="8,0,0,0"/></Grid>
+          </StackPanel>
+        </Border>
+      </StackPanel>
+      </ScrollViewer>
+      <Border Grid.Row="2" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Background="{StaticResource PanelSoft}" Padding="16,10,16,9">
+        <Grid><Grid.RowDefinitions><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <TextBlock x:Name="CompactStage" Text="Готово к подключению" FontSize="11" TextWrapping="Wrap" MaxHeight="34" VerticalAlignment="Center"/>
+          <StackPanel Grid.Row="1"><TextBlock Text="Ограниченные → VPN · Остальное напрямую" FontSize="9" Foreground="{StaticResource Muted}" Margin="0,6,0,0"/><ProgressBar x:Name="CompactActivity" Height="2" Margin="0,4,0,0" Visibility="Collapsed" Foreground="{StaticResource Accent}" Background="Transparent" BorderThickness="0"/></StackPanel>
+        </Grid>
+      </Border>
+    </Grid>
     </Grid>
   </Border>
 </Window>
