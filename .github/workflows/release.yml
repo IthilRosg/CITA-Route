@@ -1,0 +1,52 @@
+name: Publish stable release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag matching product.json, for example v0.3.0
+        required: true
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Validate release version
+        shell: powershell
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          $product=Get-Content product.json -Raw | ConvertFrom-Json
+          if($env:RELEASE_TAG -cne ('v'+$product.version)){throw 'Tag must match product.json'}
+          if((Select-Xml -Path Directory.Build.props -XPath '//Version').Node.InnerText -ne $product.version){throw 'Assembly version differs'}
+      - name: Dependencies and tests
+        shell: powershell
+        run: |
+          ./Bootstrap.ps1
+          ./Build-All.ps1
+          ./Verify-Portable.ps1
+          ./Verify-ReleaseUpdate.ps1
+          ./Verify-Prepare.ps1
+          ./Verify-Optimization.ps1
+          if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}
+          ./Build-Portable.ps1
+      - name: Verify final archive
+        shell: powershell
+        run: |
+          $zip=Get-ChildItem dist/CITA-Route-*-win-x64.zip | Select-Object -First 1
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath runtime/package-check
+          $package=Get-ChildItem runtime/package-check -Directory | Select-Object -First 1
+          ./Verify-Portable.ps1 -PackageDirectory $package.FullName
+      - name: Create release and upload verified artifacts
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          gh release create $env:RELEASE_TAG dist/CITA-Route-*-win-x64.zip dist/SHA256SUMS.txt --target $env:GITHUB_SHA --title "CITA Route $env:RELEASE_TAG" --notes-file RELEASE-NOTES.md
+          if($LASTEXITCODE -ne 0){throw 'Release publication failed'}

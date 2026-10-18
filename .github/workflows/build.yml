@@ -1,0 +1,53 @@
+name: Build and test Windows client
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Fetch verified engine and public rule data
+        shell: powershell
+        run: ./Bootstrap.ps1
+      - name: Build and run agent tests
+        shell: powershell
+        run: ./Build-All.ps1
+      - name: Offline and loopback checks
+        shell: powershell
+        run: |
+          ./Verify-Portable.ps1
+          ./Verify-ReleaseUpdate.ps1
+          ./Verify-Prepare.ps1
+          ./Verify-Storage.ps1
+          ./Verify-ProfileSync.ps1
+          ./Verify-RuleFeeds.ps1
+          ./Verify-AgentPackage.ps1
+          ./Verify-WireSockRecovery.ps1
+          ./Verify-SessionRecovery.ps1
+          ./Verify-Optimization.ps1
+      - name: Build self-contained package
+        shell: powershell
+        run: ./Build-Portable.ps1
+      - name: Verify extracted package
+        shell: powershell
+        run: |
+          $zip=Get-ChildItem dist/CITA-Route-*-win-x64.zip | Select-Object -First 1
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath runtime/package-check
+          $package=Get-ChildItem runtime/package-check -Directory | Select-Object -First 1
+          ./Verify-Portable.ps1 -PackageDirectory $package.FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cita-route-win-x64
+          path: |
+            dist/CITA-Route-*-win-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error

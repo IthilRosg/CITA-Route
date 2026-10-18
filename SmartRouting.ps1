@@ -1,0 +1,624 @@
+﻿[CmdletBinding()]
+param(
+    [ValidateSet('Prepare','ProxyOnly','Start','Stop','Status','Watch','UpdateRules','SyncProfile','Reconnect')]
+    [string]$Action = 'Start',
+    [string]$ExpectedSessionId = '',
+    [switch]$Setup
+)
+
+$ErrorActionPreference = 'Stop'
+$root = $PSScriptRoot
+$runtime = Join-Path $root 'runtime'
+$private = Join-Path $root 'private'
+$cli = ''
+$sourceProfile = ''
+$smartProfile = 'SmartRouting-AWG2'
+$routerExe = Join-Path $runtime 'smart-router.exe'
+$bridgeExe = Join-Path $env:ProgramFiles 'RoutePilot\Agent\vpn-bridge.exe'
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+
+. (Join-Path $root 'FileStorage.ps1')
+. (Join-Path $root 'ConnectionEnvironment.ps1')
+$connectionSettings=Get-ConnectionSettings $root
+$cli=Find-WireSockCli $connectionSettings.CliPath
+$sourceProfile=$connectionSettings.SourceProfile
+if($Setup -and $Action -ne 'Prepare'){throw 'Setup is valid only for offline preparation.'}
+if(-not $Setup -and $Action -notin @('Status','Stop','Watch')){
+    $setupProbe=$null
+    try{$setupProbe=[IO.File]::Open((Join-Path $runtime 'setup.lock'),'OpenOrCreate','ReadWrite','None')}
+    catch{throw 'Connection setup is in progress. Wait for it to finish.'}
+    finally{if($setupProbe){$setupProbe.Dispose()}}
+}
+. (Join-Path $root 'RuleFeeds.ps1')
+. (Join-Path $root 'WireSockCli.ps1')
+. (Join-Path $root 'WireSockProfiles.ps1')
+. (Join-Path $root 'WireSockRecovery.ps1')
+. (Join-Path $root 'AgentLease.ps1')
+. (Join-Path $root 'SessionRecovery.ps1')
+if ($Action -notin @('Status','Watch')) { Assert-NoAgentRun }
+
+function Get-OurProcesses {
+    @(Get-Process -Name 'smart-router','vpn-bridge' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -eq $routerExe -or $_.Path -eq $bridgeExe })
+}
+
+function Test-WireSockConnected {
+    $connectionStatus = (Invoke-WireSock @('status')) -join ' '
+    return ($connectionStatus -match [regex]::Escape($smartProfile) -and
+        $connectionStatus -match '(?i)(Connected to|\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u043e \u043a \u0441\u0435\u0440\u0432\u0435\u0440\u0443)')
+}
+
+function Connect-WireSock {
+    $connectLog = Join-Path $root 'logs\wiresock-connect.log'
+    $connectErrorLog = Join-Path $root 'logs\wiresock-connect-error.log'
+    $connector = Start-Process -FilePath $cli -WindowStyle Hidden -PassThru `
+        -ArgumentList @('connect',$smartProfile,'-network-lock','disabled','-log-level','warning','-exit') `
+        -RedirectStandardOutput $connectLog -RedirectStandardError $connectErrorLog
+    try {
+        $deadline = [DateTime]::UtcNow.AddSeconds(35)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            if (Test-WireSockConnected) { return }
+            Start-Sleep -Seconds 1
+        }
+        throw 'WireSock did not complete the handshake within 35 seconds. Disconnect the temporary VPN and check the original AWG2 connection.'
+    } finally {
+        if (-not $connector.HasExited) { Stop-Process -Id $connector.Id -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Stop-OurProcesses([switch]$KeepWatch) {
+    $policyPath = Join-Path $runtime 'policy-process.json'
+    if (Test-Path -LiteralPath $policyPath) {
+        $policyIdentity = [IO.File]::ReadAllText($policyPath) | ConvertFrom-Json
+        $policyProcess = Get-Process -Id $policyIdentity.Pid -ErrorAction SilentlyContinue
+        if ($policyProcess -and $policyProcess.Path -eq $policyIdentity.Path -and
+            [Math]::Abs(($policyProcess.StartTime.ToUniversalTime() - [DateTime]::Parse($policyIdentity.StartedUtc).ToUniversalTime()).TotalMilliseconds) -lt 100) {
+            $policyProcess | Stop-Process -Force
+        }
+    }
+    $watchPath = Join-Path $runtime 'watch.pid'
+    if (-not $KeepWatch -and (Test-Path -LiteralPath $watchPath)) {
+        $watchId = [int]([IO.File]::ReadAllText($watchPath).Trim())
+        $watchProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $watchId" -ErrorAction SilentlyContinue
+        if ($watchId -ne $PID -and $watchProcess.CommandLine -like ('*' + $root + '*') -and
+            $watchProcess.CommandLine -match '-Action\s+Watch') {
+            Stop-Process -Id $watchId -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item -LiteralPath $watchPath -Force
+    }
+    Get-OurProcesses | Stop-Process -Force
+    # Closing Wintun removes the temporary routes and interface DNS settings.
+    Start-Sleep -Milliseconds 500
+    Clear-DnsClientCache -ErrorAction SilentlyContinue
+}
+
+function Get-Domains([string]$FileName) {
+    $path = Join-Path $root $FileName
+    $domains = @()
+    foreach ($line in [IO.File]::ReadAllLines($path)) {
+        $domain = ($line -split '#',2)[0].Trim().TrimEnd('.').ToLowerInvariant()
+        if (-not $domain) { continue }
+        $domain = (New-Object Globalization.IdnMapping).GetAscii($domain)
+        if ($domain -notmatch '^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$') {
+            throw "Invalid domain in ${FileName}: $domain (enter a hostname, without https:// or a path)."
+        }
+        $domains += $domain
+    }
+    return @($domains | Sort-Object -Unique)
+}
+
+function Update-RuleFeeds {
+    $lockPath = Join-Path $runtime 'rules-update.lock'
+    try { $feedLock = [IO.File]::Open($lockPath,'OpenOrCreate','ReadWrite','None') }
+    catch { throw 'The rule lists are already being updated.' }
+    $staged = @()
+    $changes = @()
+    try {
+        foreach ($feedName in @('russia_inside','discord')) {
+            $stagedPath = Join-Path $runtime ('rules\' + $feedName + '.new.srs')
+            $stagedJson = Join-Path $runtime ('rules\' + $feedName + '.new.json')
+            $staged += @{name=$feedName;binary=$stagedPath;json=$stagedJson}
+            $changes += @{Staged=$stagedPath;Target=(Join-Path $runtime ('rules\' + $feedName + '.srs'))}
+            $changes += @{Staged=$stagedJson;Target=(Join-Path $runtime ('rules\' + $feedName + '.json'))}
+            Invoke-WebRequest -UseBasicParsing -Uri (
+                'https://github.com/itdoginfo/allow-domains/releases/latest/download/' + $feedName + '.srs') `
+                -Proxy 'http://127.0.0.1:20808' -TimeoutSec 20 -OutFile $stagedPath
+            & $routerExe rule-set decompile $stagedPath -o $stagedJson
+            if ($LASTEXITCODE -ne 0) { throw "Invalid downloaded rule list: $feedName" }
+        }
+        $telegramStaged = Join-Path $runtime 'rules\telegram.new.json'
+        $changes += @{Staged=$telegramStaged;Target=(Join-Path $runtime 'rules\telegram.json')}
+        $telegramResponse = Invoke-WebRequest -UseBasicParsing -Uri 'https://core.telegram.org/resources/cidr.txt' `
+            -Proxy 'http://127.0.0.1:20808' -TimeoutSec 20
+        Write-TelegramRules ([string]$telegramResponse.Content) $telegramStaged
+        Publish-RuleFiles $changes
+        Write-JsonFile (Join-Path $runtime 'feeds-state.json') @{
+            success=$true;updatedUtc=[DateTime]::UtcNow.ToString('o');message='Rule lists updated.'
+        }
+        Write-Host 'Rule lists updated and applied to new connections.'
+        Remove-Item -LiteralPath (Join-Path $runtime 'feeds-error.json') -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-JsonFile (Join-Path $runtime 'feeds-error.json') @{
+            failedUtc=[DateTime]::UtcNow.ToString('o');message=$_.Exception.Message
+        }
+        throw
+    } finally {
+        foreach ($item in $staged) {
+            Remove-Item -LiteralPath $item.binary,$item.json -Force -ErrorAction SilentlyContinue
+        }
+        if ($telegramStaged) { Remove-Item -LiteralPath $telegramStaged -Force -ErrorAction SilentlyContinue }
+        $feedLock.Dispose()
+    }
+}
+
+function Prepare-Configuration {
+    New-Item -ItemType Directory -Path $runtime,$private,(Join-Path $root 'logs') -Force | Out-Null
+    if (-not $sourceProfile -or -not $cli) { throw 'Select a WireSock profile in RoutePilot Settings first.' }
+    if (-not (Test-Path -LiteralPath $routerExe) -or (-not (Test-Path -LiteralPath $bridgeExe) -and -not $Setup)) {
+        throw 'Install or update the RoutePilot rescue service first: the protected VPN bridge is missing.'
+    }
+    Protect-PrivateDirectory $private $connectionSettings.UserSid
+    $physical = @(Get-NetIPConfiguration | Where-Object {
+        $_.NetAdapter.HardwareInterface -and $_.NetAdapter.Status -eq 'Up' -and $_.IPv4DefaultGateway
+    } | Sort-Object { $_.NetIPv4Interface.InterfaceMetric }) | Select-Object -First 1
+    if (-not $physical) { throw 'No active physical network adapter with an IPv4 gateway was found.' }
+    $wireSockSettingsPath = Join-Path $env:ProgramData 'WireSock Foundation\WireSock Secure Connect\wiresock.config'
+    if (Test-Path -LiteralPath $wireSockSettingsPath) {
+        $globalSettings = [xml][IO.File]::ReadAllText($wireSockSettingsPath)
+        $overrideSplit = $globalSettings.SelectSingleNode('//OverrideSplitTunnelingSettings')
+        if ($overrideSplit -and $overrideSplit.InnerText -eq 'True') {
+            throw 'Disable WireSock setting Override profile split-tunneling settings with global ones first.'
+        }
+        $virtualMode = $globalSettings.SelectSingleNode('//VirtualAdapterMode')
+        if ($virtualMode -and $virtualMode.InnerText -eq 'True') {
+            throw 'This setup requires WireSock transparent mode. Disable Virtual Adapter Mode first.'
+        }
+    }
+    $interface = $physical.InterfaceAlias
+    $hasDirectIPv6 = [bool]$physical.IPv6DefaultGateway
+    $directDnsStrategy = if ($hasDirectIPv6) { 'prefer_ipv4' } else { 'ipv4_only' }
+    $originalPath = Join-Path $private 'awg2.original.conf'
+    if (-not (Test-Path -LiteralPath $originalPath)) {
+        Invoke-WireSock @('export',$sourceProfile,$originalPath) | Out-Null
+    }
+    $currentSourcePath = Join-Path $private ('source-check-' + [guid]::NewGuid().ToString('N') + '.conf')
+    try {
+        Invoke-WireSock @('export',$sourceProfile,$currentSourcePath) | Out-Null
+        $original = [IO.File]::ReadAllText($currentSourcePath)
+    } finally { Remove-Item -LiteralPath $currentSourcePath -Force -ErrorAction SilentlyContinue }
+    if ([regex]::Matches($original,'(?im)^\s*\[Peer\]\s*$').Count -ne 1) {
+        throw 'Expected exactly one WireSock peer.'
+    }
+    $protectedConfigPath=Join-Path $env:ProgramFiles 'RoutePilot\Agent\agent-config.json'
+    $protectedConfig=$null
+    if(-not $Setup -and (Test-Path -LiteralPath $protectedConfigPath)){$protectedConfig=Read-JsonFile $protectedConfigPath}
+    $endpoint=Get-ProfileEndpoint $original $(if($protectedConfig){$protectedConfig.EndpointIp}else{''})
+    if(-not $Setup -and (Test-Path -LiteralPath $protectedConfigPath)){
+        $protectedSource=if($protectedConfig.SourceEndpoint){$protectedConfig.SourceEndpoint}else{$protectedConfig.EndpointIp+':'+$protectedConfig.EndpointPort}
+        if($protectedConfig.WireSockSourceProfile -ne $sourceProfile -or $protectedSource -ine $endpoint.SourceEndpoint){throw 'Source profile changed. Apply the connection in RoutePilot Settings before connecting.'}
+        # Keep the installed IPv4 pin until an explicit setup refreshes both route and service.
+        $endpoint.Ip=$protectedConfig.EndpointIp
+    }
+    $endpoint | Add-Member -NotePropertyName SourceProfile -NotePropertyValue $sourceProfile -Force
+    Write-JsonFile (Join-Path $runtime 'connection-endpoint.json') $endpoint
+    $profileLines = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($line in ($original -split '\r?\n')) {
+        # DNS must stay under the router's control; only the bridge uses WireSock.
+        if ($line -match '^\s*(?:#@ws:\s*)?(DNS|AllowedIPs|AllowedApps|DisallowedApps|DisallowedIPs)\s*=') { continue }
+        if ($line -match '^\s*Endpoint\s*=') { $profileLines.Add('Endpoint = '+$endpoint.Ip+':'+$endpoint.Port); continue }
+        $profileLines.Add($line)
+        if ($line -match '^\s*\[Peer\]\s*$') {
+            $profileLines.Add('AllowedIPs = 0.0.0.0/0, ::/0')
+            $profileLines.Add('#@ws:AllowedApps = ' + $bridgeExe)
+            $profileLines.Add('#@ws:DisallowedApps = ' + $routerExe)
+        }
+    }
+    [IO.File]::WriteAllText((Join-Path $private ($smartProfile + '.conf')), ($profileLines -join "`r`n"), $utf8)
+
+    $directDomains = @(Get-Domains 'force-direct.txt')
+    $vpnDomains = @(Get-Domains 'force-vpn.txt')
+    foreach ($directDomain in $directDomains) {
+        foreach ($vpnDomain in $vpnDomains) {
+            if ($directDomain -eq $vpnDomain -or $directDomain.EndsWith('.'+$vpnDomain) -or $vpnDomain.EndsWith('.'+$directDomain)) {
+                throw "Conflicting explicit rules: $directDomain / $vpnDomain"
+            }
+        }
+    }
+    foreach ($personalRule in @(@{tag='personal-direct';domains=$directDomains},@{tag='personal-vpn';domains=$vpnDomains})) {
+        $personalRules = @()
+        if ($personalRule.domains.Count) { $personalRules = @(@{domain_suffix=@($personalRule.domains)}) }
+        Write-JsonFile (Join-Path $runtime ('rules\' + $personalRule.tag + '.json')) @{version=3;rules=$personalRules}
+    }
+    $telegramRulePath = Join-Path $runtime 'rules\telegram.json'
+    if (-not (Test-Path -LiteralPath $telegramRulePath)) {
+        Write-TelegramRules ([IO.File]::ReadAllText((Join-Path $root 'rules\telegram-cidr.txt'))) $telegramRulePath
+    }
+    $controllerTokenPath = Join-Path $private 'controller-token.txt'
+    if (-not (Test-Path -LiteralPath $controllerTokenPath)) {
+        [IO.File]::WriteAllText($controllerTokenPath,([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')),$utf8)
+    }
+    $controllerToken = [IO.File]::ReadAllText($controllerTokenPath).Trim()
+    $routeRules = @(
+        @{ action='sniff'; timeout='300ms' },
+        @{ protocol='dns'; action='hijack-dns' },
+        @{ process_name=@('wiresock-connect-service.exe','wiresock-connect-app-service.exe'); action='route'; outbound='direct' }
+    )
+    # Existing third-party hosts redirects can point OpenAI at a regional proxy.
+    # Restore only the exact destination named by TLS/HTTP; leave the hosts file intact.
+    $hostsPath = Join-Path $env:windir 'System32\drivers\etc\hosts'
+    foreach ($line in [IO.File]::ReadAllLines($hostsPath)) {
+        $parts = (($line -split '#',2)[0].Trim() -split '\s+')
+        if ($parts.Count -lt 2) { continue }
+        foreach ($hostName in $parts[1..($parts.Count-1)]) {
+            if ($hostName -match '^(?:[a-z0-9-]+\.)*(?:openai\.com|chatgpt\.com|oaistatic\.com|oaiusercontent\.com|sora\.com)$') {
+                $routeRules += @{domain=@($hostName);action='route-options';override_address=$hostName}
+            }
+        }
+    }
+    $routeRules += @{inbound=@('direct-probe');action='route';outbound='direct'}
+    $routeRules += @{inbound=@('dpi-probe');network='tcp';action='route';outbound='dpi';tls_record_fragment=$true}
+    $routeRules += @{rule_set=@('personal-direct');action='route';outbound='direct'}
+    $routeRules += @{rule_set=@('personal-vpn');action='route';outbound='vpn'}
+    $routeRules += @{domain_suffix=@('openai.com','chatgpt.com','oaistatic.com','oaiusercontent.com','sora.com');action='route';outbound='vpn'}
+    $policyOptionsPath = Join-Path $root 'data\routing-policy.json'
+    if (-not (Test-Path -LiteralPath $policyOptionsPath)) { Write-JsonFile $policyOptionsPath @{Mode='Auto';AllowListedDpi=$false} }
+    $policyOptions = [IO.File]::ReadAllText($policyOptionsPath) | ConvertFrom-Json
+    if ($policyOptions.Mode -notin @('Lists','Auto')) { throw 'Unknown routing policy mode.' }
+    foreach ($autoRoute in @('direct','dpi','vpn','blocked')) {
+        Write-JsonFile (Join-Path $runtime ('rules\auto-' + $autoRoute + '.json')) @{version=3;rules=@()}
+    }
+    # Generation canaries use ONLY this dedicated loopback inbound/outbound.
+    # A missing canary is rejected; it can never fall through to a WAN route.
+    $ackRules = @()
+    foreach ($autoRoute in @('direct','dpi','vpn','blocked')) {
+        $ackRules += @{type='logical';mode='and';rules=@(@{inbound=@('policy-ack')},@{rule_set=@('auto-'+$autoRoute)});action='route';outbound='policy-proof';override_address='127.0.0.1';override_port=20831}
+    }
+    $ackRules += @{inbound=@('policy-ack');action='reject'}
+    $routeRules = $ackRules + $routeRules
+    $dnsRules = @(
+        @{rule_set=@('personal-direct');action='route';server='dns-direct'},
+        @{rule_set=@('personal-vpn');query_type=@('A','AAAA');action='route';server='fakeip'},
+        @{rule_set=@('personal-vpn');action='route';server='dns-vpn'}
+    )
+    if ($policyOptions.Mode -eq 'Lists' -or -not $policyOptions.AllowListedDpi) {
+        $routeRules += @{ rule_set=@('russia-inside','discord','telegram'); action='route'; outbound='vpn' }
+    } else {
+        $routeRules += @{ rule_set=@('telegram');action='route';outbound='vpn' }
+        $routeRules += @{ rule_set=@('russia-inside','discord');network='udp';action='route';outbound='vpn' }
+    }
+    $routeRules += @{type='logical';mode='and';rules=@(@{rule_set=@('auto-blocked')},@{ip_version=6;invert=$true});action='reject'}
+    foreach($autoRoute in @('direct','vpn','dpi')){
+        # A CONNECT/SOCKS hostname initially has IP version 0. Resolve ONLY
+        # these unknown-family flows to A before applying the IPv4 decision.
+        # Original IPv6 flows keep their independent routing policy.
+        $unknownFamily=@{type='logical';mode='and';rules=@(@{ip_version=4;invert=$true},@{ip_version=6;invert=$true})}
+        $routeRules += @{type='logical';mode='and';rules=@(@{rule_set=@('auto-'+$autoRoute)},$unknownFamily);action='resolve';server=$(if($autoRoute -eq 'vpn'){'dns-vpn'}else{'dns-direct'});strategy='ipv4_only'}
+        $adaptiveRule=@{type='logical';mode='and';rules=@(@{rule_set=@('auto-'+$autoRoute)},@{ip_version=6;invert=$true});action='route';outbound=$autoRoute}
+        if($autoRoute -eq 'dpi'){$adaptiveRule.tls_record_fragment=$true}
+        $routeRules += $adaptiveRule
+    }
+    if (-not $hasDirectIPv6) { $routeRules += @{ip_version=6;action='reject'} }
+    $routeRules += @{ ip_cidr=@('198.18.0.0/15','fc00::/18'); action='reject' }
+    $routeRules += @{ ip_is_private=$true; action='route'; outbound='direct' }
+    $dnsRules += @{ rule_set=@('russia-inside','discord'); query_type=@('A','AAAA'); action='route'; server='fakeip' }
+    $dnsRules += @{ rule_set=@('russia-inside','discord'); action='route'; server='dns-vpn' }
+    if ($policyOptions.Mode -eq 'Auto') {
+        $dnsRules += @{domain_suffix=@('local','lan','home.arpa');action='route';server='dns-direct'}
+        $dnsRules += @{domain_regex=@('^[^.]+$');action='route';server='dns-direct'}
+        $dnsRules += @{query_type=@('A','AAAA');action='route';server='fakeip'}
+    }
+
+    $localRules = @()
+    foreach ($rule in @(@{tag='russia-inside';file='russia_inside'},@{tag='discord';file='discord'})) {
+        $localRules += @{type='local';tag=$rule.tag;format='binary';path=(Join-Path $runtime ('rules\' + $rule.file + '.srs'))}
+    }
+    foreach ($personalTag in @('personal-direct','personal-vpn')) {
+        $localRules += @{type='local';tag=$personalTag;format='source';path=(Join-Path $runtime ('rules\' + $personalTag + '.json'))}
+    }
+    $localRules += @{type='local';tag='telegram';format='source';path=$telegramRulePath}
+    foreach ($autoRoute in @('direct','dpi','vpn','blocked')) {
+        $localRules += @{type='local';tag=('auto-'+$autoRoute);format='source';path=(Join-Path $runtime ('rules\auto-'+$autoRoute+'.json'))}
+    }
+    $router = @{
+        log=@{level='warn';timestamp=$true;output=(Join-Path $root 'logs\router.log')}
+        dns=@{
+            servers=@(
+                @{type='https';tag='dns-direct';server='1.1.1.1';detour='direct'},
+                @{type='https';tag='dns-vpn';server='1.1.1.1';detour='vpn'},
+                @{type='fakeip';tag='fakeip';inet4_range='198.18.0.0/15';inet6_range='fc00::/18'}
+            )
+            rules=$dnsRules; final='dns-direct'; strategy=$directDnsStrategy; reverse_mapping=$true
+        }
+        inbounds=@(@{type='mixed';tag='local-test';listen='127.0.0.1';listen_port=20809},
+            @{type='mixed';tag='dpi-probe';listen='127.0.0.1';listen_port=20828},
+            @{type='mixed';tag='direct-probe';listen='127.0.0.1';listen_port=20829},
+            @{type='mixed';tag='policy-ack';listen='127.0.0.1';listen_port=20830})
+        outbounds=@(
+            @{type='direct';tag='direct';bind_interface=$interface},
+            @{type='direct';tag='dpi';bind_interface=$interface},
+            @{type='socks';tag='vpn';server='127.0.0.1';server_port=20808;version='5'},
+            @{type='direct';tag='policy-proof'}
+        )
+        route=@{
+            rules=$routeRules;rule_set=$localRules;final='direct'
+            default_domain_resolver='dns-direct';auto_detect_interface=$true
+        }
+        experimental=@{
+            cache_file=@{enabled=$true;path=(Join-Path $runtime 'router-cache.db');store_fakeip=$true}
+            clash_api=@{external_controller='127.0.0.1:20810';secret=$controllerToken;access_control_allow_origin=@('http://localhost.invalid')}
+        }
+    }
+    if ($policyOptions.Mode -eq 'Auto') {
+        $router.log.level = 'info'
+        foreach ($outbound in $router.outbounds) {
+            if ($outbound.tag -in @('direct','dpi')) { $outbound.connect_timeout = '3s' }
+        }
+    }
+    Write-JsonFile (Join-Path $runtime 'router-proxy.json') $router
+    $router.inbounds += @{
+        type='tun';tag='system-tun';interface_name='SmartRouting';address=@('172.30.125.1/30','fd7a:125::1/126')
+        mtu=1400;auto_route=$true;strict_route=$true;stack='mixed';dns_mode='hijack'
+        route_exclude_address=@('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','100.64.0.0/10','fe80::/10','224.0.0.0/4','ff00::/8')
+    }
+    $router.inbounds[-1].route_exclude_address += ($endpoint.Ip + '/32')
+    Write-JsonFile (Join-Path $runtime 'router.json') $router
+    $bridge = @{
+        log=@{level='warn';timestamp=$true;output=(Join-Path $root 'logs\bridge.log')}
+        dns=@{servers=@(@{type='https';tag='dns';server='1.1.1.1';detour='egress'});final='dns';strategy='ipv4_only'}
+        inbounds=@(@{type='mixed';tag='bridge';listen='127.0.0.1';listen_port=20808})
+        outbounds=@(@{type='direct';tag='egress';bind_interface=$interface})
+        route=@{final='egress';default_domain_resolver='dns'}
+    }
+    Write-JsonFile (Join-Path $runtime 'bridge.json') $bridge
+    foreach ($configName in @('bridge.json','router-proxy.json','router.json')) {
+        & $routerExe check -c (Join-Path $runtime $configName)
+        if ($LASTEXITCODE -ne 0) { throw "Configuration check failed: $configName" }
+    }
+    Write-Host "Prepared. Direct adapter: $interface. DNS strategy: $directDnsStrategy. WireSock profile: $smartProfile."
+}
+
+function Start-Helper([string]$Exe,[string]$Config) {
+    $startupLog = Join-Path $root ('logs\' + [IO.Path]::GetFileNameWithoutExtension($Exe) + '-startup.log')
+    $process = Start-Process -FilePath $Exe -ArgumentList @('run','-c',('"' + $Config + '"'),'--disable-color') `
+        -WorkingDirectory $runtime -WindowStyle Hidden -PassThru -RedirectStandardError $startupLog -RedirectStandardOutput ($startupLog+'.out')
+    $settings=Read-JsonFile $Config
+    $required=@($settings.inbounds | Where-Object {$_.listen -eq '127.0.0.1' -and $_.listen_port} | ForEach-Object {[int]$_.listen_port})
+    $deadline=[DateTime]::UtcNow.AddSeconds(8)
+    $ready=$false
+    do {
+        if($process.HasExited){throw "Helper exited: $Exe. See the logs folder."}
+        $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $process.Id | ForEach-Object LocalPort)
+        $ready=@($required | Where-Object {$_ -notin $listeners}).Count -eq 0
+        if(-not $ready){Start-Sleep -Milliseconds 100}
+    }while(-not $ready -and [DateTime]::UtcNow -lt $deadline)
+    if(-not $ready){$process | Stop-Process -Force;throw 'The helper did not open its owned listeners before the deadline.'}
+    return $process
+}
+
+if ($Action -eq 'Watch') {
+    [IO.File]::WriteAllText((Join-Path $runtime 'watch.pid'), [string]$PID)
+    $watchedSession = Read-JsonFile (Join-Path $runtime 'session.json')
+    $lastFeedAttempt = [DateTime]::UtcNow
+    $feedUpdater = $null
+    $reconnect=$null; $attempts=0; $nextAttempt=[DateTime]::UtcNow
+    $nextPolicyAttempt=[DateTime]::UtcNow; $policyAttempts=0; $policyHealthySince=[DateTime]::UtcNow
+    $disconnected=0; $networkMismatch=0
+    $nextHealth=[DateTime]::UtcNow.AddSeconds(10);$healthFailures=0
+    while ($true) {
+        Start-Sleep -Seconds 2
+        if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){break}
+        if($reconnect -and -not $reconnect.HasExited){continue}
+        try { $activeSession = Read-JsonFile (Join-Path $runtime 'session.json') } catch { continue }
+        if (-not $activeSession.running) { break }
+        if ($activeSession.id -ne $watchedSession.id) {
+            if ($activeSession.recoveryParentId -ne $watchedSession.id) { break }
+            $watchedSession=$activeSession; $attempts=0; $disconnected=0; $networkMismatch=0; $reconnect=$null;$healthFailures=0;$nextHealth=[DateTime]::UtcNow.AddSeconds(10)
+        }
+        if($reconnect){$reconnect=$null;$attempts++;$nextAttempt=[DateTime]::UtcNow.AddSeconds((Get-RecoveryDelay $attempts))}
+        $routerProcess = @(Get-OurProcesses | Where-Object { $_.Path -eq $routerExe -and $_.Id -eq $activeSession.routerPid })
+        try { $signature=Get-SessionNetworkSignature } catch { $signature='unavailable' }
+        if($activeSession.networkSignature -and $signature -ne $activeSession.networkSignature){$networkMismatch++}else{$networkMismatch=0}
+        try { $connected = Test-WireSockConnected } catch { $connected = $false }
+        if(-not $connected){$disconnected++}else{$disconnected=0}
+        $reason=if(-not $routerProcess.Count){'Router exited'}elseif($networkMismatch -ge 2){'Physical network changed'}elseif($disconnected -ge 3){'WireSock disconnected'}elseif($healthFailures -ge 2){'Repeated VPN data-path failure'}elseif($activeSession.recovering){$activeSession.recoveryReason}else{''}
+        if($reason){
+            if([DateTime]::UtcNow -ge $nextAttempt){
+                $reconnect=Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru -WorkingDirectory $root `
+                    -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$PSCommandPath+'"'),'-Action','Reconnect','-ExpectedSessionId',$activeSession.id) `
+                    -RedirectStandardOutput (Join-Path $root 'logs\auto-reconnect.log') -RedirectStandardError (Join-Path $root 'logs\auto-reconnect-error.log')
+                Write-JsonFile (Join-Path $runtime 'watch-state.json') @{phase='Reconnecting';reason=$reason;attempts=$attempts;updatedUtc=[DateTime]::UtcNow.ToString('o')}
+            }
+            continue
+        }
+        try { Update-WireSockBridge $connected $watchedSession.id }
+        catch {
+            [IO.File]::WriteAllText((Join-Path $root 'logs\recovery-error.log'),$_.Exception.Message)
+        }
+        if (-not $connected) { continue }
+        if([DateTime]::UtcNow -ge $nextHealth){
+            try {
+                $health=& (Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe') --session-health | ConvertFrom-Json
+                if($health.healthy){$healthFailures=0}else{$healthFailures++}
+                $healthSession=Read-JsonFile (Join-Path $runtime 'session.json')
+                if($healthSession.id -eq $activeSession.id -and $healthSession.running){Write-JsonFile (Join-Path $runtime 'session-health.json') @{sessionId=$activeSession.id;healthy=[bool]$health.healthy;message=$health.message;updatedUtc=[DateTime]::UtcNow.ToString('o')}}
+            }catch{$healthFailures++}
+            $nextHealth=[DateTime]::UtcNow.AddSeconds(30)
+        }
+        if(-not (Test-PolicyProcess)) {
+            if([DateTime]::UtcNow -ge $nextPolicyAttempt){
+                try {
+                    $policyLock=[IO.File]::Open((Join-Path $runtime 'network-control.lock'),'OpenOrCreate','ReadWrite','None')
+                    try {
+                        $latest=Read-JsonFile (Join-Path $runtime 'session.json')
+                        if($latest.id -eq $watchedSession.id -and $latest.running -and -not (Test-PolicyProcess)){Start-PolicyController}
+                    } finally {$policyLock.Dispose()}
+                }catch{[IO.File]::WriteAllText((Join-Path $root 'logs\recovery-error.log'),$_.Exception.Message)}
+                $nextPolicyAttempt=[DateTime]::UtcNow.AddSeconds((Get-RecoveryDelay $policyAttempts));$policyAttempts++;$policyHealthySince=[DateTime]::UtcNow
+            }
+        }elseif(([DateTime]::UtcNow-$policyHealthySince).TotalSeconds -ge 30){$policyAttempts=0}
+        Write-JsonFile (Join-Path $runtime 'watch-state.json') @{phase='Watching';sessionId=$watchedSession.id;updatedUtc=[DateTime]::UtcNow.ToString('o')}
+        $feedStatePath = Join-Path $runtime 'feeds-state.json'
+        $lastFeedUpdate = (Get-Item -LiteralPath (Join-Path $runtime 'rules\russia_inside.srs')).LastWriteTimeUtc
+        if (Test-Path -LiteralPath $feedStatePath) {
+            try { $lastFeedUpdate = [DateTime]::Parse(([IO.File]::ReadAllText($feedStatePath) | ConvertFrom-Json).updatedUtc).ToUniversalTime() } catch {}
+        }
+        if (([DateTime]::UtcNow - $lastFeedUpdate).TotalHours -ge 24 -and
+            ([DateTime]::UtcNow - $lastFeedAttempt).TotalMinutes -ge 10 -and
+            (-not $feedUpdater -or $feedUpdater.HasExited)) {
+            $lastFeedAttempt = [DateTime]::UtcNow
+            $feedUpdater = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru `
+                -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$PSCommandPath+'"'),'-Action','UpdateRules') `
+                -RedirectStandardError (Join-Path $root 'logs\feeds-startup.log') -RedirectStandardOutput (Join-Path $root 'logs\feeds-output.log')
+        }
+    }
+    exit
+}
+if ($Action -eq 'UpdateRules') {
+    Invoke-AgentCoordinator 'begin-operation'
+    try { Update-RuleFeeds } finally { Invoke-AgentCoordinator 'end-operation' }
+    exit
+}
+if ($Action -eq 'Status') {
+    Invoke-WireSock @('status')
+    Get-OurProcesses | Select-Object Id,ProcessName,Path
+    exit
+}
+if($Action -eq 'Prepare'){
+    # First-run preparation must work before the rescue service exists. It never
+    # connects WireSock and must not enter the live-start rollback/disconnect path.
+    if((Get-OurProcesses).Count){throw 'Stop the current RoutePilot engine before preparing a connection.'}
+    $coordinated=$false;$prepareLock=$null
+    try{
+        if(Get-Service -Name RoutePilotRescue -ErrorAction SilentlyContinue){Invoke-AgentCoordinator 'begin-operation';$coordinated=$true}
+        $prepareLock=[IO.File]::Open((Join-Path $runtime 'network-control.lock'),'OpenOrCreate','ReadWrite','None')
+        Prepare-Configuration
+    }finally{if($prepareLock){$prepareLock.Dispose()};if($coordinated){Invoke-AgentCoordinator 'end-operation'}}
+    exit
+}
+if ($Action -in @('Start','Stop','ProxyOnly','Reconnect')) {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        if($Action -eq 'Reconnect'){throw 'Automatic recovery requires the original elevated session.'}
+        $escapedScript = $PSCommandPath.Replace("'","''")
+        $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(
+            "& '$escapedScript' -Action $Action *>&1 | Out-File -LiteralPath '$($root.Replace("'","''"))\logs\last-action.log' -Encoding utf8"))
+        Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden `
+            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encodedCommand) | Out-Null
+        Write-Host 'Windows administrator confirmation requested. Result: logs\last-action.log'
+        exit
+    }
+}
+
+if($Action -eq 'Stop'){
+    [IO.File]::WriteAllText((Join-Path $runtime 'stop.request'),[guid]::NewGuid().ToString('N'))
+    $stopWait=[Diagnostics.Stopwatch]::StartNew()
+    while($true){
+        try{Invoke-AgentCoordinator 'begin-operation';break}
+        catch{if($stopWait.Elapsed.TotalSeconds -ge 60){throw};Start-Sleep -Milliseconds 400}
+    }
+}else{Invoke-AgentCoordinator 'begin-operation'}
+try { $controlLock = [IO.File]::Open((Join-Path $runtime 'network-control.lock'),'OpenOrCreate','ReadWrite','None') }
+catch { Invoke-AgentCoordinator 'end-operation'; throw 'Another network operation is in progress. Wait for it to finish.' }
+try {
+if ($Action -eq 'Reconnect') {
+    if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){Write-Host 'Recovery cancelled by Stop.';exit}
+    $previous=Read-JsonFile (Join-Path $runtime 'session.json')
+    if(-not $ExpectedSessionId -or $previous.id -ne $ExpectedSessionId -or -not $previous.running){Write-Host 'Stale recovery ignored.';exit}
+    $wireStatus=(Invoke-WireSock @('status')) -join ' '
+    if($wireStatus -notmatch [regex]::Escape($smartProfile) -and $wireStatus -notmatch '(?i)^(\u041d\u0435\u0442 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f|Not connected|No connection)\s*$'){throw 'Another WireSock profile is in use; automatic recovery is paused.'}
+    if($previous.mode -eq 'Start' -and (Get-NetAdapter -Name 'VPNUS' -ErrorAction SilentlyContinue).Status -eq 'Up'){throw 'VPNUS is active; automatic recovery is paused.'}
+    [void](Set-SessionRecovering $ExpectedSessionId 'Automatic reconnect')
+    Stop-OurProcesses -KeepWatch
+    if($wireStatus -match [regex]::Escape($smartProfile)){Invoke-WireSock @('disconnect') | Out-Null}
+}
+if ($Action -eq 'Stop') {
+    Stop-OurProcesses
+    Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;bridgeReady=$false;stoppedUtc=[DateTime]::UtcNow.ToString('o')}
+    $statusText = (Invoke-WireSock @('status')) -join ' '
+    if ($statusText -match [regex]::Escape($smartProfile)) { Invoke-WireSock @('disconnect') }
+    Write-Host 'Smart routing stopped. The original WireSock profile is unchanged.'
+    exit
+}
+
+if ($Action -eq 'Start') {
+    $temporaryVpn = Get-NetAdapter -Name 'VPNUS' -ErrorAction SilentlyContinue
+    if ($temporaryVpn -and $temporaryVpn.Status -eq 'Up') {
+        throw 'Disconnect the temporary VPNUS connection before starting system smart routing.'
+    }
+}
+if ((Get-OurProcesses).Count) { throw 'Smart routing is already running. Stop it before restarting.' }
+if($Action -in @('Start','ProxyOnly')){
+    $existingStatus=(Invoke-WireSock @('status')) -join ' '
+    if($existingStatus -notmatch [regex]::Escape($smartProfile) -and $existingStatus.Trim() -notmatch '(?i)^(Нет подключения|Not connected|No connection)$'){
+        throw 'Another WireSock profile is in use. Disconnect it in WireSock before starting RoutePilot.'
+    }
+}
+if($Action -in @('Start','ProxyOnly')){Stop-OurProcesses}
+if($Action -in @('Start','ProxyOnly')){Remove-Item -LiteralPath (Join-Path $runtime 'stop.request') -Force -ErrorAction SilentlyContinue}
+try {
+Prepare-Configuration
+if ($Action -eq 'Prepare') { exit }
+if ($Action -eq 'SyncProfile') {
+    Sync-WireSockProfile $smartProfile (Join-Path $private ($smartProfile + '.conf')) (Join-Path $private 'profile-backups')
+    exit
+}
+$routingPorts=@(20808,20809,20810,20828,20829,20830,20831)
+$occupied=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {$_.LocalPort -in $routingPorts})
+if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupied.LocalPort | Sort-Object -Unique) -join ', '))}
+
+    Sync-WireSockProfile $smartProfile (Join-Path $private ($smartProfile + '.conf')) (Join-Path $private 'profile-backups')
+    Connect-WireSock
+    if($Action -eq 'Reconnect' -and (Test-Path -LiteralPath (Join-Path $runtime 'stop.request'))){throw 'Recovery cancelled by Stop.'}
+    Invoke-WireSock @('status')
+    if(Test-PolicyV2){
+        & (Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe') --prepare-policy $root
+        if($LASTEXITCODE -ne 0){throw 'The checked policy snapshot could not be prepared.'}
+    }
+    $bridgeProcess = Start-Helper $bridgeExe (Join-Path $runtime 'bridge.json')
+    $sessionMode=if($Action -eq 'Reconnect'){$previous.mode}else{$Action}
+    $configFile = if ($sessionMode -eq 'ProxyOnly') { 'router-proxy.json' } else { 'router.json' }
+    $routerProcess = Start-Helper $routerExe (Join-Path $runtime $configFile)
+    Write-JsonFile (Join-Path $runtime 'session.json') @{
+        running=$true;id=[guid]::NewGuid().ToString('N');startedUtc=[DateTime]::UtcNow.ToString('o')
+        routerPid=$routerProcess.Id;bridgePid=$bridgeProcess.Id;bridgeReady=$false;mode=$sessionMode;sourceProfile=$sourceProfile
+        recovering=$true;recoveryParentId=$(if($Action -eq 'Reconnect'){$ExpectedSessionId}else{''});networkSignature=(Get-SessionNetworkSignature)
+    }
+    Start-PolicyController
+    $startedSession=Read-JsonFile (Join-Path $runtime 'session.json')
+    $policyDeadline=[DateTime]::UtcNow.AddSeconds(30);$policyReady=$false
+    do {
+        try {$policyState=Read-JsonFile (Join-Path $runtime 'policy-state.json');$policyReady=$policyState.epoch.StartsWith($startedSession.id+':') -and $policyState.phase -in @('Auto','Lists')}catch{}
+        if(-not $policyReady){Start-Sleep -Milliseconds 150}
+    }while(-not $policyReady -and [DateTime]::UtcNow -lt $policyDeadline)
+    if(-not $policyReady){throw 'The routing controller did not become ready.'}
+    $health=& (Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe') --session-health | ConvertFrom-Json
+    if(-not $health.healthy){throw 'The AWG2 data path did not pass HTTPS verification.'}
+    Write-JsonFile (Join-Path $runtime 'session-health.json') @{sessionId=$startedSession.id;healthy=$true;message=$health.message;updatedUtc=[DateTime]::UtcNow.ToString('o')}
+    $startedSession.recovering=$false;$startedSession.bridgeReady=$true
+    Write-JsonFile (Join-Path $runtime 'session.json') $startedSession
+    Remove-Item -LiteralPath (Join-Path $root 'logs\connection-lost.txt'),(Join-Path $root 'logs\recovery-error.log') -Force -ErrorAction SilentlyContinue
+    $watchScriptPath = '"' + $PSCommandPath + '"'
+    if($Action -ne 'Reconnect'){
+        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -WorkingDirectory $root `
+            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$watchScriptPath,'-Action','Watch') `
+            -RedirectStandardOutput (Join-Path $root 'logs\watch-output.log') -RedirectStandardError (Join-Path $root 'logs\watch-error.log') | Out-Null
+    }
+    if ($Action -eq 'Start') { Clear-DnsClientCache -ErrorAction SilentlyContinue }
+    Write-Host "Running: $Action. Router 127.0.0.1:20809; VPN bridge 127.0.0.1:20808."
+} catch {
+    $startFailure = $_
+    try {
+        Stop-OurProcesses -KeepWatch:($Action -eq 'Reconnect')
+        if($Action -eq 'Reconnect' -and -not(Test-Path -LiteralPath (Join-Path $runtime 'stop.request'))){
+            $previous | Add-Member -NotePropertyName recovering -NotePropertyValue $true -Force
+            $previous | Add-Member -NotePropertyName recoveryReason -NotePropertyValue $startFailure.Exception.Message -Force
+            $previous | Add-Member -NotePropertyName bridgeReady -NotePropertyValue $false -Force
+            Write-JsonFile (Join-Path $runtime 'session.json') $previous
+        }else{Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;bridgeReady=$false;stoppedUtc=[DateTime]::UtcNow.ToString('o')}}
+        $failedStatus = (Invoke-WireSock @('status')) -join ' '
+        if ($failedStatus -match [regex]::Escape($smartProfile)) { Invoke-WireSock @('disconnect') | Out-Null }
+    } catch { [IO.File]::WriteAllText((Join-Path $root 'logs\cleanup-error.log'),$_.Exception.Message) }
+    throw $startFailure
+}
+} finally { $controlLock.Dispose(); Invoke-AgentCoordinator 'end-operation' }

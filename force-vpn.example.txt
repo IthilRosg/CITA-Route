@@ -1,0 +1,1 @@
+# Optional domains to always route through your VPN, one hostname per line.

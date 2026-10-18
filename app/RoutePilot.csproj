@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>RoutePilot</AssemblyName>
+    <RootNamespace>RoutePilot</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\RoutePilot.ico</ApplicationIcon>
+    <NuGetAudit>false</NuGetAudit>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="..\agent\NetworkProbe.cs" Link="NetworkProbe.cs" /></ItemGroup>
+</Project>

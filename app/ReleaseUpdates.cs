@@ -1,0 +1,144 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.IO.Compression;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace RoutePilot;
+
+public sealed record ReleaseUpdate(Version Version,string Tag,Uri Page,Uri Archive,Uri Checksums,string FileName,long Bytes);
+
+public sealed class ReleaseUpdates
+{
+    public const string Repository="IthilRosg/CITA-Route";
+    public const long MaximumDownload=450L*1024*1024;
+    public static Version Current=>typeof(ReleaseUpdates).Assembly.GetName().Version??new Version(0,3,0);
+    readonly HttpClient _http;
+    public ReleaseUpdates(HttpClient http){_http=http;}
+    public static HttpClient CreateClient(bool routed)
+    {
+        var handler=new SocketsHttpHandler{UseProxy=routed,Proxy=routed?new WebProxy("socks5://127.0.0.1:20809"):null,AllowAutoRedirect=true,MaxAutomaticRedirections=5,ConnectTimeout=TimeSpan.FromSeconds(8)};
+        var client=new HttpClient(handler){Timeout=Timeout.InfiniteTimeSpan};
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("CITA-Route/"+Current.ToString(3));
+        return client;
+    }
+    public async Task<ReleaseUpdate?> Check(CancellationToken token)
+    {
+        using var response=await _http.GetAsync("https://api.github.com/repos/"+Repository+"/releases/latest",HttpCompletionOption.ResponseHeadersRead,token);
+        TrustedResponse(response);
+        if(response.StatusCode==HttpStatusCode.NotFound)return null;
+        response.EnsureSuccessStatusCode();
+        using var document=JsonDocument.Parse(await ReadBounded(response,1024*1024,token));
+        return Parse(document.RootElement,Current);
+    }
+    public static ReleaseUpdate? Parse(JsonElement release,Version current)
+    {
+        if(release.GetProperty("draft").GetBoolean() || release.GetProperty("prerelease").GetBoolean())return null;
+        string tag=release.GetProperty("tag_name").GetString()??"";
+        if(!Regex.IsMatch(tag,@"^v\d+\.\d+\.\d+$") || !Version.TryParse(tag[1..],out var version))throw new InvalidDataException("Некорректная версия выпуска.");
+        if(Compare(version,current)<=0)return null;
+        string name="CITA-Route-"+version.ToString(3)+"-win-x64.zip";
+        var assets=release.GetProperty("assets").EnumerateArray().ToArray();
+        var archives=assets.Where(a=>a.GetProperty("name").GetString()==name).ToArray();
+        var sums=assets.Where(a=>a.GetProperty("name").GetString()=="SHA256SUMS.txt").ToArray();
+        if(archives.Length!=1 || sums.Length!=1)throw new InvalidDataException("В выпуске нет полного ZIP и SHA256SUMS.txt.");
+        long length=archives[0].GetProperty("size").GetInt64();
+        if(length<=0 || length>MaximumDownload)throw new InvalidDataException("Неподдерживаемый размер обновления.");
+        Uri Asset(JsonElement asset,string file)
+        {
+            var uri=new Uri(asset.GetProperty("browser_download_url").GetString()!);
+            string expected="/"+Repository+"/releases/download/"+tag+"/"+file;
+            if(uri.Scheme!="https" || uri.Host!="github.com" || uri.AbsolutePath!=expected || uri.Query.Length!=0 || uri.UserInfo.Length!=0)throw new InvalidDataException("Обновление с неизвестного адреса отклонено.");
+            return uri;
+        }
+        var page=new Uri("https://github.com/"+Repository+"/releases/tag/"+tag);
+        return new(version,tag,page,Asset(archives[0],name),Asset(sums[0],"SHA256SUMS.txt"),name,length);
+    }
+    public static int Compare(Version first,Version second)=>new Version(first.Major,first.Minor,Math.Max(0,first.Build)).CompareTo(new Version(second.Major,second.Minor,Math.Max(0,second.Build)));
+    public static string ExpectedHash(string text,string name)
+    {
+        var hashes=text.Split('\n').Select(line=>Regex.Match(line.TrimEnd('\r'),@"^([a-fA-F0-9]{64})[ \t]+\*?([^/\\\r\n]+)$"))
+            .Where(m=>m.Success && m.Groups[2].Value==name).Select(m=>m.Groups[1].Value.ToUpperInvariant()).ToArray();
+        if(hashes.Length!=1)throw new InvalidDataException("Контрольная сумма архива отсутствует или неоднозначна.");
+        return hashes[0];
+    }
+    public async Task<string> Download(ReleaseUpdate update,string root,IProgress<int>? progress,CancellationToken token)
+    {
+        string folder=Path.Combine(root,"runtime","updates",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
+        string archive=Path.Combine(folder,update.FileName);
+        try
+        {
+            using var sums=await _http.GetAsync(update.Checksums,HttpCompletionOption.ResponseHeadersRead,token);sums.EnsureSuccessStatusCode();
+            TrustedResponse(sums);
+            string expected=ExpectedHash(System.Text.Encoding.UTF8.GetString(await ReadBounded(sums,65536,token)),update.FileName);
+            using var response=await _http.GetAsync(update.Archive,HttpCompletionOption.ResponseHeadersRead,token);response.EnsureSuccessStatusCode();
+            TrustedResponse(response);
+            if(response.Content.Headers.ContentLength is long reported && reported!=update.Bytes)throw new InvalidDataException("Размер ответа отличается от GitHub Release.");
+            await using(var input=await response.Content.ReadAsStreamAsync(token))
+            await using(var output=new FileStream(archive,FileMode.CreateNew,FileAccess.Write,FileShare.None,65536,true))
+            {
+                byte[] buffer=new byte[65536];long total=0;int count;
+                while((count=await input.ReadAsync(buffer,token))>0){total+=count;if(total>update.Bytes || total>MaximumDownload)throw new InvalidDataException("Превышен размер обновления.");await output.WriteAsync(buffer.AsMemory(0,count),token);progress?.Report((int)(100*total/update.Bytes));}
+                if(total!=update.Bytes)throw new InvalidDataException("Архив загружен не полностью.");
+            }
+            await using(var input=File.OpenRead(archive))if(Convert.ToHexString(await SHA256.HashDataAsync(input,token))!=expected)throw new InvalidDataException("SHA-256 не совпал. Установка запрещена.");
+            string extracted=Path.Combine(folder,"package");Extract(archive,extracted);
+            string[] manifests=Directory.GetFiles(extracted,"manifest.json",SearchOption.AllDirectories);
+            if(manifests.Length!=1)throw new InvalidDataException("В архиве должен быть один manifest.json.");
+            string package=Path.GetDirectoryName(manifests[0])!;VerifyPackage(package,update.Version);
+            return package;
+        }
+        catch{if(File.Exists(archive))File.Delete(archive);throw;}
+    }
+    public static void Extract(string archive,string directory)
+    {
+        string prefix=Path.GetFullPath(directory)+Path.DirectorySeparatorChar;
+        using var zip=ZipFile.OpenRead(archive);
+        if(zip.Entries.Count>4096 || zip.Entries.Sum(e=>e.Length)>1500L*1024*1024)throw new InvalidDataException("Архив превышает допустимые пределы.");
+        var names=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach(var entry in zip.Entries)
+        {
+            string name=entry.FullName.Replace('\\','/');
+            if(name.StartsWith('/') || name.Split('/').Any(p=>p is "." or ".." || p.Contains(':') || p.EndsWith(' ') || p.EndsWith('.')) || ((entry.ExternalAttributes>>16)&0xF000)==0xA000)throw new InvalidDataException("Небезопасный путь в архиве.");
+            string target=Path.GetFullPath(Path.Combine(directory,name.Replace('/',Path.DirectorySeparatorChar)));
+            if(!target.StartsWith(prefix,StringComparison.OrdinalIgnoreCase) || !names.Add(target))throw new InvalidDataException("Путь или дубликат в архиве отклонён.");
+        }
+        Directory.CreateDirectory(directory);zip.ExtractToDirectory(directory);
+    }
+    public static void VerifyPackage(string package,Version expected)
+    {
+        using var manifest=JsonDocument.Parse(File.ReadAllText(Path.Combine(package,"manifest.json")));
+        var data=manifest.RootElement;
+        if(!Version.TryParse(data.GetProperty("version").GetString(),out var actual) || Compare(actual,expected)!=0 || data.GetProperty("architecture").GetString()!="win-x64" || !data.GetProperty("selfContained").GetBoolean())throw new InvalidDataException("Архив относится к другой версии или платформе.");
+        string prefix=Path.GetFullPath(package)+Path.DirectorySeparatorChar;var names=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach(var file in data.GetProperty("files").EnumerateArray())
+        {
+            string relative=file.GetProperty("path").GetString()!;
+            if(Path.IsPathRooted(relative) || relative.Contains(':'))throw new InvalidDataException("Некорректный путь manifest.");
+            string path=Path.GetFullPath(Path.Combine(package,relative));
+            if(!path.StartsWith(prefix,StringComparison.OrdinalIgnoreCase) || !names.Add(path))throw new InvalidDataException("Некорректный manifest.");
+            using var input=File.OpenRead(path);
+            if(input.Length!=file.GetProperty("bytes").GetInt64() || Convert.ToHexString(SHA256.HashData(input))!=file.GetProperty("sha256").GetString()?.ToUpperInvariant())throw new InvalidDataException("Повреждён файл обновления: "+Path.GetFileName(path));
+        }
+        foreach(string name in new[]{"RoutePilot.exe","SmartRouting.ps1","Install-Agent.ps1","Configure-Connection.ps1","product.json"})
+            if(!names.Contains(Path.Combine(package,name)))throw new InvalidDataException("Неполная поставка: "+name);
+    }
+    static async Task<byte[]> ReadBounded(HttpResponseMessage response,int limit,CancellationToken token)
+    {
+        await using var input=await response.Content.ReadAsStreamAsync(token);using var output=new MemoryStream();byte[] buffer=new byte[8192];int count;
+        while((count=await input.ReadAsync(buffer,token))>0){if(output.Length+count>limit)throw new InvalidDataException("Ответ сервера слишком большой.");output.Write(buffer,0,count);}
+        return output.ToArray();
+    }
+    static void TrustedResponse(HttpResponseMessage response)
+    {
+        var uri=response.RequestMessage?.RequestUri;
+        if(uri==null || uri.Scheme!="https" || uri.UserInfo.Length!=0 || uri.Host is not ("api.github.com" or "github.com" or "release-assets.githubusercontent.com" or "objects.githubusercontent.com"))throw new InvalidDataException("Перенаправление обновления на неизвестный сервер отклонено.");
+    }
+}

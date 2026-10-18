@@ -1,0 +1,51 @@
+﻿[CmdletBinding()]
+param()
+$ErrorActionPreference='Stop'
+$root=$PSScriptRoot
+$version=([IO.File]::ReadAllText((Join-Path $root 'product.json')) | ConvertFrom-Json).version
+$dist=Join-Path $root 'dist'
+$stage=Join-Path $dist ('CITA-Route-'+$version+'-win-x64-'+[guid]::NewGuid().ToString('N').Substring(0,8))
+New-Item -ItemType Directory -Path $stage,(Join-Path $stage 'runtime\agent-build'),(Join-Path $stage 'runtime\app-build'),(Join-Path $stage 'runtime\rules'),(Join-Path $stage 'rules'),(Join-Path $stage 'source\agent'),(Join-Path $stage 'source\app\Assets'),(Join-Path $stage 'licenses') -Force | Out-Null
+$dotnet=Join-Path $env:ProgramFiles 'dotnet\dotnet.exe'
+$env:DOTNET_CLI_HOME=Join-Path $root 'runtime\.dotnet'
+$env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1';$env:DOTNET_CLI_TELEMETRY_OPTOUT='1';$env:MSBuildEnableWorkloadResolver='false'
+foreach($project in @('agent','app')){
+    & $dotnet publish (Join-Path $root ($project+'\'+$(if($project -eq 'agent'){'RoutePilot.Agent.csproj'}else{'RoutePilot.csproj'}))) -c Release -r win-x64 -o (Join-Path $stage ('runtime\'+$project+'-build')) --self-contained true `
+        -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:EnableSingleFileAnalyzer=false -p:RestoreIgnoreFailedSources=true -p:NuGetAudit=false
+    if($LASTEXITCODE -ne 0){throw ('Portable publish failed: '+$project)}
+}
+Copy-Item -LiteralPath (Join-Path $stage 'runtime\app-build\RoutePilot.exe') -Destination (Join-Path $stage 'RoutePilot.exe')
+foreach($exe in @('runtime\app-build\RoutePilot.exe','runtime\agent-build\RoutePilot.Agent.exe')){
+    if([version](Get-Item -LiteralPath (Join-Path $stage $exe)).VersionInfo.FileVersion -ne [version]($version+'.0')){throw 'Published assembly and product versions differ.'}
+}
+foreach($name in @('product.json','LICENSE','NOTICE')){Copy-Item -LiteralPath (Join-Path $root $name) -Destination $stage}
+Copy-Item -LiteralPath (Join-Path $root 'Directory.Build.props') -Destination (Join-Path $stage 'source')
+# Explicit allowlist: never recurse into this computer's private/runtime/data/log folders.
+$scripts=@('SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','Verify-Routing.ps1','Install-Release.ps1')
+foreach($name in $scripts){Copy-Item -LiteralPath (Join-Path $root $name) -Destination $stage}
+foreach($name in @('smart-router.exe','vpn-bridge.exe')){Copy-Item -LiteralPath (Join-Path $root ('runtime\'+$name)) -Destination (Join-Path $stage 'runtime')}
+foreach($name in @('russia_inside.srs','discord.srs')){Copy-Item -LiteralPath (Join-Path $root ('runtime\rules\'+$name)) -Destination (Join-Path $stage 'runtime\rules')}
+Copy-Item -LiteralPath (Join-Path $root 'rules\telegram-cidr.txt') -Destination (Join-Path $stage 'rules')
+foreach($name in @('force-direct.txt','force-vpn.txt')){[IO.File]::WriteAllText((Join-Path $stage $name),'# Add your own domains, one per line.',(New-Object Text.UTF8Encoding($true)))}
+Copy-Item -LiteralPath (Join-Path $root 'PORTABLE-README.md') -Destination (Join-Path $stage 'README.md')
+Copy-Item -LiteralPath (Join-Path $root 'THIRD-PARTY.md') -Destination $stage
+Copy-Item -LiteralPath (Join-Path $root 'Verify-Portable.ps1') -Destination (Join-Path $stage 'source')
+foreach($project in @('agent','app')){
+    Get-ChildItem -LiteralPath (Join-Path $root $project) -File | Where-Object {$_.Extension -in @('.cs','.csproj','.xaml','.manifest')} | Copy-Item -Destination (Join-Path $stage ('source\'+$project))
+}
+Copy-Item -LiteralPath (Join-Path $root 'app\Assets\RoutePilot.ico') -Destination (Join-Path $stage 'source\app\Assets')
+foreach($name in @('sing-box-LICENSE.txt','GPL-3.0.txt','sing-box-1.14.3-source.zip','dotnet-LICENSE.txt','dotnet-THIRD-PARTY-NOTICES.txt')){
+    Copy-Item -LiteralPath (Join-Path $root ('distribution-licenses\'+$name)) -Destination (Join-Path $stage 'licenses')
+}
+# Include the engine's build settings without a user's configuration.
+& (Join-Path $root 'runtime\smart-router.exe') version | Set-Content -LiteralPath (Join-Path $stage 'licenses\engine-version.txt') -Encoding UTF8
+$forbidden=@(Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object {$_.Extension -in @('.conf','.log') -or $_.Name -in @('session.json','controller-token.txt','connection.json','traffic.json','policy-cache.json','agent-config.json','router.json','bridge.json')})
+if($forbidden.Count){throw 'Private files detected in distribution staging.'}
+$files=@(Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {@{path=$_.FullName.Substring($stage.Length+1);bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}})
+. (Join-Path $root 'FileStorage.ps1')
+Write-JsonFile (Join-Path $stage 'manifest.json') @{version=$version;architecture='win-x64';selfContained=$true;files=$files;createdUtc=[DateTime]::UtcNow.ToString('o')}
+$zip=Join-Path $dist ('CITA-Route-'+$version+'-win-x64.zip')
+Compress-Archive -LiteralPath $stage -DestinationPath $zip -Force
+$hash=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+[IO.File]::WriteAllText((Join-Path $dist 'SHA256SUMS.txt'),($hash+'  '+[IO.Path]::GetFileName($zip)+[Environment]::NewLine),(New-Object Text.UTF8Encoding($false)))
+Write-Output ('PORTABLE: '+$zip)

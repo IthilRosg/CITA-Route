@@ -1,0 +1,10 @@
+<Project>
+  <PropertyGroup>
+    <Version>0.3.0</Version>
+    <Product>CITA Route</Product>
+    <Description>Adaptive routing for WireSock, WireGuard and AmneziaWG</Description>
+    <Authors>IthilRosg</Authors>
+    <RepositoryUrl>https://github.com/IthilRosg/CITA-Route</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+</Project>
