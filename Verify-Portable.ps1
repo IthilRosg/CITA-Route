@@ -48,6 +48,10 @@ try{
         & (Join-Path $package 'runtime\agent-build\RoutePilot.Agent.exe') --self-test
         Assert ($LASTEXITCODE -eq 0) 'Self-contained agent failed.'
         $app=Start-Process -FilePath (Join-Path $package 'RoutePilot.exe') -ArgumentList '--self-test' -PassThru -Wait
+        if($app.ExitCode -ne 0){
+            $appLog=Join-Path $package 'logs\app-self-test.log'
+            if(Test-Path -LiteralPath $appLog){Get-Content -LiteralPath $appLog -Tail 50 | Write-Output}
+        }
         Assert ($app.ExitCode -eq 0) 'Self-contained GUI failed.'
     }
     Write-Output 'PASS: clean installation defaults, profile discovery, endpoint portability, invalid config rejection, script syntax and optional package verification. No network settings changed.'

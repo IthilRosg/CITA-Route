@@ -23,7 +23,7 @@ public static class ConnectionSetupTests
                     [string]$ExpectedEgressIp='', [string]$UserSid='', [string]$UserProfile='')
                 $ErrorActionPreference='Stop'
                 if($Action -eq 'Discover'){
-                    @{CliPath=$CliPath;Profiles=@('Fixture');SelectedProfile='Fixture'}|ConvertTo-Json -Compress
+                    @{CliPath=$CliPath;Profiles=@('Профиль');SelectedProfile='Профиль'}|ConvertTo-Json -Compress
                     exit 0
                 }
                 if($SourceProfile -eq 'Failure'){throw 'Controlled setup failure'}
@@ -35,11 +35,19 @@ public static class ConnectionSetupTests
             using var backend=new Backend(folder);
             string cli=Path.Combine(folder,"WireSock Secure Connect","wiresock-connect-cli.exe");
             foreach(string selectedCli in new[]{"",cli})
+            foreach(bool legacyEncoding in new[]{false,true})
             {
-                var result=backend.RunAsync("powershell.exe",ConnectionSetup.DiscoveryArguments(folder,selectedCli)).GetAwaiter().GetResult();
+                var arguments=ConnectionSetup.DiscoveryArguments(folder,selectedCli);
+                if(legacyEncoding)
+                {
+                    string command=Encoding.Unicode.GetString(Convert.FromBase64String(arguments[^1]));
+                    arguments[^1]=Convert.ToBase64String(Encoding.Unicode.GetBytes("[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(437); "+command));
+                }
+                var result=backend.RunAsync("powershell.exe",arguments).GetAwaiter().GetResult();
                 if(result.Code!=0)throw new Exception("Setup discovery parameter binding failed.");
                 var inventory=JsonSerializer.Deserialize<ConnectionInventory>(result.Output.Trim(),AppPaths.Json)!;
                 if(inventory.CliPath!=selectedCli)throw new Exception("Discovery CLI path changed across the process boundary.");
+                if(inventory.SelectedProfile!="Профиль")throw new Exception("Discovery corrupted a Unicode profile under the legacy console code page.");
             }
             string profile="Профиль ' & $(throw 'must not execute') \"quoted\"";
             string import=Path.Combine(folder,"my ' & $profile.conf");

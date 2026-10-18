@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -26,9 +25,10 @@ public sealed class ConnectionSetup
     public ConnectionSetup(string root,Backend backend){_root=root;_backend=backend;}
     internal static string[] DiscoveryArguments(string root,string cli)
     {
-        var arguments=new List<string>{"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",Path.Combine(root,"Configure-Connection.ps1"),"-Action","Discover"};
-        if(!string.IsNullOrEmpty(cli)){arguments.Add("-CliPath");arguments.Add(cli);}
-        return arguments.ToArray();
+        string Literal(string value)=>"'"+value.Replace("'","''")+"'";
+        string command="$ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false); & "+Literal(Path.Combine(root,"Configure-Connection.ps1"))+" -Action Discover";
+        if(!string.IsNullOrEmpty(cli))command+=" -CliPath "+Literal(cli);
+        return new[]{"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-OutputFormat","Text","-EncodedCommand",Convert.ToBase64String(Encoding.Unicode.GetBytes(command))};
     }
     public async Task<ConnectionInventory> Discover(string cli="")
     {
@@ -45,7 +45,7 @@ public sealed class ConnectionSetup
         // powershell.exe -File. Keep values inside the child's PowerShell syntax;
         // only a base64 command crosses that native process boundary. The child
         // also isolates Configure-Connection.ps1's exit from the report writer.
-        string child="$ErrorActionPreference='Stop'; $parameters=@{Action="+Literal(action)+";CliPath="+Literal(cli)+
+        string child="$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false); $parameters=@{Action="+Literal(action)+";CliPath="+Literal(cli)+
             ";SourceProfile="+Literal(profile)+";ImportPath="+Literal(import)+";ExpectedEgressIp="+Literal(egress)+
             ";UserSid="+Literal(sid)+";UserProfile="+Literal(user)+"}; & "+Literal(Path.Combine(root,"Configure-Connection.ps1"))+" @parameters";
         string encoded=Convert.ToBase64String(Encoding.Unicode.GetBytes(child));
