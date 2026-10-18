@@ -19,6 +19,9 @@ sections and generous headings in Bahnschrift SemiCondensed with Windows font
 fallback. The application icon combines the panel's red square frame with the
 route glyph.
 
+The interaction reference for the planned compact view is
+[WireSock Secure Connect](https://wiresock.net/documentation/wiresock-secure-connect/get-started.html).
+Retain CITA's SIGNALIS-inspired palette and typography.
 The planned standard view uses a separate compact window: connection state,
 profile name, one main action, small traffic/session/probe-loss statistics and a fixed
 status bar for the current operation. Keep navigation rails, large section
