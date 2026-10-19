@@ -150,6 +150,10 @@ public sealed class Backend : IDisposable
     }
     public static string FriendlyError(string message)
     {
+        if(message.Contains("Update preparation is in progress"))return "CITA Route готовит обновление. Подключение будет доступно после установки.";
+        if(message.Contains("Previous VPN restore needs attention"))return "Подключение не завершено; прежний VPN не удалось вернуть автоматически. Открой журнал и проверь прежнее подключение.";
+        if(message.Contains("VPNUS reconnected") || message.Contains("VPNUS connection has no supported") || message.Contains("VPNUS service identity"))return "Не удалось безопасно остановить VPNUS автоматически. Проверь его клиент и повтори подключение.";
+        if(message.Contains("competing WireSock connection did not stop"))return "WireSock не подтвердил отключение прежнего подключения. Проверь его состояние и повтори попытку.";
         if(message.Contains("VPNUS"))return "Сначала отключи временный VPNUS. Затем повтори подключение.";
         if(message.Contains("handshake"))return "AWG2-сервер не ответил за 35 секунд. Проверь доступность исходного профиля WireSock.";
         if(message.Contains("Override profile"))return "В WireSock отключи замену правил профиля глобальными настройками.";

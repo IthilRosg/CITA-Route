@@ -1,4 +1,4 @@
-﻿# Shared by the GUI discovery command, setup and the routing lifecycle. No keys are returned.
+# Shared by the GUI discovery command, setup and the routing lifecycle. No keys are returned.
 function Get-ConnectionSettings([string]$Root) {
     $path=Join-Path $Root 'data\connection.json'
     if(Test-Path -LiteralPath $path){return Read-JsonFile $path}
@@ -79,4 +79,120 @@ function Protect-PrivateDirectory([string]$Path,[string]$UserSid='') {
     }
     if($PSVersionTable.PSEdition -eq 'Core'){[IO.FileSystemAclExtensions]::SetAccessControl((New-Object IO.DirectoryInfo($Path)),$acl)}
     else{[IO.Directory]::SetAccessControl($Path,$acl)}
+}
+
+# Explicit Connect may release supported competing connections. Never delete profiles.
+function Get-ConflictProfile([string]$Status) {
+    $matches=[regex]::Matches($Status,'(?im)^.*?\b(?:profile|\u043f\u0440\u043e\u0444\u0438\u043b\u044f)[ \t]+([^\r\n]+?)[ \t]*\r?$')
+    if($matches.Count -eq 1){return $matches[0].Groups[1].Value.Trim()}
+    return ''
+}
+function Get-ConflictVpnusService {
+    $service=Get-CimInstance Win32_Service -Filter "Name='VpnusService'" -ErrorAction SilentlyContinue
+    if(-not $service){return $null}
+    $expected=Join-Path $env:ProgramFiles 'VPNUS\service\vpnus-service.exe'
+    if($service.PathName.Trim('"') -ine $expected){throw 'VPNUS service identity is not recognized; automatic release was refused.'}
+    return $service
+}
+function Wait-ConflictWireSockDown {
+    $deadline=[DateTime]::UtcNow.AddSeconds(12)
+    do {
+        Assert-ConnectionOperation
+        $status=Read-WireSockStatus
+        if((Get-WireSockState $status 'SmartRouting-AWG2') -eq 'Disconnected'){return}
+        Start-Sleep -Milliseconds 250
+    }while([DateTime]::UtcNow -lt $deadline)
+    throw 'The competing WireSock connection did not stop.'
+}
+function Release-ConnectionConflicts([string]$Root) {
+    Assert-NoAgentRun;Assert-ConnectionOperation
+    $journalPath=Join-Path $Root 'runtime\connection-handoff.json'
+    if(Test-Path -LiteralPath $journalPath){
+        $previous=Read-JsonFile $journalPath
+        if($previous.operationId -notmatch '^[a-fA-F0-9]{32}$'){throw 'Invalid connection handoff journal.'}
+        $currentOperation=$OperationId
+        try{$OperationId=$previous.operationId;Restore-ConnectionHandoff $Root}finally{$OperationId=$currentOperation}
+    }
+    # The existing coordinator is also used by setup and the regular watchdog.
+    $leased=$false
+    try {
+        if(Get-Service RoutePilotRescue -ErrorAction SilentlyContinue){Invoke-AgentCoordinator 'begin-operation';$leased=$true}
+        if(Get-Process -Name smart-router,vpn-bridge -ErrorAction SilentlyContinue){throw 'Stop the current RoutePilot engine before switching connections.'}
+        Write-ConnectionProgress 'ReleasingConflicts'
+        $status=Read-WireSockStatus;$state=Get-WireSockState $status 'SmartRouting-AWG2'
+        if($state -eq 'Unknown'){throw 'WireSock state could not be verified. Automatic release was refused.'}
+        $profile=Get-ConflictProfile $status
+        if($state -ne 'Disconnected' -and -not $profile){throw 'WireSock profile identity could not be verified.'}
+        $vpnus=Get-NetAdapter -Name VPNUS -ErrorAction SilentlyContinue
+        # Validate every detected provider before interrupting the first one.
+        if($vpnus -and $vpnus.Status -eq 'Up'){
+            if(-not(Get-ConflictVpnusService)){throw 'The VPNUS connection has no supported service control.'}
+        }
+        $journal=@{version=1;operationId=$OperationId;profile=$(if($state -ne 'Disconnected'){$profile}else{''});wireSockReleased=$false;vpnusStopped=$false;updatedUtc=[DateTime]::UtcNow.ToString('o')}
+        if($state -eq 'Disconnected' -and (-not $vpnus -or $vpnus.Status -ne 'Up')){return}
+        Write-JsonFile $journalPath $journal
+        if($state -ne 'Disconnected'){
+            # Record intent first: even cancellation after the command needs restoration.
+            $journal.wireSockReleased=$true;Write-JsonFile $journalPath $journal
+            try{Read-HelperOutput $cli 'disconnect'|Out-Null}catch{
+                if((Get-WireSockState (Read-WireSockStatus) 'SmartRouting-AWG2') -ne 'Disconnected'){throw}
+            }
+            Wait-ConflictWireSockDown
+        }
+        Assert-ConnectionOperation
+        if($vpnus -and $vpnus.Status -eq 'Up'){
+            $service=Get-ConflictVpnusService
+            if(-not $service){throw 'The VPNUS connection has no supported service control.'}
+            $journal.vpnusStopped=$true;Write-JsonFile $journalPath $journal
+            Stop-Service -Name VpnusService -ErrorAction Stop
+            $deadline=[DateTime]::UtcNow.AddSeconds(12);$down=0
+            do {
+                Assert-ConnectionOperation
+                $adapter=Get-NetAdapter -Name VPNUS -ErrorAction SilentlyContinue
+                $current=Get-Service VpnusService -ErrorAction Stop
+                if(((-not $adapter) -or $adapter.Status -ne 'Up') -and $current.Status -eq 'Stopped'){$down++}else{$down=0}
+                if($down -ge 3){break}
+                Start-Sleep -Milliseconds 300
+            }while([DateTime]::UtcNow -lt $deadline)
+            if($down -lt 3){throw 'VPNUS reconnected or failed to stop. Connection switching was cancelled.'}
+        }
+    }finally{if($leased){Invoke-AgentCoordinator 'end-operation'}}
+}
+function Complete-ConnectionHandoff([string]$Root) {
+    $path=Join-Path $Root 'runtime\connection-handoff.json'
+    if(-not(Test-Path -LiteralPath $path)){return}
+    $journal=Read-JsonFile $path
+    if($journal.operationId -ne $OperationId){throw 'Connection handoff generation changed.'}
+    Remove-Item -LiteralPath $path -Force
+}
+function Restore-ConnectionHandoff([string]$Root) {
+    $path=Join-Path $Root 'runtime\connection-handoff.json'
+    if(-not(Test-Path -LiteralPath $path)){return}
+    $journal=Read-JsonFile $path
+    if($journal.version -ne 1 -or $journal.operationId -ne $OperationId){throw 'Connection handoff generation changed; restore was refused.'}
+    Assert-NoAgentRun
+    $leased=$false
+    try {
+        if(Get-Service RoutePilotRescue -ErrorAction SilentlyContinue){Invoke-AgentCoordinator 'begin-operation';$leased=$true}
+        if(Get-Process -Name smart-router,vpn-bridge -ErrorAction SilentlyContinue){throw 'A newer route is active; handoff restore was refused.'}
+        $failures=New-Object 'System.Collections.Generic.List[string]'
+        if($journal.wireSockReleased -and $journal.profile){
+            $status=Read-WireSockStatus;$state=Get-WireSockState $status 'SmartRouting-AWG2'
+            if($state -ne 'Disconnected' -and (Get-ConflictProfile $status) -ne $journal.profile){throw 'WireSock changed to another profile; it was not overwritten during restore.'}
+            if($state -eq 'Disconnected'){
+                try {
+                    $profiles=@(Get-WireSockProfileNames)+@('SmartRouting-AWG2')
+                    if($profiles -notcontains $journal.profile){throw 'The previous WireSock profile no longer exists.'}
+                    # Quote for CreateProcess, without a shell; keep profile text one argument.
+                    $argument='"'+([regex]::Replace([regex]::Replace([string]$journal.profile,'(\\*)"','$1$1\"'),'(\\+)$','$1$1'))+'"'
+                    Read-HelperOutput $cli ('connect '+$argument+' -exit')|Out-Null
+                }catch{$failures.Add($_.Exception.Message)}
+            }
+        }
+        if($journal.vpnusStopped){
+            try{$null=Get-ConflictVpnusService;Start-Service -Name VpnusService -ErrorAction Stop}catch{$failures.Add($_.Exception.Message)}
+        }
+        if($failures.Count){throw ('Previous VPN restore needs attention: '+($failures -join '; '))}
+        Remove-Item -LiteralPath $path -Force
+    }finally{if($leased){Invoke-AgentCoordinator 'end-operation'}}
 }

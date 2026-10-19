@@ -22,7 +22,7 @@ public partial class MainWindow
         if(_render)return;
         if(_updates.Prepared is { } prepared && Version.TryParse(prepared.Tag.TrimStart('v'),out var version) && ReleaseUpdates.Compare(version,ReleaseUpdates.Current)<=0)
         {_updates.Phase="Installed";_updates.Prepared=null;SaveUpdates();}
-        else if(_updates.Phase is "Installing" or "Verifying" or "Downloading")
+        else if(_updates.Phase is "Installing" or "Verifying" or "Downloading" or "Disconnecting")
         {
             _updates.Phase="Failed";_updates.Error="Предыдущая установка не завершена. Повтори установку вручную.";
             SaveUpdates();
@@ -40,7 +40,7 @@ public partial class MainWindow
         if(_updates.Phase=="Failed")UpdateStatusLabel.Text="Обновление отложено: "+Backend.Redact(_updates.Error);
         else if(_updates.Phase=="WaitingForNetwork")UpdateStatusLabel.Text="Пакет готов. Повторная проверка GitHub ожидает доступ к интернету.";
         else if(_updates.Prepared!=null && _updates.Phase is "Verified" or "WaitingForDisconnect")
-            UpdateStatusLabel.Text=_preferences.AutoInstallUpdates?"Пакет "+_updates.Prepared.Tag+" готов. Автоустановка после отключения маршрута.":"Пакет "+_updates.Prepared.Tag+" готов к ручной установке.";
+            UpdateStatusLabel.Text=_preferences.AutoInstallUpdates?"Пакет "+_updates.Prepared.Tag+" готов. Перед автоустановкой CITA Route отключит свой маршрут.":"Пакет "+_updates.Prepared.Tag+" готов к ручной установке.";
     }
     private async Task CheckUpdatesAsync(bool manual=false)
     {
@@ -111,21 +111,35 @@ public partial class MainWindow
         if(_busy||_updateDownloading||_updateInstalling||_updates.Prepared==null||_exiting)return;
         if(manual){_updates.DeferredUntilUtc=DateTime.MinValue;_updates.NextRetryUtc=DateTime.MinValue;_updates.NetworkRetries=0;}
         RefreshRescueState();
-        string? blocked=UpdateJournal.BlockReason(_root,_busy,_engineRunning,_rescueState.BlocksRouting,UpdateJournal.GlobalEngineRunning());
+        var currentSession=AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession());
+        bool owned=_backend.EngineRunning(currentSession);
+        string? blocked=UpdateJournal.PreparationBlockReason(_root,_busy,owned,_rescueState.BlocksRouting,UpdateJournal.GlobalEngineRunning());
         if(blocked!=null)
         {
             if(_updates.Phase!="Failed" && _updates.Phase!="WaitingForDisconnect"){_updates.Phase="WaitingForDisconnect";SaveUpdates();}
             UpdateStatusLabel.Text=blocked;if(manual)Notice(blocked);return;
         }
         _updateInstalling=true;_busy=true;RefreshRescueState();ConnectButton.IsEnabled=false;
-        Process? installer=null;Task<string>? stdout=null,stderr=null;
+        Process? installer=null;Task<string>? stdout=null,stderr=null;FileStream? preparation=null;
         try
         {
             var prepared=_updates.Prepared;
+            preparation=UpdateJournal.ReservePreparation(_root);
             _updates.Phase="Verifying";_updates.Error="";SaveUpdates();UpdateStatusLabel.Text="Повторно проверяю выпуск и сохранённый пакет…";
             using var timeout=CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token);timeout.CancelAfter(TimeSpan.FromMinutes(2));
-            using var http=ReleaseUpdates.CreateClient(false);
+            using var http=ReleaseUpdates.CreateClient(owned);
             var verified=await Task.Run(()=>new ReleaseUpdates(http).Restore(prepared,_root,timeout.Token),timeout.Token);
+            // Finish every network-dependent verification before stopping this VPN.
+            if(owned)
+            {
+                _updates.Phase="Disconnecting";SaveUpdates();UpdateStatusLabel.Text="Отключаем маршрут перед установкой…";SetConnectionStage("Stopping");
+                var stopped=await ConnectionOperation.Run(_root,"Stop",true,progress:OperationProgress(),cancellation:_updateLifetime.Token);
+                if(!stopped.Success)throw new IOException("Не удалось отключить маршрут: "+Backend.FriendlyError(stopped.Message));
+                _engineRunning=false;_engineAvailable=false;ClearNativeQuality();
+            }
+            RefreshRescueState();
+            string? afterStop=UpdateJournal.BlockReason(_root,false,false,_rescueState.BlocksRouting,UpdateJournal.GlobalEngineRunning());
+            if(afterStop!=null)throw new IOException(afterStop);
             string id=Guid.NewGuid().ToString("N"),handoff=Path.Combine(_root,"runtime","update-handoff-"+id+".json");
             using var self=Process.GetCurrentProcess();
             string Literal(string value)=>"'"+value.Replace("'","''")+"'";
@@ -163,7 +177,7 @@ public partial class MainWindow
         {
             // Streams are drained asynchronously; the installer is deliberately
             // allowed to outlive this GUI after acknowledging exclusive ownership.
-            installer?.Dispose();_updateInstalling=false;_busy=false;
+            installer?.Dispose();preparation?.Dispose();_updateInstalling=false;_busy=false;_operationPhase="";++_uiOperationGeneration;
             if(!_exiting){ConnectButton.IsEnabled=true;RefreshRescueState();RefreshUpdateControls();}
         }
     }

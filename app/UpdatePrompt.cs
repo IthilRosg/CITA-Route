@@ -16,10 +16,10 @@ public sealed class UpdatePrompt : Window
         var content=new StackPanel();
         content.Children.Add(new TextBlock{Text="CITA SYSTEMS // UPDATE AVAILABLE",FontFamily=new FontFamily("Consolas"),FontSize=11,Foreground=ConsoleTheme.Red});
         content.Children.Add(new TextBlock{Text="CITA ROUTE "+release.Version.ToString(3),FontFamily=new FontFamily("Bahnschrift SemiCondensed"),FontSize=34,Margin=new Thickness(0,16,0,12)});
-        content.Children.Add(new TextBlock{Text=ready?"Пакет загружен. Установка доступна после отключения маршрута.":"Доступна новая стабильная версия · "+Format.Bytes(release.Bytes),TextWrapping=TextWrapping.Wrap,Foreground=ConsoleTheme.Dim});
+        content.Children.Add(new TextBlock{Text=ready?"Пакет загружен. Перед установкой CITA Route отключит свой маршрут.":"Доступна новая стабильная версия · "+Format.Bytes(release.Bytes),TextWrapping=TextWrapping.Wrap,Foreground=ConsoleTheme.Dim});
         var notes=new TextBlock{Text=string.IsNullOrWhiteSpace(release.Notes)?"Улучшения и исправления CITA Route.":release.Notes,TextWrapping=TextWrapping.Wrap,FontSize=13,Margin=new Thickness(0,16,0,16)};
         content.Children.Add(new ScrollViewer{Content=notes,MaxHeight=260,VerticalScrollBarVisibility=ScrollBarVisibility.Auto});
-        content.Children.Add(new TextBlock{Text="Активное подключение не отключается ради обновления.",Foreground=ConsoleTheme.Dim,FontSize=12,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,0,0,20)});
+        content.Children.Add(new TextBlock{Text="При установке соединения через CITA Route прервутся. После запуска обновлённой версии нажми «Подключить». Автоустановку можно отключить в настройках.",Foreground=ConsoleTheme.Dim,FontSize=12,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,0,0,20)});
         var buttons=new StackPanel{Orientation=Orientation.Horizontal,HorizontalAlignment=HorizontalAlignment.Right};
         var later=new Button{Content="Позже",Margin=new Thickness(0,0,10,0),IsCancel=true};later.Click+=(_,_)=>Close();
         var accept=new Button{Content=ready?"Установить":"Загрузить",Style=(Style)Application.Current.FindResource("Primary"),IsDefault=true};

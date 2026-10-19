@@ -19,6 +19,12 @@ $bridgeExe = Join-Path $env:ProgramFiles 'RoutePilot\Agent\vpn-bridge.exe'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 
 . (Join-Path $root 'FileStorage.ps1')
+if($Action -in @('Start','ProxyOnly')){
+    $updateGate=$null
+    try{$updateGate=[IO.File]::Open((Join-Path $runtime 'update-preparation.lock'),'OpenOrCreate','ReadWrite','None')}
+    catch{throw 'Update preparation is in progress.'}
+    finally{if($updateGate){$updateGate.Dispose()}}
+}
 . (Join-Path $root 'ConnectionEnvironment.ps1')
 $connectionSettings=Get-ConnectionSettings $root
 $cli=Find-WireSockCli $connectionSettings.CliPath
@@ -527,6 +533,7 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
     $routerProcess = Start-Helper $routerExe (Join-Path $runtime $configFile)
     Write-JsonFile (Join-Path $runtime 'session.json') @{
         running=$true;id=[guid]::NewGuid().ToString('N');startedUtc=[DateTime]::UtcNow.ToString('o')
+        operationId=$(if($Action -eq 'Reconnect'){$previous.operationId}else{$OperationId})
         routerPid=$routerProcess.Id;routerStartedUtc=$routerProcess.StartTime.ToUniversalTime().ToString('o')
         bridgePid=$bridgeProcess.Id;bridgeStartedUtc=$bridgeProcess.StartTime.ToUniversalTime().ToString('o');bridgeGeneration=1;bridgeReady=$false;mode=$sessionMode;sourceProfile=$sourceProfile
         recovering=$true;recoveryParentId=$(if($Action -eq 'Reconnect'){$ExpectedSessionId}else{''});networkSignature=(Get-SessionNetworkSignature)

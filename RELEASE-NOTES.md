@@ -1,10 +1,14 @@
-CITA Route 0.5.1 — fix Windows WireSock status detection.
+CITA Route 0.5.2 — automatic connection handoff and update disconnection.
 
-- Fix a 0.5.0 regression: multiline WireSock CLI replies with Windows CRLF line endings could classify CITA's own SmartRouting-AWG2 profile as foreign. This aborted connection and could leave the managed tunnel connected after cleanup. The router and protected HTTPS-checking agent now retain exact profile identity for both CRLF and LF.
-- Recognize the actual English/Russian establishing, disconnecting and disconnected messages. Transitional and negative statuses cannot prove a healthy VPN; similarly named or conflicting profiles remain rejected.
-- Regression coverage includes real redirected Windows PowerShell stdout in UTF-8/OEM866, multiline statuses, complete profile names and managed-connection cleanup.
+- Connect releases a recognized active WireSock profile and a supported VPNUS service before starting CITA. Profiles and keys are retained. Unknown/ambiguous connections and another running CITA engine remain protected from blind termination.
+- First-time setup finishes while the previous connection still works, preserving access for DNS, signature checks and protected-component preparation before handoff.
+- Intent is recorded before a conflicting connection stops. Failure/cancellation attempts to restore the prior profile and start the stopped VPNUS service; a newer active profile is never overwritten. An interrupted journal is retried before the next Connect. This is not an independent crash guard, and service restart does not prove the other client's internet access.
+- Installation revalidates the release and package while the current VPN still works, then automatically stops this copy's own route. Network-dependent verification finishes before disconnection. A reservation blocks concurrent Connect until the installer acquires ownership; failed Stop prevents installation. Foreign routes and diagnostics still block updates.
+- Release requests use the existing VPN bridge while routing is active. The update popup/settings explain that installation interrupts CITA connections. After installing, press Connect again; automatic reconnection is not introduced.
+- Includes the 0.5.1 Windows CRLF/localized WireSock status fix. New fixtures cover handoff/rollback, cancellation, interrupted journals, service identity, a changed foreign profile, setup ordering and update/Connect contention.
+- Connection transactions no longer exceed Windows command-line limits in longer installation paths. Late cancellation cleans up only the route created by that operation before attempting to restore its predecessor.
 
-Upgrade through Settings → Updates while disconnected, or extract the complete ZIP into a writable folder and run RoutePilot.exe. The next Connect updates the protected agent through Windows confirmation. Apply connection remains available in Advanced settings. Personal configurations and rules are preserved. An actual foreign WireSock profile or another active VPN must still be disconnected by its owner.
+Upgrade through Settings → Updates or extract the complete ZIP. Upgrading from 0.5.1 or earlier still requires disconnecting before installation because the older updater owns that operation. Once 0.5.2 is installed, its updater can stop its own active route. The next Connect updates protected components through Windows confirmation. Personal settings are preserved.
 
 Requirements: Windows 10/11 x64 and separately installed WireSock Secure Connect. The ZIP includes .NET. All 0.5.0 features remain available.
 

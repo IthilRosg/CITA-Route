@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([ValidateSet('Discover','Apply','Import')][string]$Action='Discover',
+param([ValidateSet('Discover','Apply','Import','ReleaseConflicts','CompleteHandoff','RestoreHandoff')][string]$Action='Discover',
     [string]$SourceProfile='', [string]$CliPath='', [string]$ImportPath='', [string]$ExpectedEgressIp='', [string]$UserSid='', [string]$UserProfile='',
     [ValidatePattern('^([a-fA-F0-9]{32})?$')][string]$OperationId='')
 $ErrorActionPreference='Stop'
@@ -10,6 +10,13 @@ if(-not $UserProfile){$UserProfile=$env:USERPROFILE}
 . (Join-Path $root 'FileStorage.ps1')
 . (Join-Path $root 'ConnectionEnvironment.ps1')
 . (Join-Path $root 'WireSockCli.ps1')
+# Completion only retires this operation's local journal. Do not make a healthy
+# new connection depend on another CLI/signature/network check at this point.
+if($Action -eq 'CompleteHandoff' -or ($Action -eq 'RestoreHandoff' -and -not(Test-Path -LiteralPath (Join-Path $runtime 'connection-handoff.json')))){
+    if(-not $OperationId){throw 'A connection handoff requires an operation identity.'}
+    if($Action -eq 'CompleteHandoff'){Complete-ConnectionHandoff $root}
+    exit 0
+}
 $settings=Get-ConnectionSettings $root
 $cli=Find-WireSockCli $(if($CliPath){$CliPath}else{$settings.CliPath})
 if($Action -eq 'Discover'){
@@ -25,6 +32,16 @@ if(-not $cli){throw 'WireSock Secure Connect CLI was not found.'}
 $isAdmin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if(-not $isAdmin){throw 'Connection setup requires elevation.'}
 Assert-ProtectedWireSockCli $cli
+if($Action -in @('ReleaseConflicts','CompleteHandoff','RestoreHandoff')){
+    if(-not $OperationId){throw 'A connection handoff requires an operation identity.'}
+    . (Join-Path $root 'AgentLease.ps1')
+    switch($Action){
+        'ReleaseConflicts' {Release-ConnectionConflicts $root}
+        'CompleteHandoff' {Complete-ConnectionHandoff $root}
+        'RestoreHandoff' {Restore-ConnectionHandoff $root}
+    }
+    exit 0
+}
 New-Item -ItemType Directory -Path (Join-Path $root 'data'),(Join-Path $root 'runtime'),(Join-Path $root 'logs') -Force | Out-Null
 $setupLock=$null
 try{

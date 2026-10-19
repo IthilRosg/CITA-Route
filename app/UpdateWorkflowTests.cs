@@ -34,6 +34,10 @@ public static class UpdateWorkflowTests
             Assert(reopened.Preferred(cli,"")=="Новый","A newer explicitly applied profile wins over an older successful session.");
             Assert(reopened.Preferred("D:\\Other\\wiresock-connect-cli.exe","Другой")=="Другой","Different CLI installation must not inherit another profile.");
             Assert(UpdateJournal.BlockReason(folder,false,false,false,false)==null,"Disconnected fixture accepts an update.");
+            Assert(UpdateJournal.PreparationBlockReason(folder,false,true,false,true)==null,"An owned route can be stopped for update preparation.");
+            Assert(UpdateJournal.PreparationBlockReason(folder,false,false,false,true)!=null,"An unowned engine cannot be stopped by an updater.");
+            Assert(UpdateJournal.PreparationBlockReason(folder,false,true,true,true)!=null,"Diagnostics still blocks automatic update disconnection.");
+            Assert(UpdateJournal.PreparationBlockReason(folder,true,true,false,true)!=null,"A connection operation blocks update preparation.");
             Assert(UpdateJournal.BlockReason(folder,false,false,false,true)!=null,"Another installation's engine blocks update.");
             Assert(UpdateJournal.BlockReason(folder,false,false,true,false)!=null,"Diagnostics blocks update.");
             AppPaths.Write(Path.Combine(folder,"runtime","session.json"),new{running=true});

@@ -86,6 +86,7 @@ public static class SelfTests
             Directory.CreateDirectory(Path.Combine(actionFolder,"runtime"));Directory.CreateDirectory(Path.Combine(actionFolder,"logs"));
             File.Copy(Path.Combine(root,"FileStorage.ps1"),Path.Combine(actionFolder,"FileStorage.ps1"));
             string script=Path.Combine(actionFolder,"SmartRouting.ps1");
+            File.WriteAllText(Path.Combine(actionFolder,"Configure-Connection.ps1"),"param([string]$Action,[string]$OperationId)\nexit 0\n");
             File.WriteAllText(script,"param([string]$Action)\nWrite-Output 'operation completed'\n");
             using var backend=new Backend(actionFolder);
             var success=Task.Run(()=>backend.ActionAsync("UpdateRules",false)).GetAwaiter().GetResult();
