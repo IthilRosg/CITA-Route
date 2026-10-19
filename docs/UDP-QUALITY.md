@@ -5,8 +5,10 @@ server**, independently for Direct and VPN. It does not estimate every game's
 loss, one-way loss, QUIC migration or streaming quality. HTTPS health is only
 a permission check for the VPN path, never the source of a loss percentage.
 
-Without your own reflector, leave this disabled. The compact view then shows
-**не измерено**. No public third-party UDP service is contacted by default.
+Without your own reflector, leave this disabled. The advanced diagnostic fields
+then show **не измерено**. Compact mode independently uses the existing WireSock
+service's [native tunnel estimates](WIRESOCK-STATISTICS.md), which need no
+reflector. No public third-party UDP service is contacted by default.
 
 ## Controlled server
 
@@ -50,7 +52,7 @@ so hiding the GUI does not stop it; manual Disconnect does.
 `data/udp-quality.json` holds the optional endpoint and shared key locally.
 Do not share it; clean ZIPs exclude it. `runtime/udp-quality.json` contains
 bounded measurement metadata, without the key. The GUI checks the session,
-profile, network signature, bridge generation, configuration identity and
+  profile, network signature, bridge generation, configuration identity and
 freshness before displaying a percentage.
 
 ## Method and limits

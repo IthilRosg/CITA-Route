@@ -44,7 +44,21 @@ disconnected and no candidate service was installed over the active session.
   ownership are now distinct. Matching connection settings skip setup; a different
   portable folder or protected egress setting still requires setup.
 
-## Resources
+## Native WireSock statistics follow-up
+
+The compact quality row now reads RTT/loss from the current WireSock service;
+optional UDP diagnostics moved entirely to Advanced. The read-only adapter was
+checked against live 3.6.1.1 and returned 46 ms / 0.23% on 2026-10-19. Tests cover
+fragmented, rejected, truncated/oversized responses, deadlines, cancellation,
+foreign/connecting/no-traffic states and stale GUI data. See WIRESOCK-STATISTICS.md.
+The reader does not start a tunnel, load vendor SDK code or change routing.
+
+A complete local UDP regression attempt was blocked by Windows dynamic UDP-port
+exhaustion caused by an unrelated process; the separate native IPC tests and GUI
+tests ran locally. Full regression is also run on the clean GitHub Windows host.
+The unrelated process and the live network were not restarted for testing.
+
+## Resources (earlier UI benchmark)
 
 Local `--benchmark-ui`, 2026-10-19 01:38–01:39 MSK: 200 synthetic connection rows,
 one update per second, 30 seconds per view after warm-up, 16 logical processors.

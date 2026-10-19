@@ -13,9 +13,17 @@ public static class Program
         try
         {
             if(args.Length==1 && args[0]=="--self-test"){await AgentTests.Run();return 0;}
+            if(args.Length==1 && args[0]=="--statistics-self-test"){await WireSockStatisticsTests.Run();return 0;}
             if(args.Length==1 && args[0]=="--service"){NativeService.Run();return 0;}
             if(args.Length==1 && args[0]=="--configure-service-recovery"){ServiceRecovery.Configure();return 0;}
             if(args.Length==1 && args[0]=="--session-health"){var health=await NetworkProbe.CheckEgressDetailed();Console.WriteLine(JsonSerializer.Serialize(new{schema=2,healthy=health.Verified,code=health.Code,message=health.Message}));return 0;}
+            if(args.Length==1 && args[0]=="--wiresock-statistics")
+            {
+                string installed=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"RoutePilot","Agent","agent-config.json");
+                string cli=File.Exists(installed)?Storage.Read<AgentConfig>(installed).WireSockCliPath:Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"WireSock Secure Connect","command-line","wiresock-connect-cli.exe");
+                var stats=await Telemetry.WireSockStatistics.Read(cli);
+                Console.WriteLine(JsonSerializer.Serialize(new{schema=1,stats.Available,stats.Code,stats.RttMs,stats.EstimatedLossPercent,stats.UptimeSeconds,stats.ObservedUtc}));return 0;
+            }
             if(args.Length>=1 && args[0]=="--probe-worker"){await ProbeWorker.Run(args);return 0;}
             if(args.Length==2 && args[0]=="--cleanup-worker"){await ProbeWorker.Cleanup(args[1]);return 0;}
             if(args.Length==2 && args[0]=="--policy-worker"){await PolicyWorker.Run(args[1]);return 0;}

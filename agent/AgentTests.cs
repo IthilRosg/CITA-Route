@@ -44,6 +44,7 @@ public static class AgentTests
             await PolicyWorkerTests.Run(temporary);
             await PolicyOptimizationTests.Run(temporary);
             await UdpQualityTests.Run(temporary);
+            await WireSockStatisticsTests.Run();
             var store=new RunStore(temporary);store.Begin(TestKind.DryRun,1,2,5);string old=store.State.Id;
             Assert(store.State.Phase==RunPhase.Armed,"Run must be durably armed before work.");
             Assert(store.Transition(old,RunPhase.Testing,"worker"),"Start transition.");

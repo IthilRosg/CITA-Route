@@ -73,6 +73,7 @@ public partial class MainWindow
     }
     void SetConnectionStage(string phase)
     {
+        if(phase!="UpdatingRules")ClearNativeQuality();
         if(_operationPhase!=phase){_phaseStarted=DateTime.UtcNow;_operationPhase=phase;}
         CompactStage.Foreground=ConsoleTheme.Text;
         CompactStage.Text=phase=="Discovering"?"Ищем WireSock и доступные профили…":ConnectionProgress.Label(phase);

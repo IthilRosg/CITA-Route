@@ -3,7 +3,10 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Windows;
+using System.Threading;
+using System.Threading.Tasks;
 using RoutePilot.Quality;
+using RoutePilot.Telemetry;
 
 namespace RoutePilot;
 
@@ -52,14 +55,52 @@ public partial class MainWindow
         }
         catch(Exception ex){Notice(ex.Message,true);}
     }
-    void RefreshQuality(EngineSession session,bool owned)
+    WireSockSample _nativeSample=new();
+    string _nativeScope="";
+    DateTime _nextNativeRead;
+    CancellationTokenSource? _nativeStop;
+    static string NativeScope(EngineSession session,string cli)=>session.Id+":"+session.SourceProfile+":"+session.NetworkSignature+":"+session.BridgeGeneration+":"+session.BridgePid+":"+cli;
+    void ClearNativeQuality()
     {
+        _nativeStop?.Cancel();_nativeSample=new();_nativeScope="";_nextNativeRead=DateTime.MinValue;
+        CompactVpnRtt.Text="Задержка: —";CompactVpnLoss.Text="Потери: —";
+        CompactVpnRtt.ToolTip=CompactVpnLoss.ToolTip="Статистика туннеля появится после подключения.";
+        NativeQualitySummary.Text="Статистика туннеля WireSock ещё не получена.";
+    }
+    async Task<bool> RefreshQualityAsync(EngineSession session,bool owned)
+    {
+        bool eligible=owned && session.Running && session.BridgeReady && !session.Recovering && string.IsNullOrEmpty(session.VpnHoldReason);
+        if(!eligible)ClearNativeQuality();
+        else
+        {
+            string scope=NativeScope(session,_backend.CliPath);
+            if(scope!=_nativeScope){ClearNativeQuality();_nativeScope=scope;}
+            if(DateTime.UtcNow>=_nextNativeRead)
+            {
+                _nextNativeRead=DateTime.UtcNow.AddSeconds(3);
+                _nativeStop?.Dispose();_nativeStop=new();int operation=_uiOperationGeneration;
+                try
+                {
+                    var sample=await WireSockStatistics.Read(_backend.CliPath,stop:_nativeStop.Token);
+                    var current=AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession());
+                    if(_exiting || _nativeStop.IsCancellationRequested || _nativeScope!=scope || operation!=_uiOperationGeneration || !current.Running || !current.BridgeReady || current.Recovering ||
+                        !string.IsNullOrEmpty(current.VpnHoldReason) || NativeScope(current,_backend.CliPath)!=scope)
+                    {ClearNativeQuality();return false;}
+                    _nativeSample=sample;
+                }
+                catch(OperationCanceledException){ClearNativeQuality();return false;}
+            }
+            var native=NativeStatisticsPresentation.Describe(_nativeSample,DateTime.UtcNow);
+            CompactVpnRtt.Text="Задержка: "+native.Rtt;CompactVpnRtt.ToolTip=native.Detail;
+            CompactVpnLoss.Text="Потери: "+native.Loss;CompactVpnLoss.ToolTip=native.Detail;
+        }
+        NativeQualitySummary.Text="Туннель WireSock · "+CompactVpnRtt.Text+" · "+CompactVpnLoss.Text;
         var options=AppPaths.Read(Path.Combine(_root,"data","udp-quality.json"),()=>new UdpQualityOptions());
         var state=AppPaths.Read(Path.Combine(_root,"runtime","udp-quality.json"),()=>new UdpQualityState());
         var direct=UdpQualityPresentation.Describe(state,options,session,owned,false,DateTime.UtcNow);
         var vpn=UdpQualityPresentation.Describe(state,options,session,owned,true,DateTime.UtcNow);
-        CompactDirectLoss.Text="Напрямую: "+direct.Text;CompactDirectLoss.ToolTip=direct.Detail;
-        CompactVpnLoss.Text="VPN: "+vpn.Text;CompactVpnLoss.ToolTip=vpn.Detail;
-        QualitySummary.Text=CompactDirectLoss.Text+" · "+CompactVpnLoss.Text;
+        QualitySummary.Text="UDP-пробы · Напрямую: "+direct.Text+" · VPN: "+vpn.Text;
+        QualitySummary.ToolTip=direct.Detail+"\n\n"+vpn.Detail;
+        return true;
     }
 }

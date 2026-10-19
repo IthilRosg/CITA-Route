@@ -12,6 +12,7 @@ public static class SelfTests
     {
         ReleaseUpdateTests.Run(root);
         UdpQualityTests.Run();
+        NativeStatisticsPresentationTests.Run();
         Task.Run(()=>ConnectionSetupTests.Run(root)).GetAwaiter().GetResult();
         Task.Run(()=>ConnectionOperationTests.Run(root)).GetAwaiter().GetResult();
         Task.Run(()=>UpdateWorkflowTests.Run(root)).GetAwaiter().GetResult();

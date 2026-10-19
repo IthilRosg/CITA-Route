@@ -84,6 +84,7 @@
             </StackPanel></Border>
             <Border Style="{StaticResource Card}" Margin="0,0,0,16"><StackPanel><TextBlock Text="Встроенный обход DPI" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="TLS-фрагментация · без установки отдельного обходчика" Margin="0,12,0,0"/><TextBlock Text="В режиме «Авто» проверяются прямой доступ, DPI и VPN. DPI применяется к новым соединениям, только если HTTPS-проверки прошли. Для сайтов из списка ограничений включи проверку DPI в разделе «Правила»." FontSize="12" Foreground="{StaticResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"/><TextBlock Text="Область работы: IPv4, TCP/443. Для UDP, QUIC и отдельных способов блокировки может понадобиться VPN. Настройки AWG-маскировки сохраняются из твоего профиля." FontSize="12" Foreground="{StaticResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"/></StackPanel></Border>
             <Border Style="{StaticResource Card}" Margin="0,0,0,16"><StackPanel>
+              <TextBlock x:Name="NativeQualitySummary" Text="Статистика туннеля WireSock появится после подключения." Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="12" Margin="0,0,0,14"/>
               <Expander x:Name="QualitySetupPanel" Header="Измерение потерь UDP · дополнительно" Margin="0,0,0,20"><StackPanel Margin="0,12,0,0">
                 <TextBlock Text="Для измерения нужен свой контрольный UDP-сервер. Каждый путь проверяется отдельно; пробы не переключают маршруты." Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap"/>
                 <CheckBox x:Name="QualityEnabledBox" Content="Измерять потери проб" Margin="0,12,0,10"/>
@@ -147,8 +148,8 @@
         </Grid>
         <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Margin="0,18,0,0" Padding="0,12,0,0">
           <StackPanel>
-            <TextBlock Text="ПОТЕРИ ПРОБ / UDP" Style="{StaticResource Eyebrow}" FontSize="9"/>
-            <Grid Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock x:Name="CompactDirectLoss" Text="Напрямую: не измерено" TextTrimming="CharacterEllipsis" FontSize="11" Foreground="{StaticResource Muted}"/><TextBlock x:Name="CompactVpnLoss" Grid.Column="1" Text="VPN: не измерено" TextTrimming="CharacterEllipsis" FontSize="11" Foreground="{StaticResource Muted}" Margin="8,0,0,0"/></Grid>
+            <TextBlock Text="ТУННЕЛЬ VPN / WIRESOCK" Style="{StaticResource Eyebrow}" FontSize="9"/>
+            <Grid Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock x:Name="CompactVpnRtt" Text="Задержка: —" TextTrimming="CharacterEllipsis" FontSize="11" Foreground="{StaticResource Muted}"/><TextBlock x:Name="CompactVpnLoss" Grid.Column="1" Text="Потери: —" TextTrimming="CharacterEllipsis" FontSize="11" Foreground="{StaticResource Muted}" Margin="8,0,0,0"/></Grid>
           </StackPanel>
         </Border>
       </StackPanel>

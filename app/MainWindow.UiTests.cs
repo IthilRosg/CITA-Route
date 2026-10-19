@@ -37,6 +37,7 @@ public partial class MainWindow
         Assert(Math.Abs(Width-advancedWidth)<1 && Math.Abs(Height-advancedHeight)<1 && Pages.SelectedIndex==2,"Advanced size/page must survive a compact round trip.");
         ApplyView(true);
         _busy=true;_connectionCancellation=new();SetConnectionStage("Connecting");
+        Assert(CompactVpnRtt.Text=="Задержка: —" && CompactVpnLoss.Text=="Потери: —","A new network operation must clear previous tunnel metrics.");
         Assert((string)CompactConnectButton.Content=="Отменить"&&CompactConnectButton.IsEnabled,"Connecting must expose cancellation.");
         var old=OperationProgress();old.Report(new(){Phase="Verifying"});++_uiOperationGeneration;
         Dispatcher.Invoke(()=>{},DispatcherPriority.Background);

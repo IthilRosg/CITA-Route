@@ -120,7 +120,7 @@ public partial class MainWindow : Window
     public void ExitApplication()
     {
         if(_busy&&!_render){ShowWindow();Notice("Дождись завершения текущей операции.");return;}
-        if(_exiting)return;_exiting=true;_connectionCancellation?.Cancel();_connectionCancellation?.Dispose();_updateLifetime.Cancel();_egressLifetime?.Cancel();_egressLifetime?.Dispose();_timer.Stop();SaveData();_tray?.Dispose();_backend.Dispose();Application.Current.Shutdown();
+        if(_exiting)return;_exiting=true;_nativeStop?.Cancel();_nativeStop?.Dispose();_connectionCancellation?.Cancel();_connectionCancellation?.Dispose();_updateLifetime.Cancel();_egressLifetime?.Cancel();_egressLifetime?.Dispose();_timer.Stop();SaveData();_tray?.Dispose();_backend.Dispose();Application.Current.Shutdown();
     }
     private void SaveData()
     {
@@ -149,7 +149,7 @@ public partial class MainWindow : Window
             var session=AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession());
             var cachedHealth=SessionHealthCache.Read(_root,session,DateTime.UtcNow);
             bool owned=session.Running && !string.IsNullOrWhiteSpace(session.Id) && _backend.EngineRunning(session);
-            RefreshQuality(session,owned);
+            if(!await RefreshQualityAsync(session,owned))return;
             if(_compact&&!owned){_vpnConnected=false;}
             else if(_compact&&owned&&cachedHealth.Watch is {} liveWatch)
             {
