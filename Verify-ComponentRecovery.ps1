@@ -22,6 +22,21 @@ try {
     $localized=-join ([char[]]@(0x041f,0x043e,0x0434,0x043a,0x043b,0x044e,0x0447,0x0435,0x043d,0x043e,0x0020,0x043a,0x0020,0x0441,0x0435,0x0440,0x0432,0x0435,0x0440,0x0443))
     $profileWord=-join ([char[]]@(0x043f,0x0440,0x043e,0x0444,0x0438,0x043b,0x044f))
     Assert ((Get-WireSockState ($localized+' 203.0.113.1 '+$profileWord+' '+$smartProfile) $smartProfile) -eq 'Connected') 'Localized status failed.'
+    foreach($newline in @("`n","`r`n")){
+        foreach($line in @('Connected to server using profile SmartRouting-AWG2',($localized+' '+$profileWord+' '+$smartProfile))){
+            $realStatus=$line+$newline+'External address: 203.0.113.1, Test'+$newline
+            Assert ((Get-WireSockState $realStatus $smartProfile) -eq 'Connected') 'Windows multiline CLI status was classified as a foreign profile.'
+            Assert (Test-WireSockManagedProfile $realStatus $smartProfile) 'Windows multiline CLI identity was lost.'
+            Assert ((Get-WireSockState ($realStatus.Replace($smartProfile,$smartProfile+'-copy')) $smartProfile) -eq 'Foreign') 'CRLF weakened exact identity.'
+            Assert (-not(Test-WireSockManagedProfile ($realStatus+'Connected to server using profile Other'+$newline) $smartProfile)) 'Conflicting multiline profile identities were accepted.'
+        }
+    }
+    $ruEstablishing=-join([char[]]@(0x0423,0x0441,0x0442,0x0430,0x043d,0x0430,0x0432,0x043b,0x0438,0x0432,0x0430,0x0435,0x0442,0x0441,0x044f,0x0020,0x0441,0x043e,0x0435,0x0434,0x0438,0x043d,0x0435,0x043d,0x0438,0x0435))
+    $ruDisconnected=-join([char[]]@(0x041e,0x0442,0x043a,0x043b,0x044e,0x0447,0x0435,0x043d,0x043e))
+    Assert ((Get-WireSockState ($ruDisconnected+"`r`n") $smartProfile) -eq 'Disconnected') 'Localized disconnected status was not recognized.'
+    foreach($prefix in @('Establishing connection using profile ',($ruEstablishing+' '+$profileWord+' '))){
+        Assert ((Get-WireSockState ($prefix+$smartProfile+"`r`nExternal address: 203.0.113.1`r`n") $smartProfile) -eq 'Transitioning') 'The real establishing status was not recognized.'
+    }
     foreach($state in @('Unknown','Foreign','Transitioning','Connected')){Assert ((Get-WatchRecoveryAction $true 0 $state 10) -eq 'Observe') 'An ambiguous status would restart the TUN.'}
     Assert ((Get-WatchRecoveryAction $true 0 'Disconnected' 2) -eq 'Observe') 'Single disconnection should be rechecked.'
     Assert ((Get-WatchRecoveryAction $true 0 'Disconnected' 3) -eq 'RepairVpn') 'Confirmed disconnection should repair only VPN.'
@@ -31,6 +46,13 @@ try {
     $clock=[Diagnostics.Stopwatch]::StartNew();$timedOut=$false
     try{Read-HelperOutput (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') '-NoProfile -Command "Start-Sleep -Seconds 30"' | Out-Null}catch{$timedOut=$true}
     Assert ($timedOut -and $clock.Elapsed.TotalSeconds -lt 7) 'A stuck status helper blocked beyond its budget.'
+    foreach($encoding in @('utf8','oem866')){
+        $first=$localized+' '+$profileWord+' '+$smartProfile
+        $script="[Console]::OutputEncoding="+$(if($encoding -eq 'utf8'){'(New-Object Text.UTF8Encoding($false))'}else{'[Text.Encoding]::GetEncoding(866)'})+";[Console]::WriteLine('"+$first+"');[Console]::WriteLine('External address: 203.0.113.1, Test')"
+        $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+        $captured=Read-HelperOutput (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') ('-NoProfile -EncodedCommand '+$encoded)
+        Assert ($captured.Contains("`r`n") -and (Get-WireSockState $captured $smartProfile) -eq 'Connected') 'Real redirected Windows stdout lost CRLF profile identity or encoding.'
+    }
     $script:identityStatus='';$script:identityDisconnects=0
     function Read-WireSockStatus {$script:identityStatus}
     function Invoke-WireSock($Arguments){Assert ($Arguments[0] -eq 'disconnect') 'Unexpected identity-test CLI mutation';$script:identityDisconnects++}
@@ -40,6 +62,8 @@ try {
     }
     $script:identityStatus='Connecting from profile SmartRouting-AWG2';Disconnect-ManagedWireSock
     Assert ($script:identityDisconnects -eq 1) 'Cancellation left the owned handshake running.'
+    $script:identityStatus="Connected to server using profile SmartRouting-AWG2`r`nExternal address: 203.0.113.1`r`n";Disconnect-ManagedWireSock
+    Assert ($script:identityDisconnects -eq 2) 'Cleanup left the owned CRLF connection running.'
 
     $script:bridgeRunning=$true;$script:state='Unknown';$script:connects=0;$script:stops=0;$script:starts=0;$script:leases=0
     $script:coordinatorBusy=$false

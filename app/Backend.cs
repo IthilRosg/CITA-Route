@@ -156,7 +156,7 @@ public sealed class Backend : IDisposable
         if(message.Contains("transparent mode"))return "В WireSock отключи Virtual Adapter Mode.";
         if(message.Contains("already running"))return "Маршрутизатор уже запущен. Сначала нажми «Отключить».";
         if(message.Contains("Another network operation"))return "Другая сетевая операция ещё выполняется. Дождись её завершения.";
-        if(message.Contains("Another WireSock profile"))return "В WireSock подключён другой профиль. Сначала отключи его в WireSock, затем подключи RoutePilot.";
+        if(message.Contains("Another WireSock profile"))return "В WireSock подключён другой профиль. Сначала отключи его в WireSock, затем подключи CITA Route.";
         if(message.Contains("No active physical"))return "Нет активного подключения Wi-Fi или Ethernet.";
         if(message.Contains("CLI was not found"))return "WireSock не найден. Выбери его в окне подключения.";
         if(message.Contains("WireSock state could not be verified"))return "Статус WireSock пока не подтверждён. Подожди или проверь его службу.";

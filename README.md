@@ -5,7 +5,7 @@ Part of the CITA family: [AWG CITA](https://github.com/IthilRosg/AWG-CITA) manag
 
 The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspired palette, sharp frames and terminal typography.
 
-**0.5.0** adds a compact connection window, native WireSock statistics and component recovery.
+**0.5.1** fixes Windows multiline WireSock status detection and managed-connection cleanup. Compact mode, native WireSock statistics and component recovery from 0.5.0 remain available.
 
 [Download stable releases](https://github.com/IthilRosg/CITA-Route/releases) · [Report a bug](https://github.com/IthilRosg/CITA-Route/issues)
 

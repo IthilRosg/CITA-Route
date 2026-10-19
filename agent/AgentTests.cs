@@ -9,6 +9,16 @@ public static class AgentTests
     public static async Task Run()
     {
         void Assert(bool condition,string message){if(!condition)throw new Exception(message);}
+        foreach(string newline in new[]{"\n","\r\n"})
+        foreach(string line in new[]{"Connected to server using profile SmartRouting-AWG2","Подключено к серверу с использованием профиля SmartRouting-AWG2"})
+        {
+            string status=line+newline+"External address: 8.8.8.8, Test"+newline;
+            Assert(NetworkProbe.ManagedProfileConnected(status),"Real multiline CLI status must support Windows CRLF and LF.");
+            Assert(!NetworkProbe.ManagedProfileConnected(status.Replace("SmartRouting-AWG2","SmartRouting-AWG2-copy")),"CRLF must not weaken exact profile identity.");
+            Assert(!NetworkProbe.ManagedProfileConnected(status+"Connected to server using profile Other"+newline),"Conflicting CRLF profiles cannot prove ownership.");
+        }
+        foreach(string state in new[]{"Establishing connection using profile ","Disconnecting from server using profile ","Устанавливается соединение с использованием профиля ","Отключение от сервера с использованием профиля ","Не подключено к серверу с использованием профиля "})
+            Assert(!NetworkProbe.ManagedProfileConnected(state+"SmartRouting-AWG2\r\nExternal address: 8.8.8.8\r\n"),"Transitional/negative localized CLI status cannot prove a VPN connection.");
         Assert(!NetworkProbe.ManagedProfileConnected("Connected to server from profile SmartRouting-AWG2\nConnected to server from profile Other"),"Conflicting profile identities must not prove the managed VPN.");
         Assert(!NetworkProbe.ManagedProfileConnected("Connected to server from profile Other profile SmartRouting-AWG2"),"A profile keyword inside a foreign name must not hide the real name.");
         Assert(!NetworkProbe.ManagedProfileConnected("Not connected to server using profile SmartRouting-AWG2"),"Negative status must not match the Connected substring.");
