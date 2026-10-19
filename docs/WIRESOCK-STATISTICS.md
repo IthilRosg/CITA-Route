@@ -28,9 +28,9 @@ It does not send Hello, Connect, Disconnect, profile/config export, network-lock
 or update commands, and never loads `wgbooster.dll` or a vendor managed DLL.
 
 The response uses the WireSock 3.x embedded GrpcDotNetNamedPipes transport and
-protobuf fields observed in installed **3.6.1.1**. Supported adapter version gate:
-3.4–3.6; only 3.6.1.1 was checked against a running vendor service. Other versions
-fail gracefully rather than guessing a new schema.
+protobuf contract for **3.6.1.1**. Supported adapter version gate: 3.4–3.6.
+Other versions fail gracefully rather than guessing a new schema; broader
+version compatibility remains a separate validation task.
 
 The reader verifies the pipe server PID against the protected installation's
 service image. Where process-query rights are denied, read-only Windows Service
@@ -60,10 +60,9 @@ formatting, stale/future/failed reads, no-traffic guards and operation transitio
 WireSock setup, emitting only availability/code, RTT, loss, duration and read time.
 An unavailable sample is diagnostic data, not a command to reconnect.
 
-Observed locally on 2026-10-19: the existing service returned RTT **46 ms** and
-estimated loss **0.23%**, without changing the working tunnel. Subsequent reads
-showed changing estimates. This verifies the live adapter, not all driver/network
-failure scenarios or all supported WireSock versions.
+Synthetic fixtures verify RTT, fractional loss and duration decoding, including
+valid zero estimates and missing-data handling. These do not establish all
+driver/network failure scenarios or all supported WireSock versions.
 
 Protocol and semantics references:
 

@@ -47,16 +47,15 @@ disconnected and no candidate service was installed over the active session.
 ## Native WireSock statistics follow-up
 
 The compact quality row now reads RTT/loss from the current WireSock service;
-optional UDP diagnostics moved entirely to Advanced. The read-only adapter was
-checked against live 3.6.1.1 and returned 46 ms / 0.23% on 2026-10-19. Tests cover
+optional UDP diagnostics moved entirely to Advanced. The read-only adapter's
+isolated pipe/protobuf and presentation tests cover
 fragmented, rejected, truncated/oversized responses, deadlines, cancellation,
 foreign/connecting/no-traffic states and stale GUI data. See WIRESOCK-STATISTICS.md.
 The reader does not start a tunnel, load vendor SDK code or change routing.
 
-A complete local UDP regression attempt was blocked by Windows dynamic UDP-port
-exhaustion caused by an unrelated process; the separate native IPC tests and GUI
-tests ran locally. Full regression is also run on the clean GitHub Windows host.
-The unrelated process and the live network were not restarted for testing.
+Targeted native IPC and GUI tests are independent of UDP test fixtures. Full
+regression also runs on the clean GitHub Windows host. Hardware/network failure
+validation remains separate from synthetic protocol and presentation checks.
 
 ## Resources (earlier UI benchmark)
 
