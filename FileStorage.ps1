@@ -13,3 +13,21 @@ function Write-JsonFile($Path, $Value) {
         else { [IO.File]::Move($temporaryPath,$Path) }
     } finally { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue }
 }
+
+function Test-ConnectionCancellation {
+    $operationVariable=Get-Variable -Name OperationId -ErrorAction SilentlyContinue
+    return $operationVariable -and $operationVariable.Value -and (Test-Path -LiteralPath (Join-Path $runtime ('operation-'+$operationVariable.Value+'.cancel')))
+}
+
+function Assert-ConnectionOperation {
+    if(Test-ConnectionCancellation){throw 'Connection operation cancelled.'}
+}
+
+function Write-ConnectionProgress([string]$Phase) {
+    Assert-ConnectionOperation
+    if($OperationId){
+        Write-JsonFile (Join-Path $runtime ('operation-'+$OperationId+'.progress.json')) @{
+            id=$OperationId;phase=$Phase;updatedUtc=[DateTime]::UtcNow.ToString('o')
+        }
+    }
+}

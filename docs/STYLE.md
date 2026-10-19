@@ -13,17 +13,35 @@ CITA Route follows [AWG CITA's sector console](https://github.com/IthilRosg/AWG-
 | Waiting / recovery | `#d7ad67` |
 | Direct / upload data | `#86a9c8` |
 
-Use flat square frames, a 220 px navigation rail, numbered sections, generous
-headings, Consolas for telemetry and Segoe UI for descriptive text. The large
-headings use Bahnschrift SemiCondensed with Windows font fallback. The application
-icon combines the panel's red square frame with the route glyph.
+Use flat square frames, Consolas for telemetry and Segoe UI for descriptive text.
+The advanced view retains the full layout: a 220 px navigation rail, numbered
+sections and generous headings in Bahnschrift SemiCondensed with Windows font
+fallback. The application icon combines the panel's red square frame with the
+route glyph.
+
+The interaction reference for the compact view in the 0.5.0 candidate is
+[WireSock Secure Connect](https://wiresock.net/documentation/wiresock-secure-connect/get-started.html).
+Retain CITA's SIGNALIS-inspired palette and typography.
+The standard view uses a separate 420 × 490 DIP window: connection state,
+profile name, one main action, small traffic/session/probe-loss statistics and a fixed
+status bar for the current operation. Keep navigation rails, large section
+headings, tables and diagnostic panels in the advanced view. Preserve the same
+palette, focus treatment and readable text in both. Save bounds separately;
+validate compact sizing against the available work area and DPI rather than
+inheriting the full window's minimum size. Label direct and VPN probe loss
+separately, with unknown/stale measurements shown as unavailable rather than 0%.
+Keep measurement details in a tooltip. See the staged UI requirements in
+[the reliability plan](ROUTING-RELIABILITY-PLAN.md#этап-9-стандартный-и-расширенный-интерфейс).
 
 Brand red must not turn successful diagnostics into errors. State always has a
 text label alongside colour. Preserve keyboard focus outlines, scrollable tables,
 wrapping descriptions and readable popup backgrounds. Avoid flicker or animations
 over operational information.
 
-Preview every page using `RoutePilot.exe --render-all` and the minimum-size matrix
-using `RoutePilot.exe --render-all --compact`. Images are local artifacts and may
-contain real connection metadata; do not publish live captures. The renderer does
-not change routes or save user preferences.
+Preview advanced pages using `RoutePilot.exe --render-all`; use
+`RoutePilot.exe --render-all --compact` for compact disconnected, connecting,
+connected, recovering and attention states. Compact previews contain synthetic
+metadata; the renderer does not poll the live backend, change routes or save
+user preferences. Real captures may contain personal metadata and must not be
+published. Hardware checks at 125/150/200% DPI and on multiple monitors remain
+separate from bitmap previews.

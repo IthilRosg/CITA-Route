@@ -33,7 +33,16 @@ jobs:
           ./Verify-AgentPackage.ps1
           ./Verify-WireSockRecovery.ps1
           ./Verify-SessionRecovery.ps1
+          ./Verify-ComponentRecovery.ps1 -Engine
           ./Verify-Optimization.ps1
+      - name: Build optional UDP reflector
+        shell: powershell
+        run: dotnet build tools/udp-reflector/Cita.UdpReflector.csproj -c Release
+      - name: Verify real SOCKS UDP and authenticated reflector
+        shell: powershell
+        run: |
+          & ./runtime/agent-build/RoutePilot.Agent.exe --udp-integration $PWD.Path
+          if($LASTEXITCODE -ne 0){throw 'UDP engine integration failed.'}
       - name: Build self-contained package
         shell: powershell
         run: ./Build-Portable.ps1

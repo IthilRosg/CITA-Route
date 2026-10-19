@@ -37,11 +37,12 @@ function Assert-Disconnected {
 }
 Assert-Disconnected
 if($ValidateOnly){Write-Output 'PASS: verified release payload; disconnected installation only; no files changed.';exit 0}
-$setupLock=$null;$upgradeLock=$null;$controlLock=$null;$coordinated=$false;$applied=New-Object 'System.Collections.Generic.List[object]'
+$connectionOperationLock=$null;$setupLock=$null;$upgradeLock=$null;$controlLock=$null;$coordinated=$false;$applied=New-Object 'System.Collections.Generic.List[object]'
 $backup=Join-Path $root ('runtime\update-backup-'+[guid]::NewGuid().ToString('N'))
 $report=@{version=$Version;operationId=$OperationId;success=$false;restored=$false;startedUtc=[DateTime]::UtcNow.ToString('o');backup=$backup}
 try{
     if(Get-Service RoutePilotRescue -ErrorAction SilentlyContinue){Invoke-AgentCoordinator 'begin-operation';$coordinated=$true}
+    $connectionOperationLock=[IO.File]::Open((Join-Path $root 'runtime\connection-operation.lock'),'OpenOrCreate','ReadWrite','None')
     $setupLock=[IO.File]::Open((Join-Path $root 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','None')
     $upgradeLock=[IO.File]::Open((Join-Path $root 'runtime\upgrade.lock'),'OpenOrCreate','ReadWrite','None')
     $controlLock=[IO.File]::Open((Join-Path $root 'runtime\network-control.lock'),'OpenOrCreate','ReadWrite','None')
@@ -83,7 +84,7 @@ try{
     }
     $report.restored=($restoreErrors.Count -eq 0);if($restoreErrors.Count){$report.restoreErrors=$restoreErrors}
 }finally{
-    foreach($held in @($controlLock,$upgradeLock,$setupLock)){if($held){$held.Dispose()}}
+    foreach($held in @($controlLock,$upgradeLock,$setupLock,$connectionOperationLock)){if($held){$held.Dispose()}}
     if($coordinated){Invoke-AgentCoordinator 'end-operation'}
     $report.finishedUtc=[DateTime]::UtcNow.ToString('o')
     Write-JsonFile (Join-Path $root 'logs\release-update-last.json') $report

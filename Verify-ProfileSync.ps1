@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'WireSockCli.ps1')
 . (Join-Path $PSScriptRoot 'WireSockProfiles.ps1')
 $testBase = Join-Path $PSScriptRoot 'runtime'
 $testFolder = Join-Path $testBase ('profile-tests-' + [guid]::NewGuid().ToString('N'))
@@ -21,6 +22,7 @@ $script:mockProfiles = @{Original='DO NOT CHANGE'}
 $script:mockCalls = @()
 $script:mockConnected = $false
 $script:mockFailImports = 0
+$script:mockStatusOverride = ''
 function Assert-ProfileTest($Condition,[string]$Message) { if (-not $Condition) { throw $Message } }
 function Invoke-WireSock([string[]]$CliArguments) {
     $command = $CliArguments[0]
@@ -28,7 +30,7 @@ function Invoke-WireSock([string[]]$CliArguments) {
     switch ($command) {
         'list' { 'Available profiles:'; $script:mockProfiles.Keys | ForEach-Object { ' - ' + $_ }; break }
         'export' { [IO.File]::WriteAllText($CliArguments[2],$script:mockProfiles[$CliArguments[1]],$testEncoding); break }
-        'status' { if ($script:mockConnected) { 'Connected to SmartRouting-AWG2' } else { 'Not connected' }; break }
+        'status' { if($script:mockStatusOverride){$script:mockStatusOverride}elseif ($script:mockConnected) { 'Connected to server from profile SmartRouting-AWG2' } else { 'Not connected' }; break }
         'disconnect' { $script:mockConnected = $false; break }
         'delete' { $script:mockProfiles.Remove($CliArguments[1]); break }
         'import' {
@@ -68,6 +70,11 @@ try {
     Assert-ProfileTest $caughtImportFailure 'Import failure was not reported.'
     Assert-ProfileTest ($script:mockProfiles['SmartRouting-AWG2'] -ceq $newConfiguration) 'Automatic profile restore failed.'
     Assert-ProfileTest ($script:mockProfiles['Original'] -ceq 'DO NOT CHANGE') 'Original user profile was changed.'
+    $script:mockStatusOverride='Connected to server from profile SmartRouting-AWG2-copy'
+    $callsBefore=$script:mockCalls.Count;$refusedForeign=$false
+    try{Sync-WireSockProfile 'SmartRouting-AWG2' $desiredPath $backupDirectory}catch{$refusedForeign=$true}
+    Assert-ProfileTest $refusedForeign 'A similarly named foreign profile must block replacement.'
+    Assert-ProfileTest (@($script:mockCalls | Select-Object -Skip $callsBefore | Where-Object {$_ -in @('disconnect','delete','import')}).Count -eq 0) 'Foreign profile caused a mutating CLI command.'
     Write-Output 'PASS: first import, repeated starts, export formatting, managed-profile update, backup, rollback, original profile preserved.'
 } finally {
     $resolvedTestFolder = [IO.Path]::GetFullPath($testFolder)

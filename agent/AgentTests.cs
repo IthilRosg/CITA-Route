@@ -9,6 +9,19 @@ public static class AgentTests
     public static async Task Run()
     {
         void Assert(bool condition,string message){if(!condition)throw new Exception(message);}
+        Assert(!NetworkProbe.ManagedProfileConnected("Connected to server from profile SmartRouting-AWG2\nConnected to server from profile Other"),"Conflicting profile identities must not prove the managed VPN.");
+        Assert(!NetworkProbe.ManagedProfileConnected("Connected to server from profile Other profile SmartRouting-AWG2"),"A profile keyword inside a foreign name must not hide the real name.");
+        Assert(!NetworkProbe.ManagedProfileConnected("Not connected to server using profile SmartRouting-AWG2"),"Negative status must not match the Connected substring.");
+        using(var values=JsonDocument.Parse("{\"ExpectedEgressIp\":\"8.8.8.8\",\"WireSockCliPath\":\"test\"}"))
+        {
+            string selected="Connected to server using profile SmartRouting-AWG2";
+            var mismatch=await NetworkProbe.VerifyConfiguredEgressDetailed(values.RootElement,_=>Task.FromResult(selected),()=>Task.FromResult(System.Net.IPAddress.Parse("8.8.4.4")));
+            Assert(mismatch.Code=="EgressMismatch" && !mismatch.Verified,"Exit mismatch needs its own reason, not control HTTPS failure.");
+            var outage=await NetworkProbe.VerifyConfiguredEgressDetailed(values.RootElement,_=>Task.FromResult(selected),()=>Task.FromException<System.Net.IPAddress>(new IOException("fixture")));
+            Assert(outage.Code=="ControlHttpsUnavailable","Control-site failure must not imply a mismatched exit.");
+            var unavailable=await NetworkProbe.VerifyConfiguredEgressDetailed(values.RootElement,_=>Task.FromException<string>(new IOException("fixture")),()=>throw new Exception("No probe is allowed after unknown status"));
+            Assert(unavailable.Code=="StatusUnavailable","Unknown CLI status must not be treated as disconnection.");
+        }
         Assert(NetworkProbe.ManagedProfileConnected("Подключено к серверу с использованием профиля SmartRouting-AWG2\nВнешний адрес: 8.8.8.8, Test"),"Selected managed profile status");
         Assert(!NetworkProbe.ManagedProfileConnected("Connected to server using profile Other-SmartRouting-AWG2"),"A different profile cannot prove the selected VPN");
         Assert(NetworkProbe.ReportedEgress("External IP address: 8.8.4.4, Test")=="8.8.4.4","NAT exit differs from UDP endpoint");
@@ -30,6 +43,8 @@ public static class AgentTests
         {
             await PolicyWorkerTests.Run(temporary);
             await PolicyOptimizationTests.Run(temporary);
+            await UdpQualityTests.Run(temporary);
+            await WireSockStatisticsTests.Run();
             var store=new RunStore(temporary);store.Begin(TestKind.DryRun,1,2,5);string old=store.State.Id;
             Assert(store.State.Phase==RunPhase.Armed,"Run must be durably armed before work.");
             Assert(store.Transition(old,RunPhase.Testing,"worker"),"Start transition.");

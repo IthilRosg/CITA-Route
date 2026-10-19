@@ -20,13 +20,24 @@ public static class AppPaths
     }
     public static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive=true,WriteIndented=true };
     public static T Read<T>(string path,Func<T> fallback)
-    { try { return JsonSerializer.Deserialize<T>(File.ReadAllText(path),Json) ?? fallback(); } catch { return fallback(); } }
+    {
+        try
+        {
+            using var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+            return JsonSerializer.Deserialize<T>(stream,Json) ?? fallback();
+        }
+        catch { return fallback(); }
+    }
     public static void Write<T>(string path,T value)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        string temporary = path + ".tmp";
-        File.WriteAllText(temporary,JsonSerializer.Serialize(value,Json),new UTF8Encoding(false));
-        if(File.Exists(path))File.Replace(temporary,path,null);else File.Move(temporary,path);
+        string temporary = path + "."+Guid.NewGuid().ToString("N")+".tmp";
+        try
+        {
+            File.WriteAllText(temporary,JsonSerializer.Serialize(value,Json),new UTF8Encoding(false));
+            if(File.Exists(path))File.Replace(temporary,path,null);else File.Move(temporary,path);
+        }
+        finally{File.Delete(temporary);}
     }
 }
 
@@ -70,7 +81,24 @@ public sealed class TrafficHistory
         return(up,down);
     }
 }
-public sealed class Preferences { public bool CloseToTray{get;set;}=true; public int RefreshSeconds{get;set;}=1; public bool AutoInstallUpdates{get;set;}=true; }
+public sealed class Preferences
+{
+    public bool CloseToTray{get;set;}=true;
+    public int RefreshSeconds{get;set;}=1;
+    public bool AutoInstallUpdates{get;set;}=true;
+    public string ViewMode{get;set;}="Compact";
+    public WindowPlacement CompactWindow{get;set;}=new(){Width=420,Height=490};
+    public WindowPlacement AdvancedWindow{get;set;}=new(){Width=1360,Height=900};
+}
+public sealed class WindowPlacement
+{
+    public double Width{get;set;}
+    public double Height{get;set;}
+    public double? Left{get;set;}
+    public double? Top{get;set;}
+    public bool Maximized{get;set;}
+    public static double Bounded(double value,double fallback,double min,double max)=>Math.Clamp(double.IsFinite(value)&&value>0?value:fallback,min,Math.Max(min,max));
+}
 public sealed class RoutingPolicyPreferences { public string Mode{get;set;}="Auto";public bool AllowListedDpi{get;set;} }
 public sealed class EngineSession
 {
@@ -79,9 +107,13 @@ public sealed class EngineSession
     public bool BridgeReady{get;set;}
     public int RouterPid{get;set;}
     public int BridgePid{get;set;}
+    public int BridgeGeneration{get;set;}
+    public DateTime RouterStartedUtc{get;set;}
+    public string VpnHoldReason{get;set;}="";
     public string Id{get;set;}="";
     public string Mode{get;set;}="";
     public string SourceProfile{get;set;}="";
+    public string NetworkSignature{get;set;}="";
     public DateTime StartedUtc{get;set;}
 }
 public sealed class ConnectionRow

@@ -36,6 +36,8 @@ $routerExe = Join-Path $runtime 'smart-router.exe'
 $script:bridgeRunning = $true
 $script:routerRunning = $true
 $smartProfile = 'SmartRouting-AWG2'
+function Invoke-AgentCoordinator($Command) {}
+function Get-WireSockObservation {[pscustomobject]@{state='Connected'}}
 $script:bridgeStarts = 0
 $script:bridgeStops = 0
 $script:mockBridgeId = 20

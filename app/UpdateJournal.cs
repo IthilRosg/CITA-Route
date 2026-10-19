@@ -67,7 +67,7 @@ public static class UpdateJournal
             try{using var data=JsonDocument.Parse(File.ReadAllText(session));if(data.RootElement.GetProperty("running").GetBoolean())return "Сначала отключи маршрут в этой копии приложения.";}
             catch{return "Состояние сессии не прочитано. Автоустановка отложена.";}
         }
-        foreach(string name in new[]{"setup.lock","upgrade.lock","network-control.lock"})
+        foreach(string name in new[]{"connection-operation.lock","setup.lock","upgrade.lock","network-control.lock"})
         {
             try{using var held=new FileStream(Path.Combine(root,"runtime",name),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);}
             catch{return "Другая операция управляет установкой или сетью.";}

@@ -54,6 +54,7 @@ public partial class MainWindow
             _release=await new ReleaseUpdates(http).Check(timeout.Token);
             UpdateStatusLabel.Text=_release==null?"Новых стабильных версий нет. Текущая: "+ReleaseUpdates.Current.ToString(3):"Доступна CITA Route "+_release.Version.ToString(3);
             RefreshUpdateControls();
+            if(manual&&_release==null)Notice(UpdateStatusLabel.Text);
             if(_release!=null && (manual||_updates.NotifiedTag!=_release.Tag))
             {
                 _updates.NotifiedTag=_release.Tag;SaveUpdates();_pendingUpdatePrompt=true;

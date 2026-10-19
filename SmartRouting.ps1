@@ -1,8 +1,9 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet('Prepare','ProxyOnly','Start','Stop','Status','Watch','UpdateRules','SyncProfile','Reconnect')]
+    [ValidateSet('Prepare','ProxyOnly','Start','Stop','Status','Watch','UpdateRules','SyncProfile','Reconnect','RepairVpn')]
     [string]$Action = 'Start',
     [string]$ExpectedSessionId = '',
+    [ValidatePattern('^([a-fA-F0-9]{32})?$')][string]$OperationId = '',
     [switch]$Setup
 )
 
@@ -43,9 +44,7 @@ function Get-OurProcesses {
 }
 
 function Test-WireSockConnected {
-    $connectionStatus = (Invoke-WireSock @('status')) -join ' '
-    return ($connectionStatus -match [regex]::Escape($smartProfile) -and
-        $connectionStatus -match '(?i)(Connected to|\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u043e \u043a \u0441\u0435\u0440\u0432\u0435\u0440\u0443)')
+    return (Get-WireSockObservation).state -eq 'Connected'
 }
 
 function Connect-WireSock {
@@ -57,7 +56,11 @@ function Connect-WireSock {
     try {
         $deadline = [DateTime]::UtcNow.AddSeconds(35)
         while ([DateTime]::UtcNow -lt $deadline) {
-            if (Test-WireSockConnected) { return }
+            Assert-ConnectionOperation
+            if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
+            $observation=Get-WireSockObservation
+            if($observation.state -eq 'Connected'){return}
+            if($observation.state -eq 'Foreign'){throw 'Another WireSock profile is in use; connection paused.'}
             Start-Sleep -Seconds 1
         }
         throw 'WireSock did not complete the handshake within 35 seconds. Disconnect the temporary VPN and check the original AWG2 connection.'
@@ -378,6 +381,8 @@ function Prepare-Configuration {
 }
 
 function Start-Helper([string]$Exe,[string]$Config) {
+    Assert-ConnectionOperation
+    if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Helper start cancelled by Stop.'}
     $startupLog = Join-Path $root ('logs\' + [IO.Path]::GetFileNameWithoutExtension($Exe) + '-startup.log')
     $process = Start-Process -FilePath $Exe -ArgumentList @('run','-c',('"' + $Config + '"'),'--disable-color') `
         -WorkingDirectory $runtime -WindowStyle Hidden -PassThru -RedirectStandardError $startupLog -RedirectStandardOutput ($startupLog+'.out')
@@ -386,6 +391,8 @@ function Start-Helper([string]$Exe,[string]$Config) {
     $deadline=[DateTime]::UtcNow.AddSeconds(8)
     $ready=$false
     do {
+        Assert-ConnectionOperation
+        if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){$process | Stop-Process -Force;throw 'Helper start cancelled by Stop.'}
         if($process.HasExited){throw "Helper exited: $Exe. See the logs folder."}
         $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $process.Id | ForEach-Object LocalPort)
         $ready=@($required | Where-Object {$_ -notin $listeners}).Count -eq 0
@@ -396,84 +403,11 @@ function Start-Helper([string]$Exe,[string]$Config) {
 }
 
 if ($Action -eq 'Watch') {
-    [IO.File]::WriteAllText((Join-Path $runtime 'watch.pid'), [string]$PID)
-    $watchedSession = Read-JsonFile (Join-Path $runtime 'session.json')
-    $lastFeedAttempt = [DateTime]::UtcNow
-    $feedUpdater = $null
-    $reconnect=$null; $attempts=0; $nextAttempt=[DateTime]::UtcNow
-    $nextPolicyAttempt=[DateTime]::UtcNow; $policyAttempts=0; $policyHealthySince=[DateTime]::UtcNow
-    $disconnected=0; $networkMismatch=0
-    $nextHealth=[DateTime]::UtcNow.AddSeconds(10);$healthFailures=0
-    while ($true) {
-        Start-Sleep -Seconds 2
-        if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){break}
-        if($reconnect -and -not $reconnect.HasExited){continue}
-        try { $activeSession = Read-JsonFile (Join-Path $runtime 'session.json') } catch { continue }
-        if (-not $activeSession.running) { break }
-        if ($activeSession.id -ne $watchedSession.id) {
-            if ($activeSession.recoveryParentId -ne $watchedSession.id) { break }
-            $watchedSession=$activeSession; $attempts=0; $disconnected=0; $networkMismatch=0; $reconnect=$null;$healthFailures=0;$nextHealth=[DateTime]::UtcNow.AddSeconds(10)
-        }
-        if($reconnect){$reconnect=$null;$attempts++;$nextAttempt=[DateTime]::UtcNow.AddSeconds((Get-RecoveryDelay $attempts))}
-        $routerProcess = @(Get-OurProcesses | Where-Object { $_.Path -eq $routerExe -and $_.Id -eq $activeSession.routerPid })
-        try { $signature=Get-SessionNetworkSignature } catch { $signature='unavailable' }
-        if($activeSession.networkSignature -and $signature -ne $activeSession.networkSignature){$networkMismatch++}else{$networkMismatch=0}
-        try { $connected = Test-WireSockConnected } catch { $connected = $false }
-        if(-not $connected){$disconnected++}else{$disconnected=0}
-        $reason=if(-not $routerProcess.Count){'Router exited'}elseif($networkMismatch -ge 2){'Physical network changed'}elseif($disconnected -ge 3){'WireSock disconnected'}elseif($healthFailures -ge 2){'Repeated VPN data-path failure'}elseif($activeSession.recovering){$activeSession.recoveryReason}else{''}
-        if($reason){
-            if([DateTime]::UtcNow -ge $nextAttempt){
-                $reconnect=Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru -WorkingDirectory $root `
-                    -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$PSCommandPath+'"'),'-Action','Reconnect','-ExpectedSessionId',$activeSession.id) `
-                    -RedirectStandardOutput (Join-Path $root 'logs\auto-reconnect.log') -RedirectStandardError (Join-Path $root 'logs\auto-reconnect-error.log')
-                Write-JsonFile (Join-Path $runtime 'watch-state.json') @{phase='Reconnecting';reason=$reason;attempts=$attempts;updatedUtc=[DateTime]::UtcNow.ToString('o')}
-            }
-            continue
-        }
-        try { Update-WireSockBridge $connected $watchedSession.id }
-        catch {
-            [IO.File]::WriteAllText((Join-Path $root 'logs\recovery-error.log'),$_.Exception.Message)
-        }
-        if (-not $connected) { continue }
-        if([DateTime]::UtcNow -ge $nextHealth){
-            try {
-                $health=& (Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe') --session-health | ConvertFrom-Json
-                if($health.healthy){$healthFailures=0}else{$healthFailures++}
-                $healthSession=Read-JsonFile (Join-Path $runtime 'session.json')
-                if($healthSession.id -eq $activeSession.id -and $healthSession.running){Write-JsonFile (Join-Path $runtime 'session-health.json') @{sessionId=$activeSession.id;healthy=[bool]$health.healthy;message=$health.message;updatedUtc=[DateTime]::UtcNow.ToString('o')}}
-            }catch{$healthFailures++}
-            $nextHealth=[DateTime]::UtcNow.AddSeconds(30)
-        }
-        if(-not (Test-PolicyProcess)) {
-            if([DateTime]::UtcNow -ge $nextPolicyAttempt){
-                try {
-                    $policyLock=[IO.File]::Open((Join-Path $runtime 'network-control.lock'),'OpenOrCreate','ReadWrite','None')
-                    try {
-                        $latest=Read-JsonFile (Join-Path $runtime 'session.json')
-                        if($latest.id -eq $watchedSession.id -and $latest.running -and -not (Test-PolicyProcess)){Start-PolicyController}
-                    } finally {$policyLock.Dispose()}
-                }catch{[IO.File]::WriteAllText((Join-Path $root 'logs\recovery-error.log'),$_.Exception.Message)}
-                $nextPolicyAttempt=[DateTime]::UtcNow.AddSeconds((Get-RecoveryDelay $policyAttempts));$policyAttempts++;$policyHealthySince=[DateTime]::UtcNow
-            }
-        }elseif(([DateTime]::UtcNow-$policyHealthySince).TotalSeconds -ge 30){$policyAttempts=0}
-        Write-JsonFile (Join-Path $runtime 'watch-state.json') @{phase='Watching';sessionId=$watchedSession.id;updatedUtc=[DateTime]::UtcNow.ToString('o')}
-        $feedStatePath = Join-Path $runtime 'feeds-state.json'
-        $lastFeedUpdate = (Get-Item -LiteralPath (Join-Path $runtime 'rules\russia_inside.srs')).LastWriteTimeUtc
-        if (Test-Path -LiteralPath $feedStatePath) {
-            try { $lastFeedUpdate = [DateTime]::Parse(([IO.File]::ReadAllText($feedStatePath) | ConvertFrom-Json).updatedUtc).ToUniversalTime() } catch {}
-        }
-        if (([DateTime]::UtcNow - $lastFeedUpdate).TotalHours -ge 24 -and
-            ([DateTime]::UtcNow - $lastFeedAttempt).TotalMinutes -ge 10 -and
-            (-not $feedUpdater -or $feedUpdater.HasExited)) {
-            $lastFeedAttempt = [DateTime]::UtcNow
-            $feedUpdater = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru `
-                -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$PSCommandPath+'"'),'-Action','UpdateRules') `
-                -RedirectStandardError (Join-Path $root 'logs\feeds-startup.log') -RedirectStandardOutput (Join-Path $root 'logs\feeds-output.log')
-        }
-    }
+    Watch-Session $PSCommandPath
     exit
 }
 if ($Action -eq 'UpdateRules') {
+    Write-ConnectionProgress 'UpdatingRules'
     Invoke-AgentCoordinator 'begin-operation'
     try { Update-RuleFeeds } finally { Invoke-AgentCoordinator 'end-operation' }
     exit
@@ -495,11 +429,11 @@ if($Action -eq 'Prepare'){
     }finally{if($prepareLock){$prepareLock.Dispose()};if($coordinated){Invoke-AgentCoordinator 'end-operation'}}
     exit
 }
-if ($Action -in @('Start','Stop','ProxyOnly','Reconnect')) {
+if ($Action -in @('Start','Stop','ProxyOnly','Reconnect','RepairVpn')) {
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isAdmin) {
-        if($Action -eq 'Reconnect'){throw 'Automatic recovery requires the original elevated session.'}
+        if($Action -in @('Reconnect','RepairVpn')){throw 'Automatic recovery requires the original elevated session.'}
         $escapedScript = $PSCommandPath.Replace("'","''")
         $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(
             "& '$escapedScript' -Action $Action *>&1 | Out-File -LiteralPath '$($root.Replace("'","''"))\logs\last-action.log' -Encoding utf8"))
@@ -517,26 +451,33 @@ if($Action -eq 'Stop'){
         try{Invoke-AgentCoordinator 'begin-operation';break}
         catch{if($stopWait.Elapsed.TotalSeconds -ge 60){throw};Start-Sleep -Milliseconds 400}
     }
-}else{Invoke-AgentCoordinator 'begin-operation'}
+}else{
+    try{Invoke-AgentCoordinator 'begin-operation'}
+    catch{if($Action -in @('Reconnect','RepairVpn')){exit 75};throw}
+}
 try { $controlLock = [IO.File]::Open((Join-Path $runtime 'network-control.lock'),'OpenOrCreate','ReadWrite','None') }
-catch { Invoke-AgentCoordinator 'end-operation'; throw 'Another network operation is in progress. Wait for it to finish.' }
+catch { Invoke-AgentCoordinator 'end-operation';if($Action -in @('Reconnect','RepairVpn')){exit 75};throw 'Another network operation is in progress. Wait for it to finish.' }
 try {
+if($Action -eq 'RepairVpn'){
+    Repair-SessionVpn $ExpectedSessionId
+    exit
+}
 if ($Action -eq 'Reconnect') {
     if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){Write-Host 'Recovery cancelled by Stop.';exit}
     $previous=Read-JsonFile (Join-Path $runtime 'session.json')
     if(-not $ExpectedSessionId -or $previous.id -ne $ExpectedSessionId -or -not $previous.running){Write-Host 'Stale recovery ignored.';exit}
-    $wireStatus=(Invoke-WireSock @('status')) -join ' '
-    if($wireStatus -notmatch [regex]::Escape($smartProfile) -and $wireStatus -notmatch '(?i)^(\u041d\u0435\u0442 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f|Not connected|No connection)\s*$'){throw 'Another WireSock profile is in use; automatic recovery is paused.'}
+    $wireState=(Get-WireSockObservation).state
+    if($wireState -notin @('Connected','Disconnected')){throw 'Managed WireSock state is not confirmed; automatic recovery is paused.'}
     if($previous.mode -eq 'Start' -and (Get-NetAdapter -Name 'VPNUS' -ErrorAction SilentlyContinue).Status -eq 'Up'){throw 'VPNUS is active; automatic recovery is paused.'}
     [void](Set-SessionRecovering $ExpectedSessionId 'Automatic reconnect')
     Stop-OurProcesses -KeepWatch
-    if($wireStatus -match [regex]::Escape($smartProfile)){Invoke-WireSock @('disconnect') | Out-Null}
+    if($wireState -eq 'Connected'){Invoke-WireSock @('disconnect') | Out-Null}
 }
 if ($Action -eq 'Stop') {
+    Write-ConnectionProgress 'Stopping'
     Stop-OurProcesses
     Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;bridgeReady=$false;stoppedUtc=[DateTime]::UtcNow.ToString('o')}
-    $statusText = (Invoke-WireSock @('status')) -join ' '
-    if ($statusText -match [regex]::Escape($smartProfile)) { Invoke-WireSock @('disconnect') }
+    Disconnect-ManagedWireSock
     Write-Host 'Smart routing stopped. The original WireSock profile is unchanged.'
     exit
 }
@@ -549,14 +490,16 @@ if ($Action -eq 'Start') {
 }
 if ((Get-OurProcesses).Count) { throw 'Smart routing is already running. Stop it before restarting.' }
 if($Action -in @('Start','ProxyOnly')){
-    $existingStatus=(Invoke-WireSock @('status')) -join ' '
-    if($existingStatus -notmatch [regex]::Escape($smartProfile) -and $existingStatus.Trim() -notmatch '(?i)^(Нет подключения|Not connected|No connection)$'){
+    $startupObservation=Get-WireSockObservation
+    if($startupObservation.state -eq 'Foreign'){
         throw 'Another WireSock profile is in use. Disconnect it in WireSock before starting RoutePilot.'
     }
+    if($startupObservation.state -notin @('Connected','Disconnected')){throw 'WireSock state could not be verified. Wait and check the WireSock service.'}
 }
 if($Action -in @('Start','ProxyOnly')){Stop-OurProcesses}
 if($Action -in @('Start','ProxyOnly')){Remove-Item -LiteralPath (Join-Path $runtime 'stop.request') -Force -ErrorAction SilentlyContinue}
 try {
+Write-ConnectionProgress 'Preparing'
 Prepare-Configuration
 if ($Action -eq 'Prepare') { exit }
 if ($Action -eq 'SyncProfile') {
@@ -568,33 +511,43 @@ $occupied=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | W
 if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupied.LocalPort | Sort-Object -Unique) -join ', '))}
 
     Sync-WireSockProfile $smartProfile (Join-Path $private ($smartProfile + '.conf')) (Join-Path $private 'profile-backups')
+    Write-ConnectionProgress 'Connecting'
     Connect-WireSock
-    if($Action -eq 'Reconnect' -and (Test-Path -LiteralPath (Join-Path $runtime 'stop.request'))){throw 'Recovery cancelled by Stop.'}
+    if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
     Invoke-WireSock @('status')
     if(Test-PolicyV2){
         & (Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe') --prepare-policy $root
         if($LASTEXITCODE -ne 0){throw 'The checked policy snapshot could not be prepared.'}
     }
+    Write-ConnectionProgress 'StartingBridge'
     $bridgeProcess = Start-Helper $bridgeExe (Join-Path $runtime 'bridge.json')
     $sessionMode=if($Action -eq 'Reconnect'){$previous.mode}else{$Action}
     $configFile = if ($sessionMode -eq 'ProxyOnly') { 'router-proxy.json' } else { 'router.json' }
+    Write-ConnectionProgress 'StartingRouter'
     $routerProcess = Start-Helper $routerExe (Join-Path $runtime $configFile)
     Write-JsonFile (Join-Path $runtime 'session.json') @{
         running=$true;id=[guid]::NewGuid().ToString('N');startedUtc=[DateTime]::UtcNow.ToString('o')
-        routerPid=$routerProcess.Id;bridgePid=$bridgeProcess.Id;bridgeReady=$false;mode=$sessionMode;sourceProfile=$sourceProfile
+        routerPid=$routerProcess.Id;routerStartedUtc=$routerProcess.StartTime.ToUniversalTime().ToString('o')
+        bridgePid=$bridgeProcess.Id;bridgeStartedUtc=$bridgeProcess.StartTime.ToUniversalTime().ToString('o');bridgeGeneration=1;bridgeReady=$false;mode=$sessionMode;sourceProfile=$sourceProfile
         recovering=$true;recoveryParentId=$(if($Action -eq 'Reconnect'){$ExpectedSessionId}else{''});networkSignature=(Get-SessionNetworkSignature)
     }
+    Write-ConnectionProgress 'ApplyingPolicy'
     Start-PolicyController
     $startedSession=Read-JsonFile (Join-Path $runtime 'session.json')
     $policyDeadline=[DateTime]::UtcNow.AddSeconds(30);$policyReady=$false
     do {
+        Assert-ConnectionOperation
+        if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
         try {$policyState=Read-JsonFile (Join-Path $runtime 'policy-state.json');$policyReady=$policyState.epoch.StartsWith($startedSession.id+':') -and $policyState.phase -in @('Auto','Lists')}catch{}
         if(-not $policyReady){Start-Sleep -Milliseconds 150}
     }while(-not $policyReady -and [DateTime]::UtcNow -lt $policyDeadline)
     if(-not $policyReady){throw 'The routing controller did not become ready.'}
+    Write-ConnectionProgress 'Verifying'
     $health=& (Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe') --session-health | ConvertFrom-Json
+    Assert-ConnectionOperation
+    if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
     if(-not $health.healthy){throw 'The AWG2 data path did not pass HTTPS verification.'}
-    Write-JsonFile (Join-Path $runtime 'session-health.json') @{sessionId=$startedSession.id;healthy=$true;message=$health.message;updatedUtc=[DateTime]::UtcNow.ToString('o')}
+    Write-JsonFile (Join-Path $runtime 'session-health.json') @{sessionId=$startedSession.id;bridgeGeneration=$startedSession.bridgeGeneration;healthy=$true;code='Verified';message=$health.message;updatedUtc=[DateTime]::UtcNow.ToString('o')}
     $startedSession.recovering=$false;$startedSession.bridgeReady=$true
     Write-JsonFile (Join-Path $runtime 'session.json') $startedSession
     Remove-Item -LiteralPath (Join-Path $root 'logs\connection-lost.txt'),(Join-Path $root 'logs\recovery-error.log') -Force -ErrorAction SilentlyContinue
@@ -616,8 +569,7 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
             $previous | Add-Member -NotePropertyName bridgeReady -NotePropertyValue $false -Force
             Write-JsonFile (Join-Path $runtime 'session.json') $previous
         }else{Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;bridgeReady=$false;stoppedUtc=[DateTime]::UtcNow.ToString('o')}}
-        $failedStatus = (Invoke-WireSock @('status')) -join ' '
-        if ($failedStatus -match [regex]::Escape($smartProfile)) { Invoke-WireSock @('disconnect') | Out-Null }
+        Disconnect-ManagedWireSock
     } catch { [IO.File]::WriteAllText((Join-Path $root 'logs\cleanup-error.log'),$_.Exception.Message) }
     throw $startFailure
 }

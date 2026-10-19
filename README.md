@@ -5,6 +5,8 @@ Part of the CITA family: [AWG CITA](https://github.com/IthilRosg/AWG-CITA) manag
 
 The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspired palette, sharp frames and terminal typography.
 
+**0.5.0** adds a compact connection window, native WireSock statistics and component recovery.
+
 [Download stable releases](https://github.com/IthilRosg/CITA-Route/releases) · [Report a bug](https://github.com/IthilRosg/CITA-Route/issues)
 
 ## What it does
@@ -15,16 +17,20 @@ The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspire
 - Provides connection statistics, application/domain rules, logs and automatic recovery of a running session.
 - Shows new-release notifications at startup and every six hours. Downloads survive restart and can install automatically once disconnected, with an installer ownership handshake and rollback.
 - Restores the last applied/confirmed WireSock profile across app restarts and release folders; restoring a selection never connects automatically.
+- Opens a compact connection window by default. The menu switches to the complete advanced view without changing routing; each view remembers its own size.
+- Reports actual connection stages and supports cooperative cancellation. First setup and connection share one Windows elevation transaction.
 
 ## Install
 
 Windows 10/11 x64 and separately installed WireSock Secure Connect are required. The release ZIP includes .NET.
 
 1. Extract the whole ZIP into a writable folder and run **RoutePilot.exe**. The product is named CITA Route; legacy executable and service names remain for compatibility.
-2. Open **Settings → Connection**, choose your WireSock profile, or import `.conf`.
-3. Click **Apply connection** and accept Windows elevation. This installs the protected agent and prepares a separate managed profile; it does not connect the VPN yet.
-4. Disable WireSock's **Virtual Adapter Mode** and **Override profile split-tunneling settings with global ones** if enabled. CITA Route checks these settings.
-5. Disconnect another active VPN/profile yourself, then click **Connect**.
+2. Click **Connect**. The client finds WireSock and offers a profile picker only when needed; you can also import `.conf` there.
+3. Accept Windows elevation when requested. CITA Route prepares the protected agent and its managed profile, connects and verifies the VPN exit. A valid saved profile is reused on the next click.
+4. Disable WireSock's **Virtual Adapter Mode** and **Override profile split-tunneling settings with global ones** if enabled. Another active VPN/profile must be disconnected by its owner; CITA Route explains the conflict.
+5. Use **⋮ → Advanced view** for connection settings, rules, diagnostics and detailed statistics. Closing the window hides it to the tray by default; **Disconnect and exit** stops the route first.
+
+When upgrading from **0.4.0**, the old **Settings → Connection → Apply connection** remains available in the advanced view.
 
 Your original profile is preserved. Private keys stay in your WireSock installation and the local private configuration folder. Never share a configured working directory; share the clean release ZIP.
 
@@ -32,9 +38,11 @@ Your original profile is preserved. Private keys stay in your WireSock installat
 
 The stable channel is `IthilRosg/CITA-Route` GitHub Releases. A popup offers a new version while the window is active; background notifications do not steal focus. The same release is not repeatedly announced. Open Settings to check or download again. Downloaded packages survive restart and are reverified against fresh trusted release metadata, including the archive's manifest identity, before installation. Another repository's assets and unsafe archive paths are rejected. Installation backs up replaced public files and rolls them back on failure. Personal rules, profiles, keys, statistics and preferences are retained.
 
-Automatic installation of a downloaded package is enabled by default and waits for the route and diagnostics to stop. Another copy's engine also blocks installation. Disable this in Settings if manual installation is preferred; choosing Later for an already downloaded release postpones automatic installation for four hours. The GUI exits only after the installer confirms exclusive ownership. After the application restarts, **Apply connection** updates its protected Windows agent using the normal UAC transaction. The updater never silently disconnects a route, switches VPNUS, or reconnects a previously disconnected session. SHA-256 is checked against release metadata delivered over HTTPS; releases are not currently code signed.
+Automatic installation of a downloaded package is enabled by default and waits for the route and diagnostics to stop. Another copy's engine or unfinished connection operation also blocks installation. Disable this in Settings if manual installation is preferred; choosing Later for an already downloaded release postpones automatic installation for four hours. The GUI exits only after the installer confirms exclusive ownership. The next **Connect** updates the protected Windows agent through the normal UAC transaction when necessary; **Apply connection** remains available in the advanced view. The updater never silently disconnects a route, switches VPNUS, or reconnects a previously disconnected session. SHA-256 is checked against release metadata delivered over HTTPS; releases are not currently code signed.
 
-Profile history contains only profile/CLI metadata in `%LOCALAPPDATA%\CITA\Route\profile-history.json`, not configuration keys. A missing remembered profile is reported rather than silently replaced. A restored selection in a new release folder still needs Apply connection; it does not transfer ownership of another running copy's service.
+Profile history contains only profile/CLI metadata in `%LOCALAPPDATA%\CITA\Route\profile-history.json`, not configuration keys. A missing remembered profile is reported rather than silently replaced. A new release folder still requires checked protected setup; restoring the selection does not transfer ownership of another running copy's service.
+
+Mini statistics cover the current CITA session. Compact mode reads VPN RTT and estimated loss from the existing WireSock service; no additional server or tunnel is required. RTT reflects the last handshake, while loss is the engine's own estimate, whose window is not exposed. Unavailable/stale/foreign-profile data show dashes. The optional independent Direct/VPN UDP reflector measurement remains in advanced diagnostics. HTTPS failures and traffic totals are never converted into loss percentages. See [native tunnel statistics](docs/WIRESOCK-STATISTICS.md) and [optional UDP setup](docs/UDP-QUALITY.md).
 
 ## Scope and compatibility
 
@@ -53,6 +61,7 @@ Install the .NET 8 SDK on Windows, then use Windows PowerShell:
 ./Bootstrap.ps1
 ./Build-All.ps1
 ./Verify-Portable.ps1
+./Verify-ComponentRecovery.ps1 -Engine
 ./Verify-Optimization.ps1
 ./Build-Portable.ps1
 ```
@@ -63,7 +72,11 @@ The resulting `dist/CITA-Route-VERSION-win-x64.zip` includes the runtime, public
 
 `Verify-All.ps1` and VPNUS fault-injection checks are advanced, disruptive diagnostics for a prepared test machine. CI uses offline fixtures and separate loopback engines instead.
 
+The component recovery work on this branch keeps the direct router alive during bridge/VPN repair. Unknown WireSock status pauses the bridge conservatively; it never authorizes switching a foreign profile. Control HTTPS failures are rechecked and reported without restarting the TUN. Retries are bounded and Stop supersedes late callbacks. `Verify-ComponentRecovery.ps1 -Engine` verifies one established direct TCP socket across a real loopback bridge restart, and refuses VPN-only connections while paused. This does not validate live WireSock interception, UDP/QUIC, physical network changes or gap-free VPN flow migration. See [the staged reliability plan](docs/ROUTING-RELIABILITY-PLAN.md).
+
 `./Measure-Resources.ps1 -Seconds 120 -IntervalSeconds 10` passively records the main GUI, agent, router, bridge and WireSock process CPU/memory/handle counters in `logs/`. It does not generate traffic or change networking. Shared working sets cannot be summed as unique RAM, and this sampler does not fully attribute short-lived PowerShell/CLI helpers. Use a longer controlled run for leak investigations.
+
+`RoutePilot.exe --benchmark-ui` compares compact and advanced WPF presentation on 200 synthetic rows without backend polling or network activity. Results in `logs/ui-resource-fixture.json` are a presentation benchmark, not total VPN resource use. Preview renderers also avoid live polling and preference writes.
 
 ## Maintenance
 

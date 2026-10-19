@@ -47,8 +47,10 @@ function Sync-WireSockProfile([string]$Name,[string]$DesiredPath,[string]$Backup
         New-Item -ItemType Directory -Path $backupFolder -Force | Out-Null
         $backupPath = Join-Path $backupFolder ($Name + '.conf')
         Copy-Item -LiteralPath $temporaryExport -Destination $backupPath
-        $statusText = (Invoke-WireSock @('status')) -join ' '
-        if ($statusText -match [regex]::Escape($Name)) {
+        $statusText = (Invoke-WireSock @('status')) -join "`n"
+        $profileState=Get-WireSockState $statusText $Name
+        if($profileState -notin @('Connected','Disconnected')){throw 'Another WireSock profile or unverified state prevents profile synchronization.'}
+        if ($profileState -eq 'Connected') {
             Invoke-WireSock @('disconnect') | Out-Null
         }
         Invoke-WireSock @('delete',$Name) | Out-Null

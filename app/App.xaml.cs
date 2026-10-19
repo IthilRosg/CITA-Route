@@ -26,7 +26,7 @@ public partial class App : Application
             catch (Exception ex) { File.WriteAllText(Path.Combine(root,"logs","app-self-test.log"),ex.ToString()); Shutdown(1); }
             return;
         }
-        bool render = e.Args.Contains("--render") || e.Args.Contains("--render-all") || e.Args.Contains("--render-update");
+        bool render = e.Args.Contains("--render") || e.Args.Contains("--render-all") || e.Args.Contains("--render-update") || e.Args.Contains("--benchmark-ui");
         if (!render)
         {
             string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(root)))[..16];
@@ -41,7 +41,7 @@ public partial class App : Application
             args.Handled = true;
         };
         var window = new MainWindow(root,render);
-        if(render && e.Args.Contains("--compact")){window.Width=1120;window.Height=760;}
+        if(render)window.ApplyView(e.Args.Contains("--compact"),false);
         MainWindow = window;
         window.Show();
         if (!render)
@@ -49,6 +49,7 @@ public partial class App : Application
                 Dispatcher.BeginInvoke(new Action(window.ShowWindow)),null,Timeout.Infinite,false);
         if (render)
         {
+            if(e.Args.Contains("--benchmark-ui")){await window.BenchmarkPresentation();window.ExitApplication();return;}
             await System.Threading.Tasks.Task.Delay(100);
             while(window.IsRefreshing)await System.Threading.Tasks.Task.Delay(50);
             await window.RefreshAsync();
@@ -64,10 +65,10 @@ public partial class App : Application
                 using(var file=File.Create(Path.Combine(root,"artifacts","update-popup.png")))output.Save(file);
                 prompt.Close();window.ExitApplication();return;
             }
-            string[] names={"overview","connections","rules","logs","settings"};
+            string[] names=e.Args.Contains("--compact")?new[]{"disconnected","connecting","connected","recovering","attention"}:new[]{"overview","connections","rules","logs","settings"};
             for(int page=0;page<(e.Args.Contains("--render-all")?5:1);page++)
             {
-                window.PreviewPage(page);
+                if(e.Args.Contains("--compact"))window.PreviewConnection(page);else window.PreviewPage(page);
                 await System.Threading.Tasks.Task.Delay(150);
                 window.UpdateLayout();
                 var bitmap = new RenderTargetBitmap((int)window.ActualWidth,(int)window.ActualHeight,96,96,PixelFormats.Pbgra32);
@@ -77,7 +78,7 @@ public partial class App : Application
                 string name=page==0?prefix+".png":prefix+"-"+names[page]+".png";
                 using(var stream = File.Create(Path.Combine(root,"artifacts",name)))encoder.Save(stream);
             }
-            if(e.Args.Contains("--render-all"))
+            if(e.Args.Contains("--render-all")&&!e.Args.Contains("--compact"))
             {
                 window.PreviewSettingsEnd();await System.Threading.Tasks.Task.Delay(150);window.UpdateLayout();
                 var bitmap=new RenderTargetBitmap((int)window.ActualWidth,(int)window.ActualHeight,96,96,PixelFormats.Pbgra32);bitmap.Render(window);
