@@ -7,7 +7,7 @@ function Invoke-WireSock([string[]]$CliArguments) {
         $statusResult = & $cli status 2>&1
         $statusExitCode = $LASTEXITCODE
         $statusText = ($statusResult -join ' ').Trim()
-        $disconnectedPattern = '(?i)^(Not connected|No connection|\u041d\u0435\u0442 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f)$'
+        $disconnectedPattern = '(?i)^(Not connected|NotConnected|No connection|Disconnected|\u041e\u0442\u043a\u043b\u044e\u0447\u0435\u043d\u043e|\u041d\u0435\u0442 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f)$'
         if ($statusExitCode -eq 0 -and $statusText -match $disconnectedPattern) { return $result }
     }
     if ($exitCode -ne 0) { throw "WireSock CLI failed: $($result -join ' ')" }
@@ -44,19 +44,20 @@ function Read-HelperOutput([string]$Image,[string]$Arguments) {
 function Read-WireSockStatus { return Read-HelperOutput $cli 'status' }
 
 function Test-WireSockManagedProfile([string]$Status,[string]$Profile) {
-    $names=[regex]::Matches($Status,'(?im)^.*?\b(?:profile|\u043f\u0440\u043e\u0444\u0438\u043b\u044f)[ \t]+([^\r\n]+?)[ \t]*$')
+    # CLI stdout uses CRLF on Windows; multiline $ leaves the CR in the line.
+    $names=[regex]::Matches($Status,'(?im)^.*?\b(?:profile|\u043f\u0440\u043e\u0444\u0438\u043b\u044f)[ \t]+([^\r\n]+?)[ \t]*\r?$')
     return $names.Count -eq 1 -and [string]::Equals($names[0].Groups[1].Value.Trim(),$Profile,[StringComparison]::OrdinalIgnoreCase)
 }
 
 function Get-WireSockState([string]$Status,[string]$Profile) {
     $text=$Status.Trim()
-    if($text -match '(?i)^(Not connected|NotConnected|No connection|Disconnected|\u041d\u0435\u0442 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f)$'){return 'Disconnected'}
+    if($text -match '(?i)^(Not connected|NotConnected|No connection|Disconnected|\u041e\u0442\u043a\u043b\u044e\u0447\u0435\u043d\u043e|\u041d\u0435\u0442 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f)$'){return 'Disconnected'}
     # Match a complete profile identifier, never a substring such as "...-copy".
     $managed=Test-WireSockManagedProfile $text $Profile
     $hasProfile=$text -match '(?im)^.*(?:profile|\u043f\u0440\u043e\u0444\u0438\u043b\u044f)\s+\S.*$'
     if($hasProfile -and -not $managed){return 'Foreign'}
-    if($managed -and $text -match '(?i)\b(Disconnected|NotConnected|Not connected|No connection)\b'){return 'Disconnected'}
-    if($text -match '(?i)\b(Connecting|Disconnecting)\b|\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435|\u041e\u0442\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435'){return 'Transitioning'}
+    if($managed -and $text -match '(?i)\b(Disconnected|NotConnected|Not connected|No connection|\u041d\u0435\s+\u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u043e)\b'){return 'Disconnected'}
+    if($text -match '(?i)\b(Connecting|Establishing connection|Disconnecting)\b|\u0423\u0441\u0442\u0430\u043d\u0430\u0432\u043b\u0438\u0432\u0430\u0435\u0442\u0441\u044f \u0441\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u0435|\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435|\u041e\u0442\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435'){return 'Transitioning'}
     if($managed -and $text -match '(?i)(\bConnected to|\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u043e \u043a \u0441\u0435\u0440\u0432\u0435\u0440\u0443)'){return 'Connected'}
     return 'Unknown'
 }

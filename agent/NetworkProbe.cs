@@ -67,9 +67,10 @@ public static class NetworkProbe
     }
     public static bool ManagedProfileConnected(string status)
     {
-        var names=System.Text.RegularExpressions.Regex.Matches(status,@"(?im)^.*?\b(?:profile|профиля)[ \t]+([^\r\n]+?)[ \t]*$");
+        // Multiline $ stops before LF, leaving CR in real Windows CLI replies.
+        var names=System.Text.RegularExpressions.Regex.Matches(status,@"(?im)^.*?\b(?:profile|профиля)[ \t]+([^\r\n]+?)[ \t]*\r?$");
         return names.Count==1 && string.Equals(names[0].Groups[1].Value.Trim(),"SmartRouting-AWG2",StringComparison.OrdinalIgnoreCase) &&
-            !System.Text.RegularExpressions.Regex.IsMatch(status,@"\b(?:Not connected|NotConnected|Disconnected|Disconnecting|Connecting)\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
+            !System.Text.RegularExpressions.Regex.IsMatch(status,@"\b(?:Not connected|NotConnected|No connection|Disconnected|Disconnecting|Connecting|Establishing connection|Не\s+подключено|Отключено|Отключение|Подключение|Устанавливается соединение)\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase) &&
             System.Text.RegularExpressions.Regex.IsMatch(status,@"Connected to|Подключено к серверу",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     }
     public static string? ReportedEgress(string status)
