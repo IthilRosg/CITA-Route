@@ -124,6 +124,10 @@ function Release-ConnectionConflicts([string]$Root) {
         $profile=Get-ConflictProfile $status
         if($state -ne 'Disconnected' -and -not $profile){throw 'WireSock profile identity could not be verified.'}
         $vpnus=Get-NetAdapter -Name VPNUS -ErrorAction SilentlyContinue
+        # Validate every detected provider before interrupting the first one.
+        if($vpnus -and $vpnus.Status -eq 'Up'){
+            if(-not(Get-ConflictVpnusService)){throw 'The VPNUS connection has no supported service control.'}
+        }
         $journal=@{version=1;operationId=$OperationId;profile=$(if($state -ne 'Disconnected'){$profile}else{''});wireSockReleased=$false;vpnusStopped=$false;updatedUtc=[DateTime]::UtcNow.ToString('o')}
         if($state -eq 'Disconnected' -and (-not $vpnus -or $vpnus.Status -ne 'Up')){return}
         Write-JsonFile $journalPath $journal

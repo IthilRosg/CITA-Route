@@ -7,21 +7,21 @@ function Assert($Value,[string]$Message){if(-not $Value){throw $Message}}
 $base=Join-Path $project ('runtime\handoff-tests-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $base -Force|Out-Null
 try {
-    foreach($case in @('none','foreign','vpnus','both','unknown','conflict','cancel','active-route','wrong-service','failed-stop','restore-foreign-change','interrupted','complete','stale-complete','missing-profile')){
+    foreach($case in @('none','foreign','vpnus','both','unknown','conflict','cancel','active-route','wrong-service','both-wrong-service','failed-stop','restore-foreign-change','interrupted','complete','stale-complete','missing-profile')){
         $root=Join-Path $base $case;$runtime=Join-Path $root 'runtime'
         New-Item -ItemType Directory -Path $runtime -Force|Out-Null
         $OperationId=[guid]::NewGuid().ToString('N');$script:cli='fixture.exe'
-        $script:wire=if($case -in @('foreign','both','cancel','restore-foreign-change','interrupted','missing-profile')){"Connected to server using profile Friend WG`r`nExternal address: 203.0.113.1`r`n"}else{'Not connected'}
+        $script:wire=if($case -in @('foreign','both','cancel','restore-foreign-change','interrupted','missing-profile','both-wrong-service')){"Connected to server using profile Friend WG`r`nExternal address: 203.0.113.1`r`n"}else{'Not connected'}
         if($case -eq 'unknown'){$script:wire='unrecognized'}
         if($case -eq 'conflict'){$script:wire="Connected to server using profile Friend WG`r`nConnected to server using profile Other`r`n"}
-        $script:up=$case -in @('vpnus','both','wrong-service','failed-stop','complete','stale-complete','missing-profile')
+        $script:up=$case -in @('vpnus','both','wrong-service','both-wrong-service','failed-stop','complete','stale-complete','missing-profile')
         $script:serviceState='Running';$script:stops=0;$script:starts=0;$script:disconnects=0;$script:restores=0;$script:leases=0
         function Assert-NoAgentRun {}
         function Invoke-AgentCoordinator($Command){if($Command -eq 'begin-operation'){$script:leases++}else{$script:leases--}}
         function Get-Process {param($Name,$ErrorAction) if($case -eq 'active-route'){return [pscustomobject]@{Id=123}}}
         function Get-Service {param($Name,$ErrorAction) [pscustomobject]@{Status=$script:serviceState}}
         function Get-NetAdapter {param($Name,$ErrorAction) [pscustomobject]@{Status=$(if($script:up){'Up'}else{'Down'})}}
-        function Get-CimInstance {param($ClassName,$Filter,$ErrorAction) [pscustomobject]@{State=$script:serviceState;PathName=$(if($case -eq 'wrong-service'){'C:\Untrusted\fake.exe'}else{Join-Path $env:ProgramFiles 'VPNUS\service\vpnus-service.exe'})}}
+        function Get-CimInstance {param($ClassName,$Filter,$ErrorAction) [pscustomobject]@{State=$script:serviceState;PathName=$(if($case -in @('wrong-service','both-wrong-service')){'C:\Untrusted\fake.exe'}else{Join-Path $env:ProgramFiles 'VPNUS\service\vpnus-service.exe'})}}
         function Stop-Service {param($Name,$ErrorAction) Assert ($Name -eq 'VpnusService') 'Stopped another service';$script:stops++;if($case -ne 'failed-stop'){$script:up=$false;$script:serviceState='Stopped'}}
         function Start-Service {param($Name,$ErrorAction) Assert ($Name -eq 'VpnusService') 'Started another service';$script:starts++;$script:serviceState='Running'}
         function Start-Sleep {param($Milliseconds) if($case -eq 'failed-stop'){throw 'Fixture stop deadline'}}
@@ -35,7 +35,7 @@ try {
         $failed=$false
         try{Release-ConnectionConflicts $root}catch{$failed=$true}
         Assert ($script:leases -eq 0) 'Coordinator lease leaked'
-        if($case -in @('unknown','conflict','active-route','wrong-service')){
+        if($case -in @('unknown','conflict','active-route','wrong-service','both-wrong-service')){
             Assert ($failed -and $script:stops -eq 0 -and $script:disconnects -eq 0) ('Unverified conflict was mutated: '+$case)
         }elseif($case -eq 'none'){
             Assert (-not $failed -and -not(Test-Path -LiteralPath (Join-Path $runtime 'connection-handoff.json'))) 'A disconnected system was changed'
