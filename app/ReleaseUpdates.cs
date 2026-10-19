@@ -24,7 +24,10 @@ public sealed class ReleaseUpdates
     public ReleaseUpdates(HttpClient http){_http=http;}
     public static HttpClient CreateClient(bool routed)
     {
-        var handler=new SocketsHttpHandler{UseProxy=routed,Proxy=routed?new WebProxy("socks5://127.0.0.1:20809"):null,AllowAutoRedirect=true,MaxAutomaticRedirections=5,ConnectTimeout=TimeSpan.FromSeconds(8)};
+        // Release verification must finish before an update stops our route.
+        // Use the existing VPN bridge directly while connected, rather than
+        // making a GitHub API request depend on first-failure auto calibration.
+        var handler=new SocketsHttpHandler{UseProxy=routed,Proxy=routed?new WebProxy("socks5://127.0.0.1:20808"):null,AllowAutoRedirect=true,MaxAutomaticRedirections=5,ConnectTimeout=TimeSpan.FromSeconds(8)};
         var client=new HttpClient(handler){Timeout=Timeout.InfiniteTimeSpan};
         client.DefaultRequestHeaders.UserAgent.ParseAdd("CITA-Route/"+Current.ToString(3));
         return client;

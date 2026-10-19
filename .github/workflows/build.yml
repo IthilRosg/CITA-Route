@@ -27,6 +27,7 @@ jobs:
           ./Verify-Portable.ps1
           ./Verify-ReleaseUpdate.ps1
           ./Verify-Prepare.ps1
+          ./Verify-ConnectionHandoff.ps1
           ./Verify-Storage.ps1
           ./Verify-ProfileSync.ps1
           ./Verify-RuleFeeds.ps1

@@ -18,6 +18,7 @@ public sealed class ConnectionProgress
     {
         "WaitingElevation"=>"Ожидаем разрешение Windows…",
         "ChoosingProfile"=>"Выбери профиль в открывшемся окне…",
+        "ReleasingConflicts"=>"Останавливаем мешающее VPN-подключение…",
         "Preparing"=>"Подготавливаем подключение…",
         "Installing"=>"Устанавливаем защищённую службу…",
         "Connecting"=>"Подключаем выбранный профиль WireSock…",
@@ -65,7 +66,7 @@ public static class ConnectionOperation
         string storage=Literal(Path.Combine(root,"FileStorage.ps1"));
         string Child(string script,string parameters)=>Encode("$ErrorActionPreference='Stop'; . "+storage+"; try{ & "+Literal(Path.Combine(root,script))+" "+parameters+
             " }catch{Write-JsonFile "+Literal(error)+" @{message=$_.Exception.Message};exit 1}");
-        string steps="";
+        string steps=action=="Start"?"Step "+Child("Configure-Connection.ps1","-Action ReleaseConflicts -OperationId "+Literal(id))+" 'handoff'; ":"";
         if(setup!=null)
         {
             string parameters="-Action Apply -OperationId "+Literal(id)+" -CliPath "+Literal(setup.Cli)+" -SourceProfile "+Literal(setup.Profile)+
@@ -73,16 +74,21 @@ public static class ConnectionOperation
             // Values stay inside PowerShell syntax; empty strings never cross -File.
             steps="Step "+Child("Configure-Connection.ps1",parameters)+" 'setup'; $applied=$true; Assert-ConnectionOperation; ";
         }
+        if(action=="Start")steps+="$routeAttempted=$true; ";
         steps+="Step "+Child("SmartRouting.ps1","-Action "+action+" -OperationId "+Literal(id))+" 'route'; ";
         if(action=="Start")steps+="if(Test-ConnectionCancellation){Step "+Child("SmartRouting.ps1","-Action Stop")+" 'cleanup' $true; Assert-ConnectionOperation}; ";
-        return "$ErrorActionPreference='Stop'; $root="+Literal(root)+"; $runtime=Join-Path $root 'runtime'; $OperationId="+Literal(id)+"; . "+storage+"; $applied=$false; "+
+        if(action=="Start")steps+="Step "+Child("Configure-Connection.ps1","-Action CompleteHandoff -OperationId "+Literal(id))+" 'handoff-complete'; ";
+        string restore=action=="Start"?"try{Step "+Child("Configure-Connection.ps1","-Action RestoreHandoff -OperationId "+Literal(id))+" 'handoff-restore' $true}catch{$failure+=' Previous VPN restore needs attention: '+$_.Exception.Message}; ":"";
+        string cleanup=action=="Start"?"if($routeAttempted){try{Step "+Child("SmartRouting.ps1","-Action Stop")+" 'cleanup' $true}catch{$failure+=' Route cleanup needs attention: '+$_.Exception.Message}}; ":"";
+        string startGuard=action=="Start"?"$startGate=$null;try{$startGate=[IO.File]::Open((Join-Path $runtime 'update-preparation.lock'),'OpenOrCreate','ReadWrite','None')}catch{throw 'Update preparation is in progress.'}finally{if($startGate){$startGate.Dispose()}}; ":"";
+        return "$ErrorActionPreference='Stop'; $root="+Literal(root)+"; $runtime=Join-Path $root 'runtime'; $OperationId="+Literal(id)+"; . "+storage+"; $applied=$false; $routeAttempted=$false; "+
             "function Step($encoded,$name,$cleanup=$false){if(-not $cleanup){Assert-ConnectionOperation}; $p=Start-Process powershell.exe -WindowStyle Hidden -PassThru -WorkingDirectory $root "+
             "-ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded) "+
             "-RedirectStandardOutput (Join-Path $root ('logs\\operation-'+$OperationId+'-'+$name+'.log')) "+
             "-RedirectStandardError (Join-Path $root ('logs\\operation-'+$OperationId+'-'+$name+'-error.log')); $null=$p.Handle; $p.WaitForExit(); $p.Refresh(); "+
             "if($p.ExitCode -ne 0){$m='Операция не завершена. Подробности есть в журнале.';if(Test-Path -LiteralPath "+Literal(error)+"){$m=(Read-JsonFile "+Literal(error)+").message};throw $m}}; "+
-            "$operationLock=$null; try{$operationLock=[IO.File]::Open((Join-Path $runtime 'connection-operation.lock'),'OpenOrCreate','ReadWrite','None'); Assert-ConnectionOperation; "+steps+"Write-JsonFile "+Literal(report)+" @{id=$OperationId;success=$true;applied=$applied;cancelled=$false;message=''}}"+
-            "catch{Write-JsonFile "+Literal(report)+" @{id=$OperationId;success=$false;applied=$applied;cancelled=(Test-ConnectionCancellation);message=$_.Exception.Message};exit 1}finally{if($operationLock){$operationLock.Dispose()}}";
+            "$operationLock=$null; try{$operationLock=[IO.File]::Open((Join-Path $runtime 'connection-operation.lock'),'OpenOrCreate','ReadWrite','None'); "+startGuard+"Assert-ConnectionOperation; "+steps+"Write-JsonFile "+Literal(report)+" @{id=$OperationId;success=$true;applied=$applied;cancelled=$false;message=''}}"+
+            "catch{$failure=$_.Exception.Message; "+cleanup+restore+"Write-JsonFile "+Literal(report)+" @{id=$OperationId;success=$false;applied=$applied;cancelled=(Test-ConnectionCancellation);message=$failure};exit 1}finally{if($operationLock){$operationLock.Dispose()}}";
     }
     public static async Task<ConnectionResult> Run(string root,string action,bool elevated,ConnectionSelection? setup=null,IProgress<ConnectionProgress>? progress=null,CancellationToken cancellation=default,TimeSpan? timeout=null)
     {

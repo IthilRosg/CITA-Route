@@ -19,6 +19,12 @@ $bridgeExe = Join-Path $env:ProgramFiles 'RoutePilot\Agent\vpn-bridge.exe'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 
 . (Join-Path $root 'FileStorage.ps1')
+if($Action -in @('Start','ProxyOnly')){
+    $updateGate=$null
+    try{$updateGate=[IO.File]::Open((Join-Path $runtime 'update-preparation.lock'),'OpenOrCreate','ReadWrite','None')}
+    catch{throw 'Update preparation is in progress.'}
+    finally{if($updateGate){$updateGate.Dispose()}}
+}
 . (Join-Path $root 'ConnectionEnvironment.ps1')
 $connectionSettings=Get-ConnectionSettings $root
 $cli=Find-WireSockCli $connectionSettings.CliPath

@@ -21,6 +21,20 @@ public sealed class UpdateState
 }
 public static class UpdateJournal
 {
+    public static FileStream ReservePreparation(string root)
+    {
+        // Both sides take the operation lock before testing/reserving this gate.
+        // Stop remains available; a new Start must fail until installer ownership.
+        using var operation=new FileStream(Path.Combine(root,"runtime","connection-operation.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
+        return new FileStream(Path.Combine(root,"runtime","update-preparation.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
+    }
+    public static string? PreparationBlockReason(string root,bool busy,bool ownedEngine,bool diagnostic,bool globalEngine)
+    {
+        if(busy)return "Дождись завершения текущей операции.";
+        if(diagnostic)return "Установка после завершения диагностики и восстановления.";
+        if(globalEngine&&!ownedEngine)return "Другой маршрут ещё работает. Автоматическая установка ожидает освобождения сети.";
+        return ownedEngine?null:BlockReason(root,false,false,false,false);
+    }
     public static UpdateState Read(string root)
     {
         var value=AppPaths.Read(Path.Combine(root,"data","update-state.json"),()=>new UpdateState());
