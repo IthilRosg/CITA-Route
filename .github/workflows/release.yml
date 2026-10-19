@@ -35,6 +35,10 @@ jobs:
           ./Verify-ComponentRecovery.ps1 -Engine
           ./Verify-Optimization.ps1
           if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}
+          dotnet build tools/udp-reflector/Cita.UdpReflector.csproj -c Release
+          if($LASTEXITCODE -ne 0){throw 'UDP reflector build failed.'}
+          & ./runtime/agent-build/RoutePilot.Agent.exe --udp-integration $PWD.Path
+          if($LASTEXITCODE -ne 0){throw 'UDP engine integration failed.'}
           ./Build-Portable.ps1
       - name: Verify final archive
         shell: powershell

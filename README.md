@@ -5,8 +5,7 @@ Part of the CITA family: [AWG CITA](https://github.com/IthilRosg/AWG-CITA) manag
 
 The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspired palette, sharp frames and terminal typography.
 
-This branch prepares **0.5.0**; the published stable release is still **0.4.0**.
-The compact interface below belongs to the candidate, not the existing stable ZIP.
+**0.5.0** adds a compact connection window, native WireSock statistics and component recovery.
 
 [Download stable releases](https://github.com/IthilRosg/CITA-Route/releases) · [Report a bug](https://github.com/IthilRosg/CITA-Route/issues)
 
@@ -26,12 +25,12 @@ The compact interface below belongs to the candidate, not the existing stable ZI
 Windows 10/11 x64 and separately installed WireSock Secure Connect are required. The release ZIP includes .NET.
 
 1. Extract the whole ZIP into a writable folder and run **RoutePilot.exe**. The product is named CITA Route; legacy executable and service names remain for compatibility.
-2. Click **Connect**. The candidate finds WireSock and offers a profile picker only when needed; you can also import `.conf` there.
+2. Click **Connect**. The client finds WireSock and offers a profile picker only when needed; you can also import `.conf` there.
 3. Accept Windows elevation when requested. CITA Route prepares the protected agent and its managed profile, connects and verifies the VPN exit. A valid saved profile is reused on the next click.
 4. Disable WireSock's **Virtual Adapter Mode** and **Override profile split-tunneling settings with global ones** if enabled. Another active VPN/profile must be disconnected by its owner; CITA Route explains the conflict.
 5. Use **⋮ → Advanced view** for connection settings, rules, diagnostics and detailed statistics. Closing the window hides it to the tray by default; **Disconnect and exit** stops the route first.
 
-On stable **0.4.0**, the equivalent first setup remains **Settings → Connection → Apply connection**, then **Connect**.
+When upgrading from **0.4.0**, the old **Settings → Connection → Apply connection** remains available in the advanced view.
 
 Your original profile is preserved. Private keys stay in your WireSock installation and the local private configuration folder. Never share a configured working directory; share the clean release ZIP.
 
@@ -39,7 +38,7 @@ Your original profile is preserved. Private keys stay in your WireSock installat
 
 The stable channel is `IthilRosg/CITA-Route` GitHub Releases. A popup offers a new version while the window is active; background notifications do not steal focus. The same release is not repeatedly announced. Open Settings to check or download again. Downloaded packages survive restart and are reverified against fresh trusted release metadata, including the archive's manifest identity, before installation. Another repository's assets and unsafe archive paths are rejected. Installation backs up replaced public files and rolls them back on failure. Personal rules, profiles, keys, statistics and preferences are retained.
 
-Automatic installation of a downloaded package is enabled by default and waits for the route and diagnostics to stop. Another copy's engine or unfinished connection operation also blocks installation. Disable this in Settings if manual installation is preferred; choosing Later for an already downloaded release postpones automatic installation for four hours. The GUI exits only after the installer confirms exclusive ownership. In the candidate, the next **Connect** updates the protected Windows agent through the normal UAC transaction when necessary; **Apply connection** remains available in the advanced view. The updater never silently disconnects a route, switches VPNUS, or reconnects a previously disconnected session. SHA-256 is checked against release metadata delivered over HTTPS; releases are not currently code signed.
+Automatic installation of a downloaded package is enabled by default and waits for the route and diagnostics to stop. Another copy's engine or unfinished connection operation also blocks installation. Disable this in Settings if manual installation is preferred; choosing Later for an already downloaded release postpones automatic installation for four hours. The GUI exits only after the installer confirms exclusive ownership. The next **Connect** updates the protected Windows agent through the normal UAC transaction when necessary; **Apply connection** remains available in the advanced view. The updater never silently disconnects a route, switches VPNUS, or reconnects a previously disconnected session. SHA-256 is checked against release metadata delivered over HTTPS; releases are not currently code signed.
 
 Profile history contains only profile/CLI metadata in `%LOCALAPPDATA%\CITA\Route\profile-history.json`, not configuration keys. A missing remembered profile is reported rather than silently replaced. A new release folder still requires checked protected setup; restoring the selection does not transfer ownership of another running copy's service.
 

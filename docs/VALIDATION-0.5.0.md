@@ -1,7 +1,7 @@
-# CITA Route 0.5.0: candidate validation
+# CITA Route 0.5.0: validation record
 
-2026-10-19, Windows PowerShell 5.1, Windows x64. This is a candidate on
-`codex/component-recovery`, not a new stable release. No working VPN was
+2026-10-19, Windows PowerShell 5.1, Windows x64. This records candidate checks on
+`codex/component-recovery` before release publication. No working VPN was
 disconnected and no candidate service was installed over the active session.
 
 ## Implemented and checked locally
@@ -77,7 +77,7 @@ The installed protected agent returned `healthy=true` and RoutePilotRescue was
 Running at 01:50:57 MSK. That confirms the unchanged existing session only; it
 does not validate candidate installation or the new live recovery code.
 
-## Remaining release gates and limitations
+## Remaining hardware validation and limitations
 
 - UDP quality remains optional until a real controlled reflector is deployed
   and configured. Full remote TUN → WireSock → reflector, IPv6, QUIC and PMTU
@@ -96,5 +96,6 @@ does not validate candidate installation or the new live recovery code.
   session-health data. Total live CPU/RAM and long-duration leak checks remain
   separate from the synthetic UI measurement.
 
-Keep the PR in draft and the stable update channel at 0.4.0 until the remaining
-release gates are met. A clean ZIP is suitable for isolated candidate testing.
+These remaining scenarios are not covered by the automated suite. The release
+notes retain these limits; publication does not establish seamless migration,
+complete hardware coverage or system-wide resource-exhaustion protection.

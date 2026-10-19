@@ -1,4 +1,4 @@
-# Native WireSock statistics (0.5.0 candidate)
+# Native WireSock statistics (0.5.0)
 
 Compact mode uses the existing WireSock service's tunnel estimates. No additional
 server, profile modification, SDK installation or second tunnel is required.
