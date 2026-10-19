@@ -15,6 +15,44 @@ $client=Join-Path $target 'client'
 $uninstaller=Join-Path $target 'unins000.exe'
 New-Item -ItemType Directory -Path $base -Force | Out-Null
 function Assert($Value,[string]$Message){if(-not $Value){throw $Message}}
+# Read the actual Unicode Shell Link interface. WScript.Shell may expose ANSI
+# path values on a Windows installation with a different system code page.
+if(-not ('CitaFixtureShortcut' -as [type])){Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+public static class CitaFixtureShortcut {
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellLinkW {
+        void GetPath([Out,MarshalAs(UnmanagedType.LPWStr)] StringBuilder path,int length,IntPtr data,uint flags);
+        void GetIDList(out IntPtr list); void SetIDList(IntPtr list);
+        void GetDescription([Out,MarshalAs(UnmanagedType.LPWStr)] StringBuilder text,int length);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetWorkingDirectory([Out,MarshalAs(UnmanagedType.LPWStr)] StringBuilder text,int length);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetArguments([Out,MarshalAs(UnmanagedType.LPWStr)] StringBuilder text,int length);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetHotkey(out short key); void SetHotkey(short key);
+        void GetShowCmd(out int command); void SetShowCmd(int command);
+        void GetIconLocation([Out,MarshalAs(UnmanagedType.LPWStr)] StringBuilder path,int length,out int index);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path,int index);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path,uint flags);
+        void Resolve(IntPtr window,uint flags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+    }
+    public static string[] Read(string path) {
+        object link=Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046")));
+        try {
+            ((IPersistFile)link).Load(path,0);
+            var target=new StringBuilder(32768); var directory=new StringBuilder(32768);
+            ((IShellLinkW)link).GetPath(target,target.Capacity,IntPtr.Zero,4);
+            ((IShellLinkW)link).GetWorkingDirectory(directory,directory.Capacity);
+            return new[]{target.ToString(),directory.ToString()};
+        } finally { Marshal.FinalReleaseComObject(link); }
+    }
+}
+'@}
 function Install([string]$Log){
     $process=Start-Process -FilePath $setupPath -WindowStyle Hidden -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR="'+$target+'"'),('/LOG="'+(Join-Path $base $Log)+'"')) -PassThru -Wait
     return $process.ExitCode
@@ -28,11 +66,11 @@ try{
     Assert (Test-Path -LiteralPath $registry) 'Windows uninstall entry missing.'
     Assert (Test-Path -LiteralPath (Join-Path $client 'RoutePilot.exe')) 'Application was not installed.'
     Assert (-not(Test-Path -LiteralPath (Join-Path $client 'runtime\app-build\RoutePilot.exe'))) 'Redundant GUI copy was installed.'
-    $shell=New-Object -ComObject WScript.Shell
     foreach($link in $links){
         Assert (Test-Path -LiteralPath $link) 'Application shortcut missing.'
-        $shortcut=$shell.CreateShortcut($link)
-        Assert ($shortcut.TargetPath -eq (Join-Path $client 'RoutePilot.exe') -and $shortcut.WorkingDirectory -eq $client) 'Shortcut points outside the installation.'
+        $shortcut=[CitaFixtureShortcut]::Read($link)
+        $expected=Join-Path $client 'RoutePilot.exe'
+        Assert ($shortcut[0] -eq $expected -and $shortcut[1].TrimEnd('\') -eq $client) ('Shortcut differs: '+(@{Expected=$expected;Target=$shortcut[0];WorkingDirectory=$shortcut[1]} | ConvertTo-Json -Compress))
     }
     $preview=Start-Process -FilePath (Join-Path $client 'RoutePilot.exe') -ArgumentList '--render --compact' -WindowStyle Hidden -PassThru -Wait
     Assert ($preview.ExitCode -eq 0 -and (Test-Path -LiteralPath (Join-Path $client 'artifacts\routepilot-compact.png'))) 'Installed application did not open from its final directory.'

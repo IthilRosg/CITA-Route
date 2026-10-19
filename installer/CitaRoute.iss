@@ -143,7 +143,7 @@ begin
   ScriptPath := ExpandConstant('{tmp}\InstallationGuard.ps1');
   Result := FileCopy(ExpandConstant('{app}\maintenance\InstallationGuard.ps1'), ScriptPath, False);
   if not Result then begin
-    MsgBox('Не удалось проверить подключение перед удалением. Повтори установку клиента для восстановления.', mbError, MB_OK);
+    SuppressibleMsgBox('Не удалось проверить подключение перед удалением. Повтори установку клиента для восстановления.', mbError, MB_OK, IDOK);
     exit;
   end;
   Problem := AcquireGuard(ScriptPath, True);
