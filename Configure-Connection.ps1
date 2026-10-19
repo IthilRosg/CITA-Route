@@ -10,6 +10,13 @@ if(-not $UserProfile){$UserProfile=$env:USERPROFILE}
 . (Join-Path $root 'FileStorage.ps1')
 . (Join-Path $root 'ConnectionEnvironment.ps1')
 . (Join-Path $root 'WireSockCli.ps1')
+# Completion only retires this operation's local journal. Do not make a healthy
+# new connection depend on another CLI/signature/network check at this point.
+if($Action -eq 'CompleteHandoff' -or ($Action -eq 'RestoreHandoff' -and -not(Test-Path -LiteralPath (Join-Path $runtime 'connection-handoff.json')))){
+    if(-not $OperationId){throw 'A connection handoff requires an operation identity.'}
+    if($Action -eq 'CompleteHandoff'){Complete-ConnectionHandoff $root}
+    exit 0
+}
 $settings=Get-ConnectionSettings $root
 $cli=Find-WireSockCli $(if($CliPath){$CliPath}else{$settings.CliPath})
 if($Action -eq 'Discover'){

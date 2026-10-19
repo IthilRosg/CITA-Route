@@ -66,7 +66,7 @@ public static class ConnectionOperation
         string storage=Literal(Path.Combine(root,"FileStorage.ps1"));
         string Child(string script,string parameters)=>Encode("$ErrorActionPreference='Stop'; . "+storage+"; try{ & "+Literal(Path.Combine(root,script))+" "+parameters+
             " }catch{Write-JsonFile "+Literal(error)+" @{message=$_.Exception.Message};exit 1}");
-        string steps=action=="Start"?"Step "+Child("Configure-Connection.ps1","-Action ReleaseConflicts -OperationId "+Literal(id))+" 'handoff'; ":"";
+        string steps="";
         if(setup!=null)
         {
             string parameters="-Action Apply -OperationId "+Literal(id)+" -CliPath "+Literal(setup.Cli)+" -SourceProfile "+Literal(setup.Profile)+
@@ -74,11 +74,14 @@ public static class ConnectionOperation
             // Values stay inside PowerShell syntax; empty strings never cross -File.
             steps+="Step "+Child("Configure-Connection.ps1",parameters)+" 'setup'; $applied=$true; Assert-ConnectionOperation; ";
         }
+        // Setup can need DNS/downloads through the previous connection. Keep it
+        // available until checked preparation and protected installation finish.
+        if(action=="Start")steps+="Step "+Child("Configure-Connection.ps1","-Action ReleaseConflicts -OperationId "+Literal(id))+" 'handoff'; ";
         if(action=="Start")steps+="$routeAttempted=$true; ";
         steps+="Step "+Child("SmartRouting.ps1","-Action "+action+" -OperationId "+Literal(id))+" 'route'; ";
         if(action=="Start")steps+="if(Test-ConnectionCancellation){Step "+Child("SmartRouting.ps1","-Action Stop")+" 'cleanup' $true; Assert-ConnectionOperation}; ";
         if(action=="Start")steps+="Step "+Child("Configure-Connection.ps1","-Action CompleteHandoff -OperationId "+Literal(id))+" 'handoff-complete'; ";
-        string restore=action=="Start"?"try{Step "+Child("Configure-Connection.ps1","-Action RestoreHandoff -OperationId "+Literal(id))+" 'handoff-restore' $true}catch{$failure+=' Previous VPN restore needs attention: '+$_.Exception.Message}; ":"";
+        string restore=action=="Start"?"if(Test-Path -LiteralPath (Join-Path $runtime 'connection-handoff.json')){try{Step "+Child("Configure-Connection.ps1","-Action RestoreHandoff -OperationId "+Literal(id))+" 'handoff-restore' $true}catch{$failure+=' Previous VPN restore needs attention: '+$_.Exception.Message}}; ":"";
         string cleanup=action=="Start"?"if($routeAttempted -and (Test-Path -LiteralPath (Join-Path $runtime 'session.json'))){try{$owned=Read-JsonFile (Join-Path $runtime 'session.json');if($owned.running -and $owned.operationId -eq $OperationId){Step "+Child("SmartRouting.ps1","-Action Stop")+" 'cleanup' $true}}catch{$failure+=' Route cleanup needs attention: '+$_.Exception.Message}}; ":"";
         string startGuard=action=="Start"?"$startGate=$null;try{$startGate=[IO.File]::Open((Join-Path $runtime 'update-preparation.lock'),'OpenOrCreate','ReadWrite','None')}catch{throw 'Update preparation is in progress.'}finally{if($startGate){$startGate.Dispose()}}; ":"";
         return "$ErrorActionPreference='Stop'; $root="+Literal(root)+"; $runtime=Join-Path $root 'runtime'; $OperationId="+Literal(id)+"; . "+storage+"; $applied=$false; $routeAttempted=$false; "+

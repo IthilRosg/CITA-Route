@@ -68,7 +68,13 @@ try {
             }
         }
     }
-    Write-Output 'PASS: supported VPN conflict release, CRLF identity, bounded stop, cancellation/rollback, interrupted journals, unknown/conflicting profiles, newer profile protection and service identity. All network/service operations mocked.'
+    $entry=Join-Path $base 'completion-entry';New-Item -ItemType Directory -Path (Join-Path $entry 'runtime') -Force|Out-Null
+    foreach($file in @('Configure-Connection.ps1','FileStorage.ps1','ConnectionEnvironment.ps1','WireSockCli.ps1')){Copy-Item -LiteralPath (Join-Path $project $file) -Destination $entry}
+    $entryId=[guid]::NewGuid().ToString('N');$entryJournal=Join-Path $entry 'runtime\connection-handoff.json'
+    Write-JsonFile $entryJournal @{operationId=$entryId}
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $entry 'Configure-Connection.ps1') -Action CompleteHandoff -OperationId $entryId
+    Assert ($LASTEXITCODE -eq 0 -and -not(Test-Path -LiteralPath $entryJournal)) 'Completion entry point required a live CLI/signature/admin operation'
+    Write-Output 'PASS: supported VPN conflict release, CRLF identity, bounded stop, cancellation/rollback, interrupted journals, unknown/conflicting profiles, newer profile protection, service identity and offline completion entry. All network/service operations mocked.'
 }finally{
     $prefix=[IO.Path]::GetFullPath((Join-Path $project 'runtime\handoff-tests-'))
     if(-not [IO.Path]::GetFullPath($base).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe fixture cleanup'}
