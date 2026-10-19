@@ -5,7 +5,7 @@ Part of the CITA family: [AWG CITA](https://github.com/IthilRosg/AWG-CITA) manag
 
 The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspired palette, sharp frames and terminal typography.
 
-**0.5.2** adds automatic release of supported conflicting VPN connections and stops its own route before installing an update. The Windows status fix from 0.5.1 and compact UI from 0.5.0 remain included.
+**0.5.3** adds a regular Windows installer with Desktop/Start shortcuts and Windows Apps registration. Technical files live in a permanent application directory; the installed payload omits the redundant GUI copy. Automatic connection handoff and update disconnection from 0.5.2 remain included.
 
 [Download stable releases](https://github.com/IthilRosg/CITA-Route/releases) · [Report a bug](https://github.com/IthilRosg/CITA-Route/issues)
 
@@ -22,9 +22,9 @@ The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspire
 
 ## Install
 
-Windows 10/11 x64 and separately installed WireSock Secure Connect are required. The release ZIP includes .NET.
+Windows 10/11 x64 and separately installed WireSock Secure Connect are required. Both downloads include .NET.
 
-1. Extract the whole ZIP into a writable folder and run **RoutePilot.exe**. The product is named CITA Route; legacy executable and service names remain for compatibility.
+1. Download **CITA-Route-VERSION-win-x64-setup.exe** from Releases, run it and click **Install**. Open **CITA Route** from the Desktop or Start shortcut (or launch at the end of Setup). For a portable installation, extract the complete ZIP and run **RoutePilot.exe**.
 2. Click **Connect**. The client finds WireSock and offers a profile picker only when needed; you can also import `.conf` there.
 3. Accept Windows elevation when requested. CITA Route prepares the protected agent and its managed profile, connects and verifies the VPN exit. A valid saved profile is reused on the next click.
 4. Disable WireSock's **Virtual Adapter Mode** and **Override profile split-tunneling settings with global ones** if enabled. Connect automatically stops a recognized active WireSock profile and the supported VPNUS service before starting CITA. Original profiles are preserved. Unknown services, ambiguous status and another running CITA routing engine are reported instead of being terminated by name.
@@ -32,7 +32,9 @@ Windows 10/11 x64 and separately installed WireSock Secure Connect are required.
 
 When upgrading from **0.4.0**, the old **Settings → Connection → Apply connection** remains available in the advanced view.
 
-Your original profile is preserved. Private keys stay in your WireSock installation and the local private configuration folder. Never share a configured working directory; share the clean release ZIP.
+The installer uses `%LOCALAPPDATA%\Programs\CITA Route\client` for the current user; network setup retains its normal elevation prompt. Repeat installation preserves user rules/preferences. Setup and uninstall require **Disconnect and exit**, hold the same operation locks as the updater, reject active/unreadable sessions and refuse downgrades. Uninstall through Windows Apps removes installed public files and shortcuts, retains personal data, and leaves WireSock/profiles and the shared protected rescue service alone. Old portable copies are not automatically deleted or migrated; profile-name history is shared, but a new root needs checked protected setup on the next Connect. See [installer design and verification](docs/INSTALLER.md).
+
+Your original profile is preserved. Private keys stay in your WireSock installation and the local private configuration folder. Never share a configured working directory; share the clean installer or release ZIP.
 
 ## Updates
 
@@ -66,11 +68,12 @@ Install the .NET 8 SDK on Windows, then use Windows PowerShell:
 ./Verify-ComponentRecovery.ps1 -Engine
 ./Verify-Optimization.ps1
 ./Build-Portable.ps1
+./Build-Installer.ps1 -PackageDirectory dist/CITA-Route-VERSION-win-x64-STAGE
 ```
 
 `Bootstrap.ps1` downloads a pinned sing-box release and verifies its archive and executable SHA-256. Public routing data is fetched separately. If necessary, pass `-DownloadProxy socks5h://127.0.0.1:PORT` for the dependency downloads.
 
-The resulting `dist/CITA-Route-VERSION-win-x64.zip` includes the runtime, public data, source and third-party license material. `dist/SHA256SUMS.txt` is the stable updater's checksum asset. Local data, private configs, logs and binaries are ignored by Git.
+The resulting `dist/CITA-Route-VERSION-win-x64.zip` includes the runtime, public data, source and third-party license material. `Build-Installer.ps1` consumes a matching verified package and creates `dist/CITA-Route-VERSION-win-x64-setup.exe`. It bootstraps the pinned official Inno Setup compiler in portable mode inside `runtime`, checking SHA-256 and Authenticode before executing its download. `-Compiler` accepts an explicit trusted compiler; `-DownloadProxy` configures downloads. `dist/SHA256SUMS.txt` includes both public downloads; the stable updater continues using the ZIP. Local data, private configs, logs and binaries are ignored by Git.
 
 `Verify-All.ps1` and VPNUS fault-injection checks are advanced, disruptive diagnostics for a prepared test machine. CI uses offline fixtures and separate loopback engines instead.
 
