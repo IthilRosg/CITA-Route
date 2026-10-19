@@ -19,6 +19,10 @@ public partial class App : Application
         string root;
         try{root=AppPaths.FindRoot();}
         catch(Exception ex){MessageBox.Show(ex.Message,"RoutePilot",MessageBoxButton.OK,MessageBoxImage.Error);Shutdown(1);return;}
+        if(InstallationMaintenance.Active(root))
+        {
+            MessageBox.Show("Идёт установка или удаление CITA Route. Дождись завершения и открой приложение снова.","CITA Route",MessageBoxButton.OK,MessageBoxImage.Information);Shutdown(1);return;
+        }
         if (e.Args.Contains("--self-test"))
         {
             Directory.CreateDirectory(Path.Combine(root,"runtime"));Directory.CreateDirectory(Path.Combine(root,"logs"));

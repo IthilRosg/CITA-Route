@@ -33,6 +33,7 @@ jobs:
           ./Verify-ReleaseUpdate.ps1
           ./Verify-Prepare.ps1
           ./Verify-ConnectionHandoff.ps1
+          ./Verify-InstallationGuard.ps1
           ./Verify-ComponentRecovery.ps1 -Engine
           ./Verify-Optimization.ps1
           if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}
@@ -48,11 +49,14 @@ jobs:
           Expand-Archive -LiteralPath $zip.FullName -DestinationPath runtime/package-check
           $package=Get-ChildItem runtime/package-check -Directory | Select-Object -First 1
           ./Verify-Portable.ps1 -PackageDirectory $package.FullName
+          ./Build-Installer.ps1 -PackageDirectory $package.FullName
+          ./Build-Installer.ps1 -PackageDirectory $package.FullName -TestBuild
+          ./Verify-Installer.ps1 -Setup (Get-ChildItem dist/*-test-setup.exe).FullName
       - name: Create release and upload verified artifacts
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          gh release create $env:RELEASE_TAG dist/CITA-Route-*-win-x64.zip dist/SHA256SUMS.txt --target $env:GITHUB_SHA --title "CITA Route $env:RELEASE_TAG" --notes-file RELEASE-NOTES.md
+          gh release create $env:RELEASE_TAG dist/CITA-Route-*-win-x64.zip dist/CITA-Route-*-win-x64-setup.exe dist/SHA256SUMS.txt --target $env:GITHUB_SHA --title "CITA Route $env:RELEASE_TAG" --notes-file RELEASE-NOTES.md
           if($LASTEXITCODE -ne 0){throw 'Release publication failed'}

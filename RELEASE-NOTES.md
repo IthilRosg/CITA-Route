@@ -1,15 +1,11 @@
-CITA Route 0.5.2 — automatic connection handoff and update disconnection.
+CITA Route 0.5.3 — simple Windows installation.
 
-- Connect releases a recognized active WireSock profile and a supported VPNUS service before starting CITA. Profiles and keys are retained. Unknown/ambiguous connections and another running CITA engine remain protected from blind termination.
-- First-time setup finishes while the previous connection still works, preserving access for DNS, signature checks and protected-component preparation before handoff.
-- Intent is recorded before a conflicting connection stops. Failure/cancellation attempts to restore the prior profile and start the stopped VPNUS service; a newer active profile is never overwritten. An interrupted journal is retried before the next Connect. This is not an independent crash guard, and service restart does not prove the other client's internet access.
-- Installation revalidates the release and package while the current VPN still works, then automatically stops this copy's own route. Network-dependent verification finishes before disconnection. A reservation blocks concurrent Connect until the installer acquires ownership; failed Stop prevents installation. Foreign routes and diagnostics still block updates.
-- Release requests use the existing VPN bridge while routing is active. The update popup/settings explain that installation interrupts CITA connections. After installing, press Connect again; automatic reconnection is not introduced.
-- Includes the 0.5.1 Windows CRLF/localized WireSock status fix. New fixtures cover handoff/rollback, cancellation, interrupted journals, service identity, a changed foreign profile, setup ordering and update/Connect contention.
-- Connection transactions no longer exceed Windows command-line limits in longer installation paths. Late cancellation cleans up only the route created by that operation before attempting to restore its predecessor.
+- Run CITA-Route-0.5.3-win-x64-setup.exe, click Install, and open CITA Route from its Desktop or Start shortcut. Setup offers to launch the client when finished. Technical files stay under %LOCALAPPDATA%\Programs\CITA Route\client; manual ZIP extraction is no longer necessary.
+- Both Setup and the portable ZIP include .NET. WireSock remains a separate dependency. Setup itself never connects a VPN or installs a network service; the first Connect discovers profiles and performs normal protected setup.
+- Installed payload omits the redundant GUI executable (about 162 MB). The portable ZIP keeps its legacy copy for older updater compatibility; the new internal updater no longer recreates it in an installed client.
+- Repeat installation preserves settings and domain rules. Windows Apps offers removal; public installed files and shortcuts are removed, personal data is retained. WireSock, its profiles and the shared rescue service are left in place. Old portable folders are not automatically deleted or migrated; shared profile-name history remains available.
+- Maintenance holds connection/update locks and refuses active/unreadable sessions, a running GUI/engine from this installation, concurrent operations, redirected paths and Setup downgrades. The old uninstaller still accepts an application upgraded internally. Choose Disconnect and exit before manual repair or uninstall.
+- Internal updates still use the verified ZIP, preserve shortcut paths and disconnect their own route before installation. All 0.5.2 automatic handoff and update-disconnection features remain included.
+- New tests exercise the real installer/uninstaller under a separate identity, Desktop/Start shortcuts, Windows Apps registration, repeat installation, active-session refusal, data retention and lock release after an installer crash.
 
-Upgrade through Settings → Updates or extract the complete ZIP. Upgrading from 0.5.1 or earlier still requires disconnecting before installation because the older updater owns that operation. Once 0.5.2 is installed, its updater can stop its own active route. The next Connect updates protected components through Windows confirmation. Personal settings are preserved.
-
-Requirements: Windows 10/11 x64 and separately installed WireSock Secure Connect. The ZIP includes .NET. All 0.5.0 features remain available.
-
-Broader live driver/hardware and IPv6/QUIC limitations from 0.5.0 remain. System-wide resource-exhaustion protection is planned separately and is not included in this fix.
+Requirements: Windows 10/11 x64 and separately installed WireSock Secure Connect. Releases are not yet code signed. Broader driver/hardware, IPv6/QUIC and system resource-exhaustion limitations remain unchanged.

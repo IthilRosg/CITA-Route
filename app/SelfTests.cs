@@ -17,6 +17,16 @@ public static class SelfTests
         Task.Run(()=>ConnectionOperationTests.Run(root)).GetAwaiter().GetResult();
         Task.Run(()=>UpdateWorkflowTests.Run(root)).GetAwaiter().GetResult();
         static void Assert(bool condition,string message){if(!condition)throw new Exception(message);}
+        string maintenance=Path.Combine(root,"runtime","maintenance-test-"+Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(maintenance,"runtime"));
+        try
+        {
+            Assert(!InstallationMaintenance.Active(maintenance),"A missing installer lock cannot block normal startup.");
+            using(var held=new FileStream(Path.Combine(maintenance,"runtime","installation-maintenance.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None))
+                Assert(InstallationMaintenance.Active(maintenance),"Startup must refuse to open files during installation/uninstallation.");
+            Assert(!InstallationMaintenance.Active(maintenance),"An old unlocked lock file cannot block startup.");
+        }
+        finally{Directory.Delete(maintenance,true);}
         var healthSession=new EngineSession{Running=true,BridgeReady=true,Id="current",BridgeGeneration=4};
         var cachedHealth=new SessionHealthState{SessionId="current",BridgeGeneration=4,Healthy=true,UpdatedUtc=DateTime.UtcNow};
         Assert(SessionHealthCache.Matches(healthSession,cachedHealth,DateTime.UtcNow),"Current fresh health must be reusable by GUI without duplicate probe.");

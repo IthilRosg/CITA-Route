@@ -26,7 +26,7 @@ foreach($file in $manifest.files){
     $names[$source]=$file.sha256
     if((Get-Item -LiteralPath $source).Length -ne $file.bytes -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $file.sha256){throw 'Update payload has changed.'}
 }
-$files=@('RoutePilot.exe','SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','Verify-Routing.ps1','Install-Release.ps1','product.json','README.md','THIRD-PARTY.md','LICENSE','runtime\smart-router.exe','runtime\vpn-bridge.exe','runtime\agent-build\RoutePilot.Agent.exe','runtime\app-build\RoutePilot.exe','runtime\rules\russia_inside.srs','runtime\rules\discord.srs','rules\telegram-cidr.txt')
+$files=@('RoutePilot.exe','SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','Verify-Routing.ps1','Install-Release.ps1','product.json','README.md','THIRD-PARTY.md','LICENSE','runtime\smart-router.exe','runtime\vpn-bridge.exe','runtime\agent-build\RoutePilot.Agent.exe','runtime\rules\russia_inside.srs','runtime\rules\discord.srs','rules\telegram-cidr.txt')
 foreach($name in $files){if(-not $names.ContainsKey((Join-Path $packagePath $name))){throw ('Required update file missing: '+$name)}}
 if([version](Get-Item -LiteralPath (Join-Path $packagePath 'RoutePilot.exe')).VersionInfo.FileVersion -ne [version]($Version+'.0')){throw 'Release executable version differs.'}
 Assert-NoAgentRun
@@ -74,6 +74,15 @@ try{
     # transaction. Never change a Windows service from this non-elevated updater.
     Write-JsonFile (Join-Path $root 'data\pending-agent-update.json') @{version=$Version;createdUtc=[DateTime]::UtcNow.ToString('o')}
     $report.success=$true
+    # Only the current user's registered installation at this exact path may
+    # change its Windows Apps version label. Portable copies never register.
+    try{
+        $registration='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CITA.Route.Client_is1'
+        $installed=Get-ItemProperty -LiteralPath $registration -ErrorAction SilentlyContinue
+        if($installed -and $installed.InstallLocation -and [IO.Path]::GetFullPath((Join-Path $installed.InstallLocation 'client')).TrimEnd('\') -eq [IO.Path]::GetFullPath($root).TrimEnd('\')){
+            Set-ItemProperty -LiteralPath $registration -Name DisplayVersion -Value $Version
+        }
+    }catch{$report.registrationWarning='Windows Apps version label could not be refreshed.'}
 }catch{
     $report.error=$_.Exception.Message;$restoreErrors=@()
     Write-UpdateHandoff 'Failed' $report.error
