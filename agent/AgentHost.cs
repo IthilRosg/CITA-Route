@@ -40,6 +40,8 @@ public sealed class AgentHost
             await Recover("Service restarted with an unfinished run.");
         }
         var listener=Listen(stop);
+        using var resourceStop=CancellationTokenSource.CreateLinkedTokenSource(stop);
+        var resources=Task.Run(()=>ResourceMonitor.Run(_config.DataDirectory,_config.AppRoot,resourceStop.Token));
         try
         {
             while(!stop.IsCancellationRequested)
@@ -89,9 +91,11 @@ public sealed class AgentHost
         catch(OperationCanceledException)when(stop.IsCancellationRequested){}
         finally
         {
+            resourceStop.Cancel();
             await _gate.WaitAsync();
             try{if(_store.State.Active)await Recover("Service stopping.");}finally{_gate.Release();}
             try{await listener;}catch(OperationCanceledException){}
+            try{await resources;}catch(OperationCanceledException){}catch{}
         }
     }
     async Task Listen(CancellationToken stop)

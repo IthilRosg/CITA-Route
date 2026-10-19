@@ -1,11 +1,12 @@
-CITA Route 0.5.3 — simple Windows installation.
+CITA Route 0.5.4 — Windows resource pressure monitoring.
 
-- Run CITA-Route-0.5.3-win-x64-setup.exe, click Install, and open CITA Route from its Desktop or Start shortcut. Setup offers to launch the client when finished. Technical files stay under %LOCALAPPDATA%\Programs\CITA Route\client; manual ZIP extraction is no longer necessary.
-- Both Setup and the portable ZIP include .NET. WireSock remains a separate dependency. Setup itself never connects a VPN or installs a network service; the first Connect discovers profiles and performs normal protected setup.
-- Installed payload omits the redundant GUI executable (about 162 MB). The portable ZIP keeps its legacy copy for older updater compatibility; the new internal updater no longer recreates it in an installed client.
-- Repeat installation preserves settings and domain rules. Windows Apps offers removal; public installed files and shortcuts are removed, personal data is retained. WireSock, its profiles and the shared rescue service are left in place. Old portable folders are not automatically deleted or migrated; shared profile-name history remains available.
-- Maintenance holds connection/update locks and refuses active/unreadable sessions, a running GUI/engine from this installation, concurrent operations, redirected paths and Setup downgrades. The old uninstaller still accepts an application upgraded internally. Choose Disconnect and exit before manual repair or uninstall.
-- Internal updates still use the verified ZIP, preserve shortcut paths and disconnect their own route before installation. All 0.5.2 automatic handoff and update-disconnection features remain included.
-- New tests exercise the real installer/uninstaller under a separate identity, Desktop/Start shortcuts, Windows Apps registration, repeat installation, active-session refusal, data retention and lock release after an installer crash.
+- The existing protected rescue service observes IPv4/IPv6 UDP port ranges, exclusions, bind availability, system memory/commit and process counters. It continues while the GUI exits, provided the configured client is still installed.
+- Two distinct observations confirm a warning; three reliable clear samples retire it. Unknown/stale data do not prove recovery. Sustained growth warnings apply only to identified CITA components and do not claim a proven memory leak.
+- Confirmed issues appear as a compact warning, with a local report in Settings and the compact menu. The report lists large UDP/memory/handle consumers and can open Task Manager. Tray alerts are deduplicated and require the GUI to be running (including hidden to the tray).
+- Collection runs outside the network coordinator, uses bounded buffers/history and read-only Windows queries, and binds only one temporary socket per address family without sending packets. It never stops applications, changes VPN profiles or restarts networking. It cannot reserve system resources against another application's behavior.
+- The protected agent updates through normal Windows confirmation on the next Connect after installing this release. A missing monitor report beforehand is expected. The existing installer, shortcuts and verified updates remain available.
+- Added synthetic MSI-sized exhaustion, native UDP layouts and ownership, exclusion/shared-port accounting, confirmation/recovery, stale/partial state, memory/growth and PID-reuse tests. A native integration check verifies sixteen local sockets, disposal, background publication and cancellation. No real port exhaustion is induced.
 
-Requirements: Windows 10/11 x64 and separately installed WireSock Secure Connect. Releases are not yet code signed. Broader driver/hardware, IPv6/QUIC and system resource-exhaustion limitations remain unchanged.
+This is the first resource-safety stage: detection, confirmation and useful diagnostics. Automatic component-recovery integration, full VPN-only isolation, flow preservation, physical network changes and extended UDP/QUIC/IPv6/MTU validation remain separate work. A short integration run does not establish long-duration CPU/RAM use or absence of leaks.
+
+Windows 10/11 x64, separately installed WireSock Secure Connect. Setup and ZIP include .NET. Releases are not yet code signed.

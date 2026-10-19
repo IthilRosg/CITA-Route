@@ -40,7 +40,7 @@ try{
             Assert ($path.StartsWith($package.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) 'Manifest path escaped package.'
             Assert ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq $file.sha256) ('Package hash mismatch: '+$file.path)
         }
-        $bad=@(Get-ChildItem -LiteralPath $package -Recurse -File | Where-Object {$_.Extension -in @('.conf','.log') -or $_.Name -in @('udp-quality.json','session.json','controller-token.txt','connection.json','traffic.json','policy-cache.json','agent-config.json','router.json','bridge.json')})
+        $bad=@(Get-ChildItem -LiteralPath $package -Recurse -File | Where-Object {$_.Extension -in @('.conf','.log') -or $_.Name -in @('resource-state.json','udp-quality.json','session.json','controller-token.txt','connection.json','traffic.json','policy-cache.json','agent-config.json','router.json','bridge.json')})
         Assert ($bad.Count -eq 0) 'Personal runtime files found in package.'
         Assert (-not (Test-Path -LiteralPath (Join-Path $package 'private'))) 'Private folder found in package.'
         $inventory=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'Configure-Connection.ps1') -Action Discover | ConvertFrom-Json

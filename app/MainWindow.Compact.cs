@@ -66,6 +66,7 @@ public partial class MainWindow
         void Add(string label,Action action){var item=new MenuItem{Header=label};item.Click+=(_,_)=>action();menu.Items.Add(item);}
         Add("Расширенный вид",()=>ApplyView(false));
         Add("Проверить обновления",async()=>await CheckUpdatesAsync(true));
+        Add("Состояние ресурсов Windows",ShowResourceDetails);
         menu.Items.Add(new Separator());
         Add("Открыть журнал",()=>{ApplyView(false);PreviewPage(3);});
         Add("Отключить и выйти",async()=>{if(!_busy&&await PerformActionAsync("Stop"))ExitApplication();});
