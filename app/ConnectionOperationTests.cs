@@ -46,10 +46,12 @@ public static class ConnectionOperationTests
                         for($i=0;$i -lt 50;$i++){Assert-ConnectionOperation;Start-Sleep -Milliseconds 100}
                     }
                     Assert-ConnectionOperation
-                    Write-JsonFile (Join-Path $PSScriptRoot 'route.json') @{connected=($Action -eq 'Start')}
+                    Write-JsonFile (Join-Path $PSScriptRoot 'route.json') @{connected=($Action -eq 'Start');cleaned=($Action -eq 'Stop')}
+                    Write-JsonFile (Join-Path $runtime 'session.json') @{running=($Action -eq 'Start');operationId=$OperationId}
                     exit 0
                 }catch{
                     Write-JsonFile (Join-Path $PSScriptRoot 'route.json') @{connected=$false;cleaned=$true}
+                    Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;operationId=$OperationId}
                     throw
                 }
                 """,new UTF8Encoding(true));
@@ -57,7 +59,8 @@ public static class ConnectionOperationTests
             var selected=new ConnectionSelection(cli,profile,"");
             var started=await ConnectionOperation.Run(folder,"Start",false,selected);
             if(!started.Success || !started.Applied)throw new Exception("Combined setup/Start lost its successful child exit: "+started.Message);
-            if(File.Exists(Path.Combine(folder,"handoff.active")) || File.ReadAllText(Path.Combine(folder,"handoff-actions.txt")).Replace("\r","")!="ReleaseConflicts\nApply\nCompleteHandoff\n")throw new Exception("Handoff must precede setup and complete only after a successful Start.");
+            string handoffSequence=File.ReadAllText(Path.Combine(folder,"handoff-actions.txt")).Replace("\r","");
+            if(File.Exists(Path.Combine(folder,"handoff.active")) || handoffSequence!="ReleaseConflicts\nApply\nCompleteHandoff\n")throw new Exception("Handoff must precede setup and complete only after a successful Start: "+handoffSequence.Replace("\n","|")+" active="+File.Exists(Path.Combine(folder,"handoff.active")));
             using(var captured=JsonDocument.Parse(File.ReadAllText(Path.Combine(folder,"capture.json"))))
                 if(captured.RootElement.GetProperty("profile").GetString()!=profile || captured.RootElement.GetProperty("egress").GetString()!="")throw new Exception("Encoded setup values changed.");
             var stopped=await ConnectionOperation.Run(folder,"Stop",false);

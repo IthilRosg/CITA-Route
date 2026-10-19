@@ -72,14 +72,14 @@ public static class ConnectionOperation
             string parameters="-Action Apply -OperationId "+Literal(id)+" -CliPath "+Literal(setup.Cli)+" -SourceProfile "+Literal(setup.Profile)+
                 " -ExpectedEgressIp "+Literal(setup.Egress)+" -UserSid "+Literal(sid)+" -UserProfile "+Literal(user);
             // Values stay inside PowerShell syntax; empty strings never cross -File.
-            steps="Step "+Child("Configure-Connection.ps1",parameters)+" 'setup'; $applied=$true; Assert-ConnectionOperation; ";
+            steps+="Step "+Child("Configure-Connection.ps1",parameters)+" 'setup'; $applied=$true; Assert-ConnectionOperation; ";
         }
         if(action=="Start")steps+="$routeAttempted=$true; ";
         steps+="Step "+Child("SmartRouting.ps1","-Action "+action+" -OperationId "+Literal(id))+" 'route'; ";
         if(action=="Start")steps+="if(Test-ConnectionCancellation){Step "+Child("SmartRouting.ps1","-Action Stop")+" 'cleanup' $true; Assert-ConnectionOperation}; ";
         if(action=="Start")steps+="Step "+Child("Configure-Connection.ps1","-Action CompleteHandoff -OperationId "+Literal(id))+" 'handoff-complete'; ";
         string restore=action=="Start"?"try{Step "+Child("Configure-Connection.ps1","-Action RestoreHandoff -OperationId "+Literal(id))+" 'handoff-restore' $true}catch{$failure+=' Previous VPN restore needs attention: '+$_.Exception.Message}; ":"";
-        string cleanup=action=="Start"?"if($routeAttempted){try{Step "+Child("SmartRouting.ps1","-Action Stop")+" 'cleanup' $true}catch{$failure+=' Route cleanup needs attention: '+$_.Exception.Message}}; ":"";
+        string cleanup=action=="Start"?"if($routeAttempted -and (Test-Path -LiteralPath (Join-Path $runtime 'session.json'))){try{$owned=Read-JsonFile (Join-Path $runtime 'session.json');if($owned.running -and $owned.operationId -eq $OperationId){Step "+Child("SmartRouting.ps1","-Action Stop")+" 'cleanup' $true}}catch{$failure+=' Route cleanup needs attention: '+$_.Exception.Message}}; ":"";
         string startGuard=action=="Start"?"$startGate=$null;try{$startGate=[IO.File]::Open((Join-Path $runtime 'update-preparation.lock'),'OpenOrCreate','ReadWrite','None')}catch{throw 'Update preparation is in progress.'}finally{if($startGate){$startGate.Dispose()}}; ":"";
         return "$ErrorActionPreference='Stop'; $root="+Literal(root)+"; $runtime=Join-Path $root 'runtime'; $OperationId="+Literal(id)+"; . "+storage+"; $applied=$false; $routeAttempted=$false; "+
             "function Step($encoded,$name,$cleanup=$false){if(-not $cleanup){Assert-ConnectionOperation}; $p=Start-Process powershell.exe -WindowStyle Hidden -PassThru -WorkingDirectory $root "+
@@ -109,11 +109,22 @@ public static class ConnectionOperation
         using var registration=lifetime.Token.Register(()=>{try{File.WriteAllText(prefix+".cancel",id);}catch(IOException){}catch(UnauthorizedAccessException){}});
         cancellation.ThrowIfCancellationRequested();
         progress?.Report(new(){Id=id,Phase=elevated?"WaitingElevation":action=="Stop"?"Stopping":"UpdatingRules",UpdatedUtc=DateTime.UtcNow});
+        // Keep the outer transaction out of the Windows command-line length limit.
+        // Child commands remain separately encoded; this generated file is local
+        // operation metadata and is never included in a release archive.
+        string transaction=prefix+".ps1";
+        File.WriteAllText(transaction,command,new UTF8Encoding(true));
         var info=new ProcessStartInfo("powershell.exe"){WorkingDirectory=root,UseShellExecute=elevated,CreateNoWindow=!elevated,WindowStyle=ProcessWindowStyle.Hidden,
-            Arguments="-NoProfile -ExecutionPolicy Bypass -EncodedCommand "+Encode(command)};
+        };
+        foreach(string argument in new[]{"-NoProfile","-ExecutionPolicy","Bypass","-File",transaction})info.ArgumentList.Add(argument);
         if(elevated)info.Verb="runas";
         // ShellExecute can wait on the secure-desktop UAC prompt. Keep WPF live.
-        using var process=await Task.Run(()=>Process.Start(info)??throw new IOException("Не удалось запустить управление подключением."));
+        async Task<Process> Launch()
+        {
+            try{return await Task.Run(()=>Process.Start(info)??throw new IOException("Не удалось запустить управление подключением."));}
+            catch{try{File.Delete(transaction);}catch(IOException){}catch(UnauthorizedAccessException){}throw;}
+        }
+        using var process=await Launch();
         DateTime last=DateTime.MinValue,cancelAt=DateTime.MaxValue;bool cancelReported=false,pending=false;
         try
         {
@@ -140,7 +151,7 @@ public static class ConnectionOperation
         {
             // Never kill an elevated transaction midway. Cancellation is checked
             // by its owner at safe checkpoints; Start performs its own cleanup.
-            if(!pending)foreach(string suffix in new[]{".json",".progress.json",".error.json",".cancel"})try{File.Delete(prefix+suffix);}catch(IOException){}catch(UnauthorizedAccessException){}
+            if(!pending)foreach(string suffix in new[]{".json",".progress.json",".error.json",".cancel",".ps1"})try{File.Delete(prefix+suffix);}catch(IOException){}catch(UnauthorizedAccessException){}
         }
     }
 }

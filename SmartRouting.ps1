@@ -533,6 +533,7 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
     $routerProcess = Start-Helper $routerExe (Join-Path $runtime $configFile)
     Write-JsonFile (Join-Path $runtime 'session.json') @{
         running=$true;id=[guid]::NewGuid().ToString('N');startedUtc=[DateTime]::UtcNow.ToString('o')
+        operationId=$(if($Action -eq 'Reconnect'){$previous.operationId}else{$OperationId})
         routerPid=$routerProcess.Id;routerStartedUtc=$routerProcess.StartTime.ToUniversalTime().ToString('o')
         bridgePid=$bridgeProcess.Id;bridgeStartedUtc=$bridgeProcess.StartTime.ToUniversalTime().ToString('o');bridgeGeneration=1;bridgeReady=$false;mode=$sessionMode;sourceProfile=$sourceProfile
         recovering=$true;recoveryParentId=$(if($Action -eq 'Reconnect'){$ExpectedSessionId}else{''});networkSignature=(Get-SessionNetworkSignature)
