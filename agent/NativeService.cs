@@ -29,7 +29,7 @@ public static class NativeService
     {var status=new Status{Type=0x10,State=state,Accepted=accepted,WaitHint=hint,Checkpoint=state==3?++_checkpoint:0,Win32Exit=failed?1066u:0,SpecificExit=failed?1u:0};SetServiceStatus(_handle,ref status);}
     static uint Control(uint control,uint eventType,IntPtr _,IntPtr __)
     {
-        if(control is 1 or 5){Report(3,0,90000);_stoppingTimer??=new Timer(_=>Report(3,0,90000),null,2000,2000);Stop.Cancel();}
+        if(control is 1 or 5){if(control==5)_host?.PrepareForShutdown();Report(3,0,90000);_stoppingTimer??=new Timer(_=>Report(3,0,90000),null,2000,2000);Stop.Cancel();}
         if(control==13 && eventType is 4 or 7 or 18)_host?.RequestRecovery("System suspend/resume");
         return 0;
     }

@@ -28,6 +28,7 @@ internal sealed class BootRouting
     readonly CancellationTokenSource _cancel=new();
     Task? _stopTask;
     bool _routeAttempted;
+    volatile bool _shutdown;
     public BootRouting(AgentConfig config)=>_config=config;
     internal static BootSettings? Settings()
     {try{return ComponentLiveness.Read<BootSettings>(SettingsFile,131072);}catch(Exception ex)when(ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException){return null;}}
@@ -86,11 +87,13 @@ internal sealed class BootRouting
                 foreach(string file in Directory.EnumerateFiles(source).Where(p=>Path.GetExtension(p) is ".json" or ".srs"))Copy(Path.Combine(directory,Path.GetFileName(file)));
             }
             foreach(string file in new[]{"force-direct.txt","force-vpn.txt","product.json","private\\controller-token.txt"})Copy(file);
-            foreach(string file in new[]{"force-direct.txt","force-vpn.txt","data\\routing-policy.json","private\\controller-token.txt"})settings.InputHashes[file]=Hash(Child(root,file));
+            foreach(string file in new[]{"force-direct.txt","force-vpn.txt","private\\controller-token.txt"})settings.InputHashes[file]=Hash(Child(stage,file));
             Copy("rules\\telegram-cidr.txt");
             Directory.CreateDirectory(Path.Combine(stage,"data"));Directory.CreateDirectory(Path.Combine(stage,"logs"));
             Storage.Write(Path.Combine(stage,"data","connection.json"),new{SourceProfile=config.WireSockSourceProfile,CliPath=config.WireSockCliPath,ExpectedEgressIp=config.ExpectedEgressIp,UserSid="S-1-5-18",UserProfile=config.UserProfile});
-            var policy=Storage.Read<PolicyOptions>(Child(root,"data\\routing-policy.json"));
+            byte[] policyBytes=File.ReadAllBytes(Child(root,"data\\routing-policy.json"));
+            var policy=System.Text.Json.JsonSerializer.Deserialize<PolicyOptions>(policyBytes,Storage.Json)??throw new IOException("Missing routing preferences.");
+            settings.InputHashes["data\\routing-policy.json"]=Convert.ToHexString(SHA256.HashData(policyBytes));
             if(policy.Mode is not ("Auto" or "Lists"))throw new IOException("Invalid startup routing mode.");
             Storage.Write(Path.Combine(stage,"data","routing-policy.json"),policy);
             // The whole tree inherits the protected agent ACL: user read only.
@@ -190,7 +193,7 @@ internal sealed class BootRouting
                 try{restored=await Script("Stop",CancellationToken.None)==0;}catch{}
             State(settings,restored?"NeedsAttention":"StopFailed",restored?"Подключение при запуске не завершено. Открой CITA Route и проверь подключение.":"Запуск не завершён, отключение не подтверждено. Проверь WireSock и CITA Route.");
         }
-        finally{_serial.Release();}
+        finally{if(_shutdown)PrepareForShutdown();_serial.Release();}
     }
     public void RequestStop()
     {
@@ -217,5 +220,20 @@ internal sealed class BootRouting
         var settings=Settings();
         if(settings==null||!Same(settings.SourceRoot,source)||StartupPaths.Read().Active)return false;
         settings.Enabled=false;Storage.Write(SettingsFile,settings);State(settings,"Disabled","Подключение до входа выключено.");return true;
+    }
+    internal void PrepareForShutdown()
+    {
+        _shutdown=true;
+        try
+        {
+            var state=StartupPaths.Read();
+            if(state.Enabled&&state.Owns(_config.AppRoot))
+            {
+                // Hybrid shutdown can retain kernel uptime. A Windows shutdown,
+                // unlike an ordinary service restart, explicitly rearms next start.
+                state.BootUtc=default;Storage.Write(StartupPaths.StateFile,state);
+            }
+        }
+        catch(Exception ex)when(ex is IOException or UnauthorizedAccessException){}
     }
 }

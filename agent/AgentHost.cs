@@ -32,6 +32,7 @@ public sealed class AgentHost
         if(File.Exists(operation))_operation=Storage.Read<ProcessIdentity>(operation);
     }
     public void RequestRecovery(string reason)=>_recoveryRequested=reason;
+    public void PrepareForShutdown()=>_boot?.PrepareForShutdown();
     public async Task Run(CancellationToken stop)
     {
         SaveVpnusProof();
