@@ -54,7 +54,8 @@ public static class CitaFixtureShortcut {
 }
 '@}
 function Install([string]$Log){
-    $process=Start-Process -FilePath $setupPath -WindowStyle Hidden -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/DIR="'+$target+'"'),('/LOG="'+(Join-Path $base $Log)+'"')) -PassThru -Wait
+    $task=if($Log -eq 'install.log'){'/TASKS=autostart'}else{'/TASKS=""'}
+    $process=Start-Process -FilePath $setupPath -WindowStyle Hidden -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',$task,('/DIR="'+$target+'"'),('/LOG="'+(Join-Path $base $Log)+'"')) -PassThru -Wait
     return $process.ExitCode
 }
 function Uninstall([string]$Log){
@@ -63,6 +64,9 @@ function Uninstall([string]$Log){
 }
 try{
     Assert ((Install 'install.log') -eq 0) 'Clean installer failed.'
+    $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    $run=(Get-ItemProperty -LiteralPath $runKey -Name $label).$label
+    Assert ($run -eq ('"'+(Join-Path $client 'RoutePilot.exe')+'" --startup')) 'Installer startup command must quote the chosen Unicode path and open the tray only.'
     Assert (Test-Path -LiteralPath $registry) 'Windows uninstall entry missing.'
     Assert (Test-Path -LiteralPath (Join-Path $client 'RoutePilot.exe')) 'Application was not installed.'
     Assert (-not(Test-Path -LiteralPath (Join-Path $client 'runtime\app-build\RoutePilot.exe'))) 'Redundant GUI copy was installed.'
@@ -85,6 +89,7 @@ try{
     Assert ((Get-FileHash -LiteralPath (Join-Path $client 'RoutePilot.exe')).Hash -eq $before) 'Rejected operation changed executable.'
     [IO.File]::WriteAllText((Join-Path $client 'runtime\session.json'),'{"running":false}')
     Assert ((Install 'reinstall.log') -eq 0) 'Repeat installation failed.'
+    Assert (-not(Get-ItemProperty -LiteralPath $runKey -Name $label -ErrorAction SilentlyContinue)) 'Unchecking startup during reinstall did not remove it.'
     Assert ([IO.File]::ReadAllText((Join-Path $client 'force-vpn.txt')) -eq 'keep-user-rule.example') 'Repeat installation changed user rules.'
     Assert ([IO.File]::ReadAllText((Join-Path $client 'data\preferences.json')) -eq '{"fixture":true}') 'Repeat installation changed preferences.'
     # Simulate an internal update: the old uninstaller must accept a newer product.json.

@@ -23,14 +23,20 @@ AppPublisherURL=https://github.com/IthilRosg/CITA-Route
 AppSupportURL=https://github.com/IthilRosg/CITA-Route/issues
 DefaultDirName={localappdata}\Programs\{#ProductName}
 DefaultGroupName={#ProductName}
-DisableDirPage=yes
+DisableDirPage=no
 DisableProgramGroupPage=yes
-DisableWelcomePage=yes
+DisableWelcomePage=no
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 MinVersion=10.0
-WizardStyle=modern
+WizardStyle=modern dark includetitlebar hidebevels
+WizardBackColor=#0C0C0C
+WizardImageBackColor=#0C0C0C
+WizardSmallImageBackColor=#0C0C0C
+WizardImageFile={#ArtworkDir}\welcome.bmp
+WizardSmallImageFile={#ArtworkDir}\mark.bmp
+WizardImageStretch=no
 SetupIconFile=..\app\Assets\RoutePilot.ico
 UninstallDisplayIcon={app}\client\RoutePilot.exe
 UninstallDisplayName={#ProductName}
@@ -47,6 +53,18 @@ LicenseFile=..\LICENSE
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+Name: "autostart"; Description: "Открывать CITA Route в трее при входе в Windows"; Flags: unchecked
+
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#ProductName}"; ValueData: """{app}\client\RoutePilot.exe"" --startup"; Tasks: autostart; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "{#ProductName}"; Tasks: not autostart; Flags: deletevalue
+
+[Messages]
+russian.WelcomeLabel1=УСТАНОВКА CITA ROUTE
+russian.WelcomeLabel2=Прямой доступ. Обход DPI. VPN.%n%nВыбери папку установки и настрой запуск приложения. Для подключения до входа в Windows включи отдельную опцию в настройках после выбора профиля.%n%nВерсия {#ProductVersion}
+russian.SelectDirLabel3=Выбери папку для CITA Route. Профили и настройки будут храниться внутри неё.
 
 [Files]
 ; Public payload only: generated from the verified portable manifest.
@@ -68,6 +86,28 @@ var
   GuardReady, GuardRelease: String;
   GuardActive: Boolean;
   GuardAttempt: Integer;
+  PreviousDirectory: String;
+
+procedure InitializeWizard();
+begin
+  WizardForm.Font.Name := 'Segoe UI';
+  RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#ProductId}_is1', 'Inno Setup: App Path', PreviousDirectory);
+  WizardForm.WelcomeLabel1.Font.Name := 'Consolas';
+  WizardForm.WelcomeLabel1.Font.Size := 22;
+  WizardForm.WelcomeLabel1.Font.Style := [fsBold];
+  WizardForm.PageNameLabel.Font.Name := 'Consolas';
+  WizardForm.PageNameLabel.Font.Style := [fsBold];
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if CurPageID <> wpSelectDir then exit;
+  if (PreviousDirectory <> '') and (CompareText(RemoveBackslashUnlessRoot(WizardDirValue), RemoveBackslashUnlessRoot(PreviousDirectory)) <> 0) then begin
+    MsgBox('Обновление устанавливается в прежнюю папку, чтобы сохранить подключение и настройки. Для переноса сначала удали приложение; личные данные сохраняются.', mbInformation, MB_OK);
+    Result := False;
+  end;
+end;
 
 function GetCurrentProcessId(): LongWord;
   external 'GetCurrentProcessId@kernel32.dll stdcall';
@@ -120,6 +160,10 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  if (PreviousDirectory <> '') and (CompareText(RemoveBackslashUnlessRoot(ExpandConstant('{app}')), RemoveBackslashUnlessRoot(PreviousDirectory)) <> 0) then begin
+    Result := 'Обновление должно использовать прежнюю папку установки. Для переноса сначала удали приложение.';
+    exit;
+  end;
   if GuardActive then begin Result := ''; exit; end;
   ExtractTemporaryFile('InstallationGuard.ps1');
   Result := AcquireGuard(ExpandConstant('{tmp}\InstallationGuard.ps1'), False);

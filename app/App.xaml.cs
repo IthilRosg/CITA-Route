@@ -36,7 +36,7 @@ public partial class App : Application
             string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(root)))[..16];
             _activation = new EventWaitHandle(false,EventResetMode.AutoReset,"Local\\RoutePilot-Activate-" + key);
             _instance = new Mutex(true,"Local\\RoutePilot-" + key,out bool first);
-            if (!first) { _activation.Set(); Shutdown(); return; }
+            if (!first) { if(!e.Args.Contains("--startup"))_activation.Set(); Shutdown(); return; }
         }
         DispatcherUnhandledException += (_,args) => {
             Directory.CreateDirectory(Path.Combine(root,"logs"));
@@ -47,6 +47,7 @@ public partial class App : Application
         var window = new MainWindow(root,render);
         if(render)window.ApplyView(e.Args.Contains("--compact"),false);
         MainWindow = window;
+        if(!render&&e.Args.Contains("--startup"))window.Loaded+=(_,_)=>window.Hide();
         window.Show();
         if (!render)
             _activationWait = ThreadPool.RegisterWaitForSingleObject(_activation!,(_,_)=>

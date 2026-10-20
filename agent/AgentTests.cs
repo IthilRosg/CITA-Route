@@ -8,6 +8,7 @@ public static class AgentTests
 {
     public static async Task Run()
     {
+        StartupTests.Run();
         ResourceGuardTests.Run();
         ComponentLivenessTests.Run();
         void Assert(bool condition,string message){if(!condition)throw new Exception(message);}

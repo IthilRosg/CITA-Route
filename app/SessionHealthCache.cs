@@ -29,7 +29,7 @@ public static class SessionHealthCache
         if(!session.Running)return "";
         try
         {
-            using var stream=new FileStream(Path.Combine(root,"runtime","bridge-safety.json"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+            using var stream=new FileStream(Path.Combine(Cita.Startup.StartupPaths.RoutingRoot(root),"runtime","bridge-safety.json"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
             if(stream.Length>16384)return "SafetyStateUnavailable";
             var value=JsonSerializer.Deserialize<SafetyHold>(stream,AppPaths.Json);
             if(value==null||value.Schema!=1||string.IsNullOrEmpty(value.SessionId)||!value.Hold)return "SafetyStateUnavailable";

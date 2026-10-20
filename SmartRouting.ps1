@@ -28,6 +28,20 @@ if($Action -in @('Start','ProxyOnly')){
     finally{if($updateGate){$updateGate.Dispose()}}
 }
 . (Join-Path $root 'ConnectionEnvironment.ps1')
+$startupRoute=Get-StartupRouteState $root
+if($startupRoute -and $Action -notin @('Status','Watch')){
+    if($Action -ne 'Stop'){throw 'Disconnect the startup route before configuring or starting another route.'}
+    $startupAgent=Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe'
+    & $startupAgent boot-stop $root | Out-Null
+    if($LASTEXITCODE -ne 0){throw 'Startup route stop was refused.'}
+    $startupWait=[Diagnostics.Stopwatch]::StartNew()
+    while($startupRoute){
+        if($startupWait.Elapsed.TotalSeconds -gt 145 -or $startupRoute.Phase -eq 'StopFailed'){throw 'Startup disconnect was not confirmed. Check CITA Route and WireSock.'}
+        Start-Sleep -Milliseconds 200
+        $startupRoute=Get-StartupRouteState $root
+    }
+    exit
+}
 $connectionSettings=Get-ConnectionSettings $root
 $cli=Find-WireSockCli $connectionSettings.CliPath
 $sourceProfile=$connectionSettings.SourceProfile

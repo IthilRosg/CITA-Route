@@ -32,7 +32,7 @@ public sealed class Backend : IDisposable
             using var handle=OpenProcess(0x1000,false,process.Id);
             var path=new StringBuilder(32768);int size=path.Capacity;
             return !handle.IsInvalid && QueryFullProcessImageName(handle,0,path,ref size) &&
-                string.Equals(path.ToString(),Path.Combine(_root,"runtime","smart-router.exe"),StringComparison.OrdinalIgnoreCase);
+                string.Equals(path.ToString(),Path.Combine(Cita.Startup.StartupPaths.RoutingRoot(_root),"runtime","smart-router.exe"),StringComparison.OrdinalIgnoreCase);
         }
         catch(Exception ex)when(ex is ArgumentException or InvalidOperationException or Win32Exception){return false;}
     }

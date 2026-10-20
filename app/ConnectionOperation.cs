@@ -95,6 +95,24 @@ public static class ConnectionOperation
     }
     public static async Task<ConnectionResult> Run(string root,string action,bool elevated,ConnectionSelection? setup=null,IProgress<ConnectionProgress>? progress=null,CancellationToken cancellation=default,TimeSpan? timeout=null)
     {
+        var startup=Cita.Startup.StartupPaths.Read();
+        if(startup.Active&&startup.Owns(root))
+        {
+            if(action!="Stop")return new(){Message="Подключением до входа управляет служба. Сначала отключи маршрут; затем можно сменить профиль или подключиться обычным способом."};
+            var reply=await new RescueClient(root).Command("boot-stop",root);
+            if(!reply.Success)return new(){Message=reply.Message};
+            progress?.Report(new(){Phase="Stopping",UpdatedUtc=DateTime.UtcNow});
+            using var wait=CancellationTokenSource.CreateLinkedTokenSource(cancellation);wait.CancelAfter(TimeSpan.FromSeconds(145));
+            while(true)
+            {
+                wait.Token.ThrowIfCancellationRequested();
+                var state=Cita.Startup.StartupPaths.Read();
+                if(!state.Owns(root))return new(){Message="Принадлежность автоподключения изменилась. Проверь состояние службы."};
+                if(state.Phase=="StopFailed")return new(){Message=state.Message};
+                if(!state.Active)return new(){Success=state.Phase=="StoppedForBoot",Message=state.Message};
+                await Task.Delay(200,wait.Token);
+            }
+        }
         Directory.CreateDirectory(Path.Combine(root,"runtime"));Directory.CreateDirectory(Path.Combine(root,"logs"));
         if(Active(root))return new(){Message="Другая операция подключения ещё выполняется. Подробности — в журнале."};
         // Keep recent operation diagnostics without accumulating files forever.

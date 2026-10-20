@@ -53,8 +53,11 @@ internal sealed class OrdinarySession
     public string Id{get;set;}="";
     public bool Running{get;set;}
     public int BridgePid{get;set;}
+    public int RouterPid{get;set;}
+    public DateTime RouterStartedUtc{get;set;}
     public DateTime BridgeStartedUtc{get;set;}
     public int BridgeGeneration{get;set;}
+    public bool BridgeReady{get;set;}
     public string VpnHoldReason{get;set;}="";
 }
 internal sealed class BridgeSafety
@@ -143,6 +146,7 @@ internal static class ComponentLiveness
     internal static AgentConfig Configured(string root)
     {
         var config=Read<AgentConfig>(Path.Combine(AppContext.BaseDirectory,"agent-config.json"));
+        if(Path.GetFullPath(root).TrimEnd('\\').Equals(Cita.Startup.StartupPaths.Client,StringComparison.OrdinalIgnoreCase)&&BootRouting.OwnsSnapshot(config.AppRoot))config.AppRoot=Cita.Startup.StartupPaths.Client;
         if(!Path.GetFullPath(config.AppRoot).TrimEnd('\\').Equals(Path.GetFullPath(root).TrimEnd('\\'),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("This client does not own the protected installation.");
         string run=Path.Combine(config.DataDirectory,"run.json");
         if(File.Exists(run))

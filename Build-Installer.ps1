@@ -4,6 +4,8 @@ param([Parameter(Mandatory=$true)][string]$PackageDirectory,[string]$Compiler=''
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 $version=([IO.File]::ReadAllText((Join-Path $root 'product.json')) | ConvertFrom-Json).version
+$artwork=Join-Path $root 'runtime\installer-artwork'
+& (Join-Path $root 'installer\Create-Branding.ps1') -OutputDirectory $artwork
 $package=[IO.Path]::GetFullPath($PackageDirectory).TrimEnd('\')
 $manifest=[IO.File]::ReadAllText((Join-Path $package 'manifest.json')) | ConvertFrom-Json
 if($manifest.version -ne $version -or -not $manifest.selfContained -or $manifest.architecture -ne 'win-x64'){throw 'Installer requires the matching self-contained package.'}
@@ -50,7 +52,7 @@ try{
     }
     $manifest.files=$entries
     [IO.File]::WriteAllText((Join-Path $payload 'manifest.json'),($manifest | ConvertTo-Json -Depth 10),(New-Object Text.UTF8Encoding($false)))
-    $compilerArguments=@('/Qp',('/DPayloadDir='+$payload),('/DProductVersion='+$version),('/DOutputDir='+(Join-Path $root 'dist')))
+    $compilerArguments=@('/Qp',('/DPayloadDir='+$payload),('/DArtworkDir='+$artwork),('/DProductVersion='+$version),('/DOutputDir='+(Join-Path $root 'dist')))
     if($TestBuild){$compilerArguments+='/DTestBuild=1'}
     $compilerArguments+=(Join-Path $root 'installer\CitaRoute.iss')
     & $Compiler @compilerArguments

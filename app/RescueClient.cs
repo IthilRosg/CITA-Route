@@ -48,7 +48,7 @@ public sealed class RescueClient
     }
     public async Task<RescueReply> Command(string command,string? id=null)
     {
-        if(command is not ("status" or "dry-run" or "test-vpnus" or "test-wiresock" or "test-system" or "recover"))throw new ArgumentException("Unknown rescue command.");
+        if(command is not ("status" or "dry-run" or "test-vpnus" or "test-wiresock" or "test-system" or "recover" or "boot-stop" or "boot-disable"))throw new ArgumentException("Unknown rescue command.");
         using var pipe=new NamedPipeClientStream(".","RoutePilot.Rescue.v1",PipeDirection.InOut,PipeOptions.Asynchronous,TokenImpersonationLevel.Identification);
         using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(8));await pipe.ConnectAsync(timeout.Token);
         await pipe.WriteAsync(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new{Command=command,RunId=id})+"\n"),timeout.Token);await pipe.FlushAsync(timeout.Token);
@@ -61,13 +61,14 @@ public sealed class RescueClient
         }
         throw new IOException("Слишком большой ответ службы.");
     }
-    public async Task Install()
+    public async Task Install(bool startup=false)
     {
         var start=new ProcessStartInfo("powershell.exe"){UseShellExecute=true,Verb="runas",WindowStyle=ProcessWindowStyle.Hidden,WorkingDirectory=_root};
         start.ArgumentList.Add("-NoProfile");start.ArgumentList.Add("-ExecutionPolicy");start.ArgumentList.Add("Bypass");start.ArgumentList.Add("-File");start.ArgumentList.Add(Path.Combine(_root,"Install-Agent.ps1"));
         start.ArgumentList.Add("-UserSid");start.ArgumentList.Add(WindowsIdentity.GetCurrent().User!.Value);
         start.ArgumentList.Add("-UserProfile");start.ArgumentList.Add(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
-        using var process=Process.Start(start)??throw new IOException("Не удалось запустить установку.");await process.WaitForExitAsync();
+        if(startup){start.ArgumentList.Add("-BootStartup");start.ArgumentList.Add("Enable");}
+        using var process=await Task.Run(()=>Process.Start(start)??throw new IOException("Не удалось запустить установку."));await process.WaitForExitAsync();
         if(process.ExitCode!=0)throw new IOException("Установка службы не завершена. Подробности: logs/agent-install.log");
     }
     public static string Friendly(string message)
