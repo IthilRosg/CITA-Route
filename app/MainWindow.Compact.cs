@@ -85,12 +85,13 @@ public partial class MainWindow
     }
     void SyncConnectionButtons()
     {
-        string label=_busy?(_connectionCancellation!=null?(_connectionCancellation.IsCancellationRequested?"Отменяем…":"Отменить"):"Подожди…"):_engineRunning?"Отключить":"Подключить";
+        var state=Cita.Startup.StartupPaths.Read();bool startup=state.Active&&state.Owns(_root);
+        string label=_busy?(_connectionCancellation!=null?(_connectionCancellation.IsCancellationRequested?"Отменяем…":"Отменить"):"Подожди…"):_engineRunning||startup?"Отключить":"Подключить";
         bool enabled=(!_busy||(_connectionCancellation is {IsCancellationRequested:false}))&&!_rescueState.BlocksRouting&&!_pendingConnectionOperation;
         CompactConnectButton.Content=label;CompactConnectButton.IsEnabled=enabled;
         ConnectButton.Content=label;ConnectButton.IsEnabled=enabled;
-        CompactProfileButton.IsEnabled=!_busy&&!_engineRunning&&!_rescueState.BlocksRouting&&!_pendingConnectionOperation;
-        bool active=_busy||_updateDownloading||_updateInstalling;
+        CompactProfileButton.IsEnabled=!_busy&&!_engineRunning&&!startup&&!_rescueState.BlocksRouting&&!_pendingConnectionOperation;
+        bool active=_busy||_updateDownloading||_updateInstalling||(startup&&state.Phase is "WaitingForNetwork" or "Starting" or "Stopping");
         CompactActivity.Visibility=active?Visibility.Visible:Visibility.Collapsed;
         CompactActivity.IsIndeterminate=active&&IsVisible&&WindowState!=WindowState.Minimized;
     }
@@ -111,7 +112,7 @@ public partial class MainWindow
         {CompactStage.Text=NoticeText.Text;CompactStage.Foreground=_lastNoticeError?ConsoleTheme.Warn:ConsoleTheme.Text;}
         else
         {
-            CompactStage.Text=_rescueState.BlocksRouting?"Автономная диагностика управляет сетью.":_engineRunning?FooterStatus.Text:"Готово к подключению";
+            CompactStage.Text=_rescueState.BlocksRouting?"Автономная диагностика управляет сетью.":_engineRunning||(Cita.Startup.StartupPaths.Read() is {Active:true} startup&&startup.Owns(_root))?FooterStatus.Text:"Готово к подключению";
             CompactStage.Foreground=_rescueState.BlocksRouting?ConsoleTheme.Warn:ConsoleTheme.Dim;
         }
         CompactStage.ToolTip=CompactStage.Text;SyncConnectionButtons();
@@ -198,7 +199,7 @@ public partial class MainWindow
         if(_render)return;
         if(_pendingConnectionOperation || ConnectionOperation.Active(_root)){Notice("Предыдущая операция ещё завершается. Подробности — в журнале.",true);return;}
         if(_busy){_connectionCancellation?.Cancel();if(_connectionCancellation!=null)SetConnectionStage("Cancelling");return;}
-        if(_engineRunning){await PerformActionAsync("Stop");return;}
+        if(_engineRunning||(Cita.Startup.StartupPaths.Read() is {Active:true} startup&&startup.Owns(_root))){await PerformActionAsync("Stop");return;}
         if(_rescueState.BlocksRouting){Notice("Дождись завершения автономной диагностики и восстановления.",true);return;}
         _busy=true;_lastNoticeError=false;_connectionCancellation=new();SyncConnectionButtons();
         try

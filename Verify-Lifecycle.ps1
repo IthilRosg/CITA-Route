@@ -10,6 +10,7 @@ try{
         foreach($file in @('SmartRouting.ps1','FileStorage.ps1')){Copy-Item -LiteralPath (Join-Path $project $file) -Destination $folder}
         [IO.File]::WriteAllText((Join-Path $folder 'ConnectionEnvironment.ps1'),@'
 function Get-ConnectionSettings { @{CliPath='fixture';SourceProfile='fixture'} }
+function Get-StartupRouteState { $null }
 function Find-WireSockCli { 'fixture.exe' }
 '@)
         # Halt the real entry point immediately AFTER its setup gate. No admin,

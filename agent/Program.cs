@@ -21,6 +21,7 @@ public static class Program
             }
             if(args.Length==1 && args[0]=="--statistics-self-test"){await WireSockStatisticsTests.Run();return 0;}
             if(args.Length==1 && args[0]=="--service"){NativeService.Run();return 0;}
+            if(args.Length==3 && args[0]=="--configure-boot"&&args[2] is "on" or "off"){BootRouting.Configure(Path.GetFullPath(args[1]),args[2]=="on");return 0;}
             if(args.Length==1 && args[0]=="--configure-service-recovery"){ServiceRecovery.Configure();return 0;}
             if(args.Length==1 && args[0]=="--session-health"){var health=await NetworkProbe.CheckEgressDetailed();Console.WriteLine(JsonSerializer.Serialize(new{schema=2,healthy=health.Verified,code=health.Code,message=health.Message}));return 0;}
             if(args.Length==1 && args[0]=="--wiresock-statistics")
@@ -55,7 +56,7 @@ public static class Program
             if(args.Length==2 && args[0]=="--resource-integration"){await ResourceGuardTests.Integration(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--optimization-live"){await PolicyLiveCheck.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==3 && args[0]=="--optimization-auto"){await PolicyAutoCheck.Run(Path.GetFullPath(args[1]),args[2]);return 0;}
-            if(args.Length is <1 or >2 || args[0] is not ("status" or "dry-run" or "test-guard-restart" or "test-vpnus" or "test-wiresock" or "test-system" or "recover"))
+            if(args.Length is <1 or >2 || args[0] is not ("status" or "dry-run" or "test-guard-restart" or "test-vpnus" or "test-wiresock" or "test-system" or "recover" or "boot-stop" or "boot-disable"))
             {Console.Error.WriteLine("Commands: status, dry-run, test-vpnus, test-wiresock, recover [runId]");return 2;}
             using var client=new NamedPipeClientStream(".",PipeName,PipeDirection.InOut,PipeOptions.Asynchronous,System.Security.Principal.TokenImpersonationLevel.Identification);
             using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(8));

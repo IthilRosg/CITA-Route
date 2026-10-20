@@ -25,6 +25,18 @@ try{
         }elseif(@(Get-ChildItem -LiteralPath $rootPath -Force | Where-Object Name -ne 'runtime').Count){throw 'Папка не является установкой CITA Route.'}
     }
     $runtime=Join-Path $rootPath 'runtime'
+    $startupFile=Join-Path $env:ProgramData 'RoutePilot\startup-state.json'
+    if(Test-Path -LiteralPath $startupFile){
+        try{$startup=[IO.File]::ReadAllText($startupFile) | ConvertFrom-Json}catch{throw 'Не удалось проверить раннее подключение CITA Route.'}
+        if($startup.SourceRoot -and [IO.Path]::GetFullPath($startup.SourceRoot).TrimEnd('\') -ieq $rootPath){
+            if($startup.Phase -in @('WaitingForNetwork','Starting','Connected','Stopping','StopFailed','NeedsAttention')){throw 'Сначала отключи раннее подключение в CITA Route, затем повтори установку или удаление.'}
+            if($Mode -eq 'Uninstall' -and $startup.Enabled){
+                $agent=Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe'
+                & $agent boot-disable $rootPath | Out-Null
+                if($LASTEXITCODE -ne 0){throw 'Не удалось выключить подключение при запуске Windows. Выключи его в настройках CITA Route.'}
+            }
+        }
+    }
     New-Item -ItemType Directory -Path $runtime -Force | Out-Null
     # Match the updater's lock order. Keep the locks until Setup/Uninstall exits,
     # including a crash; a new connection cannot start during file replacement.

@@ -1,10 +1,11 @@
-CITA Route 0.5.6 — connection lifecycle fixes and regression debugging.
+CITA Route 0.5.7 — installation and Windows startup.
 
-- Prevent profile setup/import/protected-agent replacement from overlapping startup or reconnect after the initial setup check. The gate stays held through the action and is released on failure; manual Stop remains available.
-- Report an unverified WireSock disconnect instead of silently claiming success. Require a disconnected state after the command; preserve a foreign profile selected during the operation.
-- Protect similarly named foreign profiles during crashed-router cleanup by using exact managed-profile identity rather than substring matching.
-- Add a real entry-point race regression and a short 20-cycle loopback recovery soak with continuous direct traffic, refused paused VPN flows, memory/handle growth and latency observations. Extend release checks for profile rollback, disconnect and maintenance lifecycle.
+- Choose the destination folder during a clean installation. Updates keep the existing directory to avoid splitting the connection and settings across two copies.
+- Use the CITA dark console theme, red branding and terminal headings in Setup and Uninstall.
+- Optionally open the compact client in the tray after Windows sign-in. Setup offers an unchecked startup task; settings can enable or disable it later.
+- Add opt-in routing before sign-in through the existing automatic SYSTEM service. A Windows confirmation installs the current protected agent and saves a fixed, hashed snapshot of routing code and rules. Network readiness, profile identity, current session/generation and HTTPS readiness are checked.
+- Show startup progress in the normal UI and stop its route through the protected service. Manual Stop prevents another startup attempt in the same Windows boot. Updates stop the owned route; uninstall disables an inactive startup setting. Changed client versions or protected connection settings require refreshing the snapshot.
 
-The real WireSock SDK/Windows-filter experiments remain development tools on disposable machines. This release does not enable a new driver boundary, change WireSock modes, prove zero leakage, or promise seamless migration of existing connections across external IP changes. Loopback tests do not replace a physical WAN/AWG/game/voice soak.
+Validation includes a real SYSTEM/session-0 service with a synthetic filesystem-only transport, plus installer, update, rollback and disconnect regressions. The service fixture does not prove real WireSock transport before sign-in, a physical reboot, captive portal/Wi-Fi authentication or seamless migration of established connections. Real-driver boundary research remains separate in draft PR #9.
 
-The protected agent updates on the next Connect through normal Windows confirmation. Windows 10/11 x64 and separately installed WireSock Secure Connect are required. Setup and ZIP include .NET. Release executables are not yet code signed.
+Windows 10/11 x64 and separately installed WireSock Secure Connect are required. Setup and ZIP include .NET. Release executables are not yet code signed.

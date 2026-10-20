@@ -66,7 +66,14 @@ internal static class UdpQualityTests
         async Task<UdpQualityState> Until(Func<UdpQualityState,bool> accept)
         {
             while(!lifetime.IsCancellationRequested)
-            {if(File.Exists(statePath)){var state=Storage.Read<UdpQualityState>(statePath);if(accept(state))return state;}await Task.Delay(100,lifetime.Token);}
+            {
+                try{if(File.Exists(statePath)){var state=Storage.Read<UdpQualityState>(statePath);if(accept(state))return state;}}
+                // Windows can briefly hold the published report during atomic
+                // replacement. Retry only sharing/lock violations, under the
+                // existing fixture deadline; malformed state still fails.
+                catch(IOException ex)when(ex.HResult is unchecked((int)0x80070020) or unchecked((int)0x80070021)){}
+                await Task.Delay(100,lifetime.Token);
+            }
             throw new Exception("UDP worker fixture timed out.");
         }
         try

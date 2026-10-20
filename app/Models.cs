@@ -23,6 +23,11 @@ public static class AppPaths
     {
         try
         {
+            if(Path.GetFileName(Path.GetDirectoryName(path))=="runtime"&&Path.GetFileName(path) is "session.json" or "watch-state.json" or "session-health.json" or "policy-state.json")
+            {
+                string root=Path.GetDirectoryName(Path.GetDirectoryName(path))!;
+                path=Path.Combine(Cita.Startup.StartupPaths.RoutingRoot(root),"runtime",Path.GetFileName(path));
+            }
             using var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
             return JsonSerializer.Deserialize<T>(stream,Json) ?? fallback();
         }

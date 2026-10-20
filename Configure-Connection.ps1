@@ -29,6 +29,7 @@ if($Action -eq 'Discover'){
     exit 0
 }
 if(-not $cli){throw 'WireSock Secure Connect CLI was not found.'}
+if(Get-StartupRouteState $root){throw 'Disconnect the startup route before configuring or changing a profile.'}
 $isAdmin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if(-not $isAdmin){throw 'Connection setup requires elevation.'}
 Assert-ProtectedWireSockCli $cli

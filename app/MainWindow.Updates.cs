@@ -112,7 +112,7 @@ public partial class MainWindow
         if(manual){_updates.DeferredUntilUtc=DateTime.MinValue;_updates.NextRetryUtc=DateTime.MinValue;_updates.NetworkRetries=0;}
         RefreshRescueState();
         var currentSession=AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession());
-        bool owned=_backend.EngineRunning(currentSession);
+        bool owned=_backend.EngineRunning(currentSession)||(Cita.Startup.StartupPaths.Read() is {Active:true} startup&&startup.Owns(_root));
         string? blocked=UpdateJournal.PreparationBlockReason(_root,_busy,owned,_rescueState.BlocksRouting,UpdateJournal.GlobalEngineRunning());
         if(blocked!=null)
         {

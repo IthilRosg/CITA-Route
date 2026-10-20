@@ -20,6 +20,7 @@ public sealed class AgentHost
     volatile string? _recoveryRequested;
     readonly string _proof;
     ProcessIdentity? _operation;
+    BootRouting? _boot;
     [DllImport("kernel32.dll",SetLastError=true)]static extern bool GetNamedPipeClientProcessId(IntPtr handle,out uint pid);
     public AgentHost(AgentConfig config)
     {
@@ -31,6 +32,7 @@ public sealed class AgentHost
         if(File.Exists(operation))_operation=Storage.Read<ProcessIdentity>(operation);
     }
     public void RequestRecovery(string reason)=>_recoveryRequested=reason;
+    public void PrepareForShutdown()=>_boot?.PrepareForShutdown();
     public async Task Run(CancellationToken stop)
     {
         SaveVpnusProof();
@@ -40,6 +42,8 @@ public sealed class AgentHost
             await Recover("Service restarted with an unfinished run.");
         }
         var listener=Listen(stop);
+        _boot=new BootRouting(_config);
+        var startup=_boot.Run(stop);
         using var resourceStop=CancellationTokenSource.CreateLinkedTokenSource(stop);
         var resources=Task.Run(()=>ResourceMonitor.Run(_config.DataDirectory,_config.AppRoot,resourceStop.Token));
         try
@@ -96,6 +100,7 @@ public sealed class AgentHost
             try{if(_store.State.Active)await Recover("Service stopping.");}finally{_gate.Release();}
             try{await listener;}catch(OperationCanceledException){}
             try{await resources;}catch(OperationCanceledException){}catch{}
+            try{await startup;}catch(OperationCanceledException){}
         }
     }
     async Task Listen(CancellationToken stop)
@@ -128,6 +133,13 @@ public sealed class AgentHost
     async Task<AgentReply> Dispatch(AgentRequest request,Process caller)
     {
         if(request.Command=="status")return Reply(true,"Local rescue service available.");
+        if(request.Command is "boot-stop" or "boot-disable")
+        {
+            if(request.RunId==null||!Path.GetFullPath(request.RunId).TrimEnd('\\').Equals(Path.GetFullPath(_config.AppRoot).TrimEnd('\\'),StringComparison.OrdinalIgnoreCase))return Reply(false,"This client does not own the startup route.");
+            if(_boot==null)return Reply(false,"Startup controller is not available yet.");
+            if(request.Command=="boot-disable")return Reply(_boot.Disable(_config.AppRoot),"Startup disable requested; an active startup route must be stopped first.");
+            _boot.RequestStop();return Reply(true,"Startup disconnect requested.");
+        }
         if(request.Command=="begin-operation")
         {
             if(_store.State.Active || _store.State.Phase==RunPhase.RecoveryFailed || _operation?.Matches()==true)return Reply(false,"Another network operation owns the coordinator.");
@@ -230,6 +242,7 @@ public sealed class AgentHost
             return Reply(true,"Diagnostic bridge started.");
         }
         TestKind kind=request.Command switch{"dry-run" or "test-guard-restart"=>TestKind.DryRun,"test-vpnus"=>TestKind.VpnusRestart,"test-wiresock"=>TestKind.WireSockProxy,"test-system"=>TestKind.SystemRouting,_=>throw new InvalidOperationException("Unknown command.")};
+        if(Cita.Startup.StartupPaths.Read() is {Active:true} boot&&boot.Owns(_config.AppRoot))return Reply(false,"Disconnect the startup route before independent diagnostics.");
         if(_store.State.Active || _store.State.Phase==RunPhase.RecoveryFailed)return Reply(false,"Another run is active or needs recovery.");
         if(_operation?.Matches()==true)return Reply(false,"A normal RoutePilot network operation is still running.");
         if(kind!=TestKind.DryRun && (!File.Exists(_proof) || (DateTime.UtcNow-File.GetLastWriteTimeUtc(_proof)).TotalHours>24))return Reply(false,"Run and pass the independent dry-run guard first.");

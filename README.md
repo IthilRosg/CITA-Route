@@ -5,7 +5,7 @@ Part of the CITA family: [AWG CITA](https://github.com/IthilRosg/AWG-CITA) manag
 
 The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspired palette, sharp frames and terminal typography.
 
-**0.5.6** prevents setup from overlapping startup/reconnect, verifies WireSock disconnection and preserves similarly named foreign profiles. A short 20-cycle recovery soak checks continuous direct traffic and resource growth. See [lifecycle debugging](docs/LIFECYCLE-DEBUG.md) and [component liveness and limits](docs/COMPONENT-LIVENESS.md). Driver-enforced VPN-only isolation and real WAN/AWG stability remain separate acceptance gates.
+**0.5.7** adds destination-folder selection, CITA installer styling, optional tray startup and opt-in protected routing before Windows sign-in. See [startup behavior and validation boundaries](docs/STARTUP.md). The [0.5.6 lifecycle fixes](docs/LIFECYCLE-DEBUG.md) remain included; physical WAN/AWG and driver-enforced packet isolation remain separate acceptance gates.
 
 [Download stable releases](https://github.com/IthilRosg/CITA-Route/releases) · [Report a bug](https://github.com/IthilRosg/CITA-Route/issues)
 
@@ -24,7 +24,7 @@ The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspire
 
 Windows 10/11 x64 and separately installed WireSock Secure Connect are required. Both downloads include .NET.
 
-1. Download **CITA-Route-VERSION-win-x64-setup.exe** from Releases, run it and click **Install**. Open **CITA Route** from the Desktop or Start shortcut (or launch at the end of Setup). For a portable installation, extract the complete ZIP and run **RoutePilot.exe**.
+1. Download **CITA-Route-VERSION-win-x64-setup.exe** from Releases, run it, choose a writable destination folder and click **Install**. Open **CITA Route** from the Desktop or Start shortcut (or launch at the end of Setup). For a portable installation, extract the complete ZIP and run **RoutePilot.exe**.
 2. Click **Connect**. The client finds WireSock and offers a profile picker only when needed; you can also import `.conf` there.
 3. Accept Windows elevation when requested. CITA Route prepares the protected agent and its managed profile, connects and verifies the VPN exit. A valid saved profile is reused on the next click.
 4. Disable WireSock's **Virtual Adapter Mode** and **Override profile split-tunneling settings with global ones** if enabled. Connect automatically stops a recognized active WireSock profile and the supported VPNUS service before starting CITA. Original profiles are preserved. Unknown services, ambiguous status and another running CITA routing engine are reported instead of being terminated by name.

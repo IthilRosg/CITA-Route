@@ -9,6 +9,19 @@ function Get-ConnectionSettings([string]$Root) {
     return [pscustomobject]@{SourceProfile=$source;CliPath='';ExpectedEgressIp=''}
 }
 
+# The protected service owns this journal. Only the matching installation may
+# control its startup route; a second portable copy cannot adopt it.
+function Get-StartupRouteState([string]$Root,[string]$StateFile='') {
+    if(-not $StateFile){$StateFile=Join-Path $env:ProgramData 'RoutePilot\startup-state.json'}
+    if(-not(Test-Path -LiteralPath $StateFile)){return $null}
+    if((Get-Item -LiteralPath $StateFile).Length -gt 16384){throw 'Startup state is invalid.'}
+    $state=Read-JsonFile $StateFile
+    if($state.Schema -ne 1 -or -not $state.SourceRoot){throw 'Startup state is invalid.'}
+    if([IO.Path]::GetFullPath($state.SourceRoot).TrimEnd('\') -ine [IO.Path]::GetFullPath($Root).TrimEnd('\')){return $null}
+    if($state.Phase -in @('WaitingForNetwork','Starting','Connected','Stopping','StopFailed','NeedsAttention')){return $state}
+    return $null
+}
+
 function Find-WireSockCli([string]$Preferred='') {
     $candidates=New-Object 'System.Collections.Generic.List[string]'
     if($Preferred){$candidates.Add($Preferred)}

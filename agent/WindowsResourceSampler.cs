@@ -52,7 +52,7 @@ public sealed class WindowsResourceSampler
     {
         string protectedRoot=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"RoutePilot","Agent");
         _owned=new(StringComparer.OrdinalIgnoreCase){Path.Combine(appRoot,"RoutePilot.exe"),Path.Combine(appRoot,"runtime","app-build","RoutePilot.exe"),
-            Path.Combine(appRoot,"runtime","smart-router.exe"),Path.Combine(protectedRoot,"RoutePilot.Agent.exe"),Path.Combine(protectedRoot,"vpn-bridge.exe"),
+            Path.Combine(appRoot,"runtime","smart-router.exe"),Path.Combine(Cita.Startup.StartupPaths.Client,"runtime","smart-router.exe"),Path.Combine(protectedRoot,"RoutePilot.Agent.exe"),Path.Combine(protectedRoot,"vpn-bridge.exe"),
             Path.Combine(AppContext.BaseDirectory,"RoutePilot.Agent.exe")};
     }
     public static PortRange? ParseRange(string text)

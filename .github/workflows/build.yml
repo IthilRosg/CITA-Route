@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   windows:
     runs-on: windows-latest
@@ -44,6 +47,9 @@ jobs:
           ./Verify-Optimization.ps1
           & ./runtime/agent-build/RoutePilot.Agent.exe --resource-integration $PWD.Path
           if($LASTEXITCODE -ne 0){throw 'Resource guard integration failed.'}
+      - name: Verify startup service in SYSTEM session 0 with synthetic transport
+        shell: powershell
+        run: ./Verify-Startup.ps1
       - name: Build optional UDP reflector
         shell: powershell
         run: dotnet build tools/udp-reflector/Cita.UdpReflector.csproj -c Release

@@ -78,6 +78,7 @@ public partial class MainWindow : Window
         _preferences.RefreshSeconds=Math.Clamp(_preferences.RefreshSeconds,1,3);
         CloseToTrayBox.IsChecked=_preferences.CloseToTray;RefreshIntervalInput.SelectedIndex=_preferences.RefreshSeconds-1;
         InitializeUpdates();
+        InitializeStartup();
         InitializeQuality();
         RoutingModeInput.SelectedIndex=_routingPolicy.Mode=="Auto"?1:0;AllowListedDpiBox.IsChecked=_routingPolicy.AllowListedDpi;
         _rules=DomainRules.Read(Path.Combine(root,"force-direct.txt")).Select(d=>new UserRule{Domain=d,Target="Напрямую"}).Concat(
@@ -228,6 +229,10 @@ public partial class MainWindow : Window
             if(!string.IsNullOrEmpty(session.VpnHoldReason)){_egressVerified=false;SetStatus("Проверь подключение",false);FooterStatus.Text=session.VpnHoldReason=="EgressMismatch"?"Выход VPN не совпал с профилем. Отключи маршрут и проверь настройки подключения.":"Безопасность VPN не подтверждена. Отключи маршрут и проверь журнал.";}
             else if(cachedHealth.Watch?.Phase=="NeedsAttention"){SetStatus("Требуется внимание",false);FooterStatus.Text=SessionHealthCache.Attention(cachedHealth.Watch.Reason);}
             if(_rescueState.Active){SetStatus("Автономный тест",false);FooterStatus.Text="Служба проверяет сеть и контролирует возврат VPNUS. Результаты — в настройках.";}
+            var startup=Cita.Startup.StartupPaths.Read();
+            if(startup.Owns(_root))StartupStatusLabel.Text=startup.Message;
+            if(startup.Owns(_root)&&startup.Active&&startup.Phase!="Connected")
+            {SetStatus(startup.Phase=="WaitingForNetwork"?"Ожидание сети":startup.Phase=="Starting"?"Подключение…":startup.Phase=="Stopping"?"Отключение…":"Требуется внимание",false);FooterStatus.Text=startup.Message;}
             if(vpnReady)_lastNoticeError=false;
             _pendingConnectionOperation=ConnectionOperation.Active(_root)&&!_busy;
             if(_pendingConnectionOperation){SetStatus("Ожидается завершение",false);FooterStatus.Text="Предыдущая операция завершается. Подробности — в журнале.";}
@@ -301,7 +306,7 @@ public partial class MainWindow : Window
         RoutingModeInput.IsEnabled=AllowListedDpiBox.IsEnabled=!_engineRunning&&!_busy&&!_rescueState.BlocksRouting;
         try
         {
-            using var stream=new FileStream(Path.Combine(_root,"runtime","policy-state.json"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+            using var stream=new FileStream(Path.Combine(Cita.Startup.StartupPaths.RoutingRoot(_root),"runtime","policy-state.json"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
             using var document=JsonDocument.Parse(stream);var state=document.RootElement;
             var updated=state.GetProperty("updatedUtc").GetDateTime();
             string phase=state.GetProperty("phase").GetString()!;
