@@ -203,7 +203,7 @@ internal static class ComponentRecoveryTests
                 Storage.Write(Path.Combine(projectRoot,"data",soakSeconds>0?"mixed-soak.json":"lifecycle-soak.json"),new{schema=2,cycles=soakCycles,durationSeconds=elapsed.Elapsed.TotalSeconds,continuousFrames,maxRttMs,videoBytes,vpnBytes,udpSent,udpReceived,routerPeakPrivateBytes=peakBytes,routerPeakHandles=peakHandles,
                     routerCpuPercent=100*(router.TotalProcessorTime-startCpu).TotalSeconds/elapsed.Elapsed.TotalSeconds/Environment.ProcessorCount,routerPrivateBytesDelta=deltaBytes,routerHandlesDelta=deltaHandles,passed=true,
                     loopbackOnly=true,wireSockMocked=true,longTermStabilityProved=false,checkedUtc=DateTime.UtcNow});
-                Console.WriteLine($"PASS: {soakCycles} bridge recovery cycles; same direct TCP stream delivered {continuousFrames} frames, max RTT {maxRttMs} ms, router private bytes delta {deltaBytes}, handles delta {deltaHandles}. Short loopback soak only.");
+                Console.WriteLine($"PASS: {soakCycles} bridge recovery cycles; same direct TCP stream delivered {continuousFrames} frames, max RTT {maxRttMs} ms, router private bytes delta {deltaBytes}, handles delta {deltaHandles}. Bounded loopback soak only.");
             }
             success=true;
             Console.WriteLine("PASS: same direct TCP socket survives bridge safety/repair and policy termination; established VPN sockets close, new VPN cannot fall back, busy coordinator cannot prevent a confirmed pause, native/generation/identity guards and persistent exit hold. Loopback only.");

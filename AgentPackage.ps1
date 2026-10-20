@@ -8,6 +8,8 @@ function Publish-AgentPackage {
     $backup=Join-Path $parent ($name+'-backup-'+$id)
     $failed=Join-Path $parent ($name+'-failed-'+$id)
     $stopped=$false; $promoted=$false; $saved=$false
+    if(-not $Files -or $Files.Count -eq 0){throw 'A protected package must include its primary executable.'}
+    $restartOld=Test-Path -LiteralPath (Join-Path $InstallRoot $Files[0].Name) -PathType Leaf
     # Derived siblings are verified before any move or recursive cleanup.
     foreach ($path in @($stage,$backup,$failed)) {
         if ((Split-Path ([IO.Path]::GetFullPath($path))) -ne $parent) { throw 'Invalid package transaction path.' }
@@ -38,7 +40,7 @@ function Publish-AgentPackage {
                 if ($promoted) { & $Stop; Move-Item -LiteralPath $InstallRoot -Destination $failed }
                 if ($saved) { Move-Item -LiteralPath $backup -Destination $InstallRoot; $saved=$false }
                 & $Restore
-                if (Test-Path -LiteralPath $InstallRoot) { & $Start }
+                if ($restartOld -and (Test-Path -LiteralPath $InstallRoot)) { & $Start }
             } catch { throw ('Package update failed: '+$problem.Exception.Message+'; rollback failed: '+$_.Exception.Message) }
         }
         throw $problem

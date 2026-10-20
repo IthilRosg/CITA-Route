@@ -54,7 +54,10 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Resource guard integration failed.'}
       - name: Verify startup service in SYSTEM session 0 with synthetic transport
         shell: powershell
-        run: ./Verify-Startup.ps1
+        env:
+          SOAK_MINUTES: ${{ inputs.soak_minutes }}
+        run: |
+          if($env:SOAK_MINUTES -and $env:SOAK_MINUTES -ne '0'){./Verify-Startup.ps1 -ReadinessDelaySeconds 185}else{./Verify-Startup.ps1}
       - name: Extended simultaneous TCP and UDP recovery soak
         if: github.event_name == 'workflow_dispatch' && inputs.soak_minutes != '0'
         shell: powershell

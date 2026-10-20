@@ -24,8 +24,10 @@ executed or adopted by SYSTEM. A fresh profile export is requested from the
 existing WireSock service by the trusted routing entry, rather than copying
 user VPN keys into a release or installation manifest.
 
-The service waits up to three minutes for a physical gateway and a recognized
-WireSock status, then performs the ordinary connection transaction, adaptive
+The service waits cancellably for a physical gateway and a recognized
+WireSock status, refreshing its waiting state every 30 seconds. A network or
+WireSock service that appears later than three minutes is still accepted;
+individual CLI calls retain their four-second deadline. It then performs the ordinary connection transaction, adaptive
 policy startup and HTTPS verification. Readiness is checked against the same
 session/generation health result before the startup state becomes Connected.
 The UI reads the protected session and offers Stop through the SID-restricted
@@ -64,3 +66,13 @@ manual Stop, same-boot restart suppression, cancellation and update invalidation
 It does not prove real WireSock transport before sign-in, vendor auto-connect
 compatibility, Wi-Fi authentication or behavior across a physical PC reboot.
 The real SDK transport research in draft PR #9 remains separate.
+
+On a separate real Windows stand, use `tools/Collect-StartupEvidence.ps1 -Action
+Arm -ClientRoot <installed-client>` before a manual reboot, keep the machine
+signed out, then run the collector after signing in. It compares the real kernel
+boot, protected connection generation, fresh health, service session and WTS user
+counts captured at startup/connection. It never prints profile/configuration
+contents or performs a reboot. An unchanged kernel boot (including hybrid
+shutdown) is not reported as a proven cold reboot. WTS counts are point-in-time
+observations, not proof of continuous absence of all logons. See the manual
+acceptance matrix in `docs/STARTUP-LAB.md`.

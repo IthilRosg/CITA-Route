@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param()
+param([ValidateRange(1,240)][int]$ReadinessDelaySeconds=185)
 $ErrorActionPreference='Stop'
 # This test installs a real SYSTEM service with a synthetic filesystem-only
 # transport. It must never run on a user's existing installation.
@@ -107,6 +107,14 @@ if($Action -eq 'Start'){
     $proofFile=Join-Path $bootClient 'logs\startup-proof.json'
     $proof=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
     Assert ($proof.System -and $proof.SessionZero -and $proof.Starts -eq 1) 'Startup did not execute as SYSTEM in session 0, exactly once.'
+    $bootProof=Get-Content -LiteralPath (Join-Path $shared 'startup-boot-proof.json') -Raw|ConvertFrom-Json
+    Assert ($bootProof.ServiceSessionId -eq 0 -and $bootProof.ConnectedUtc -and $bootProof.SessionId -and $bootProof.BridgeGeneration -eq 1) 'Startup evidence did not identify the actual connected generation and service session.'
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\Collect-StartupEvidence.ps1') -Action Arm -ClientRoot $client|Out-Null
+    Assert ($LASTEXITCODE -eq 0) 'Startup evidence baseline failed.'
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\Collect-StartupEvidence.ps1') -ClientRoot $client|Out-Null
+    Assert ($LASTEXITCODE -eq 0) 'Startup evidence collection failed.'
+    $report=Get-Content -LiteralPath (Join-Path $client 'logs\startup-boot-report.json') -Raw|ConvertFrom-Json
+    Assert (-not $report.rebootBeforeSignInObserved -and -not $report.kernelBootChanged) 'A simulated startup was incorrectly claimed as an actual reboot before sign-in.'
     & $agent --configure-boot $client on
     Assert ($LASTEXITCODE -ne 0) 'Active startup snapshot was overwritten.'
     & $agent boot-stop $client|Out-Null
@@ -114,11 +122,19 @@ if($Action -eq 'Start'){
     WaitPhase 'StoppedForBoot'
     StopFixtureService;Start-Service -Name $serviceName;Start-Sleep -Seconds 2
     Assert ((ReadState).Phase -eq 'StoppedForBoot') 'Service restart undid intentional manual Stop.'
+    # A late WireSock dependency may become ready after the former 3-minute
+    # limit. Only the explicitly dispatched extended test waits that long.
+    StopFixtureService;Remove-Item -LiteralPath $ready;NewBoot;Start-Service -Name $serviceName;WaitPhase 'WaitingForNetwork'
+    Start-Sleep -Seconds $ReadinessDelaySeconds
+    Assert ((ReadState).Phase -eq 'WaitingForNetwork') 'Delayed readiness was abandoned instead of waiting for the dependency.'
+    [IO.File]::WriteAllText($ready,'ready');WaitPhase 'Connected'
+    & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
     # A cancel while waiting must not invoke disconnect or disturb any VPN.
     StopFixtureService;Remove-Item -LiteralPath $ready;NewBoot;Start-Service -Name $serviceName;WaitPhase 'WaitingForNetwork'
+    $beforeCancel=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
     & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
     $proof=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
-    Assert ($proof.Starts -eq 1 -and $proof.Stops -eq 1) 'Cancelling network readiness touched the transport.'
+    Assert ($proof.Starts -eq $beforeCancel.Starts -and $proof.Stops -eq $beforeCancel.Stops) 'Cancelling network readiness touched the transport.'
     # Stale journals from the previous Windows boot cannot block startup.
     StopFixtureService;[IO.File]::WriteAllText($ready,'ready')
     [IO.File]::WriteAllText((Join-Path $client 'runtime\session.json'),'{"running":true,"routerPid":2147483000,"bridgePid":2147483001}')

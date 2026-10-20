@@ -101,6 +101,16 @@ try {
             if($LASTEXITCODE -ne 0){throw 'Could not prepare protected startup. The previous protected installation will be restored.'}
         }
     } -Restore {
+        # On a failed first install there is no old executable to restart.
+        # Remove only the service created by this transaction at this exact path.
+        if(-not $service){
+            $createdService=Get-CimInstance Win32_Service -Filter "Name='RoutePilotRescue'" -ErrorAction SilentlyContinue
+            if($createdService){
+                if($createdService.PathName -ne ('"'+(Join-Path $installRoot 'RoutePilot.Agent.exe')+'" --service')){throw 'Rollback found an unrelated service registration.'}
+                & sc.exe delete RoutePilotRescue | Out-Null
+                if($LASTEXITCODE -ne 0){throw 'Could not remove the failed first-install service registration.'}
+            }
+        }
         if($null -ne $oldBootState){
             $temporary=$bootStatePath+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
             try{

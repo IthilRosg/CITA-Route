@@ -168,6 +168,11 @@ internal sealed class BootRouting
         await _serial.WaitAsync(linked.Token);
         try
         {
+            var evidence=new StartupEvidence{BootUtc=BootUtc};
+            string evidenceFile=Path.Combine(_config.DataDirectory,"startup-boot-proof.json");
+            Storage.Write(evidenceFile,evidence);
+            void ValidateSnapshot()
+            {
             if(!File.Exists(Path.Combine(_config.AppRoot,"product.json")))throw new IOException("Source installation was removed.");
             using var product=System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(_config.AppRoot,"product.json")));
             if(product.RootElement.GetProperty("version").GetString()!=settings.Version||settings.ConnectionSignature!=ConnectionSignature(_config))throw new IOException("Refresh startup after updating CITA Route or its profile.");
@@ -184,9 +189,11 @@ internal sealed class BootRouting
                 if(ordinary.Running&&((ordinary.RouterPid>0&&new ProcessIdentity(ordinary.RouterPid,ordinary.RouterStartedUtc,Path.Combine(_config.AppRoot,"runtime","smart-router.exe")).Matches())||
                     (ordinary.BridgePid>0&&new ProcessIdentity(ordinary.BridgePid,ordinary.BridgeStartedUtc,Path.Combine(StartupPaths.AgentDirectory,"vpn-bridge.exe")).Matches())))throw new IOException("An existing ordinary session requires attention.");
             }
+            }
+            ValidateSnapshot();
             State(settings,"WaitingForNetwork","Ожидание сети и службы WireSock…");
             var clock=Stopwatch.StartNew();
-            while(clock.Elapsed<TimeSpan.FromMinutes(3))
+            while(true)
             {
                 linked.Token.ThrowIfCancellationRequested();
                 string run=Path.Combine(_config.DataDirectory,"run.json");
@@ -202,10 +209,16 @@ internal sealed class BootRouting
                     catch(OperationCanceledException)when(linked.IsCancellationRequested){throw;}
                     catch(Exception ex)when(ex is IOException or OperationCanceledException or System.ComponentModel.Win32Exception){}
                 }
+                if(clock.Elapsed>=TimeSpan.FromSeconds(30))
+                {
+                    State(settings,"WaitingForNetwork","Ожидание сети и службы WireSock… Можно отменить кнопкой отключения.");
+                    clock.Restart();
+                }
                 await Task.Delay(2000,linked.Token);
             }
             linked.Token.ThrowIfCancellationRequested();
-            if(clock.Elapsed>=TimeSpan.FromMinutes(3))throw new TimeoutException("Startup network readiness timed out.");
+            // The source may have changed while startup waited for networking.
+            ValidateSnapshot();
             State(settings,"Starting","Подключение WireSock, применение маршрутов и проверка HTTPS…");
             _routeAttempted=true;
             if(await Script("Start",linked.Token)!=0)throw new IOException("Startup connection did not pass its checks.");
@@ -215,7 +228,10 @@ internal sealed class BootRouting
                 var proof=health.RootElement;
                 if(!connected.Running||!connected.BridgeReady||proof.GetProperty("sessionId").GetString()!=connected.Id||proof.GetProperty("bridgeGeneration").GetInt32()!=connected.BridgeGeneration||!proof.GetProperty("healthy").GetBoolean()||(DateTime.UtcNow-proof.GetProperty("updatedUtc").GetDateTime().ToUniversalTime()).TotalSeconds is <0 or >90)throw new IOException("Startup readiness was not independently confirmed.");
             }
-            State(settings,"Connected","Маршрут подключён до входа в Windows.");
+            evidence.SessionId=connected.Id;evidence.BridgeGeneration=connected.BridgeGeneration;
+            evidence.InteractiveUsersAtConnection=StartupEvidence.CountUsers();evidence.ConnectedUtc=DateTime.UtcNow;
+            Storage.Write(evidenceFile,evidence);
+            State(settings,"Connected","Маршрут подключён службой при запуске Windows.");
         }
         catch(OperationCanceledException)when(linked.IsCancellationRequested){}
         catch(Exception)

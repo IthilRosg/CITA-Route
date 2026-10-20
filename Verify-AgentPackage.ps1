@@ -33,6 +33,10 @@ try {
         if([IO.File]::ReadAllText($state) -ne 'manual-stop'){throw 'Old service restarted before state rollback.'}
     } -Prepare {[IO.File]::WriteAllText($state,'new-snapshot')} -Restore {[IO.File]::WriteAllText($state,'manual-stop')}}catch{$failed=$true}
     if(-not $failed -or $script:starts -ne 2 -or [IO.File]::ReadAllText($state) -ne 'manual-stop'){throw 'Failed activation did not roll back the committed snapshot state.'}
+    $empty=Join-Path $fixture 'first-install';New-Item -ItemType Directory -Path $empty|Out-Null
+    $script:starts=0;$script:restores=0;$failed=$false
+    try{Publish-AgentPackage @(@{Source=$source;Name='agent.txt'}) $empty $stop {$script:starts++;throw 'Injected first-install activation failure.'} -Restore {$script:restores++}}catch{$failed=$true}
+    if(-not $failed -or $script:starts -ne 1 -or $script:restores -ne 1 -or (Test-Path -LiteralPath (Join-Path $empty 'agent.txt'))){throw 'A failed first installation attempted to restart a nonexistent previous executable.'}
     Write-Output 'PASS: missing source preserves the running service; failed startup rolls back and restarts old files; successful promotion installs verified files.'
 } finally {
     $prefix=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'runtime\package-test-'))
