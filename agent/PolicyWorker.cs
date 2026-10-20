@@ -71,6 +71,7 @@ public sealed class PolicyWorker
     readonly Func<PolicyKey,CancellationToken,Task<CalibrationResult>>? _calibration;
     readonly PolicyPorts _ports;
     PolicyPublisher? _publisher;
+    PolicyProgress? _progress;
     bool _dirty=true;
     DateTime _nextPublish;
     int _foregroundSinceRefresh;
@@ -110,6 +111,8 @@ public sealed class PolicyWorker
         var session=Storage.Read<PolicySession>(Path.Combine(root,"runtime","session.json"));
         var options=Storage.Read<PolicyOptions>(Path.Combine(root,"data","routing-policy.json"));
         var worker=new PolicyWorker(root,session,options);
+        worker._progress=new(root,session.Id);
+        worker._progress.Mark("Starting",true);
         var identity=ProcessIdentity.From(System.Diagnostics.Process.GetProcessById(session.RouterPid));
         using var cancel=new CancellationTokenSource();
         worker._runStop=cancel.Token;
@@ -151,6 +154,7 @@ public sealed class PolicyWorker
                 }
                 if(options.Mode=="Auto")worker.DrainFailures(cancel.Token);
                 worker.Status(worker._dirty?"Applying":options.Mode=="Auto"?"Auto":"Lists");
+                worker._progress.Mark("Running");
                 await Task.Delay(500);
             }
         }
@@ -158,6 +162,7 @@ public sealed class PolicyWorker
         {terminalPhase="Error";worker.Event("Контроллер остановлен: "+ex.GetBaseException().Message);throw;}
         finally
         {
+            try{worker._progress.Mark(terminalPhase,true);}catch{}
             cancel.Cancel();await quality;await Task.WhenAll(worker._pending.Values.Select(async t=>{try{await t;}catch{}}));
             // Keep the last applied rules across a controller crash/restart.
             // Start/Stop owns the engine; an old controller never clears a newer generation.
@@ -513,6 +518,7 @@ public sealed class PolicyWorker
     }
     async Task PublishAsync(CancellationToken stop)
     {
+        _progress?.Mark("Publishing",true);
         await _publisher!.Apply(Desired(),stop);
         if(!Current())throw new OperationCanceledException();
         Storage.Write(Runtime("policy-active.json"),new PolicyActiveSnapshot(_epoch,_options.Mode,_options.AllowListedDpi,_clearRequest,_decisions.Values.ToArray()));

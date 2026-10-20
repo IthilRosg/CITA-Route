@@ -531,6 +531,8 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
     $configFile = if ($sessionMode -eq 'ProxyOnly') { 'router-proxy.json' } else { 'router.json' }
     Write-ConnectionProgress 'StartingRouter'
     $routerProcess = Start-Helper $routerExe (Join-Path $runtime $configFile)
+    # A deliberate new session retires the previous session's independent hold.
+    Remove-Item -LiteralPath (Join-Path $runtime 'bridge-safety.json') -Force -ErrorAction SilentlyContinue
     Write-JsonFile (Join-Path $runtime 'session.json') @{
         running=$true;id=[guid]::NewGuid().ToString('N');startedUtc=[DateTime]::UtcNow.ToString('o')
         operationId=$(if($Action -eq 'Reconnect'){$previous.operationId}else{$OperationId})

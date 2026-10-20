@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Text.Json;
 
 namespace RoutePilot;
 
@@ -21,12 +23,38 @@ public sealed class WatchState
 }
 public static class SessionHealthCache
 {
+    sealed class SafetyHold {public int Schema{get;set;}public string SessionId{get;set;}="";public bool Hold{get;set;}public string Code{get;set;}="";}
+    public static string Hold(string root,EngineSession session)
+    {
+        if(!session.Running)return "";
+        try
+        {
+            using var stream=new FileStream(Path.Combine(root,"runtime","bridge-safety.json"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+            if(stream.Length>16384)return "SafetyStateUnavailable";
+            var value=JsonSerializer.Deserialize<SafetyHold>(stream,AppPaths.Json);
+            if(value==null||value.Schema!=1||string.IsNullOrEmpty(value.SessionId)||!value.Hold)return "SafetyStateUnavailable";
+            return value.SessionId==session.Id?value.Code=="EgressMismatch"?"EgressMismatch":"SafetyStateUnavailable":"";
+        }
+        catch(FileNotFoundException){return "";}
+        catch(DirectoryNotFoundException){return "";}
+        catch(Exception ex)when(ex is IOException or UnauthorizedAccessException or JsonException){return "SafetyStateUnavailable";}
+    }
+    public static string Attention(string reason)=>reason switch
+    {
+        "Component retry limit reached"=>"Автовосстановление исчерпало попытки. Подробности — в журнале.",
+        "Another WireSock profile is active"=>"В WireSock выбран другой профиль. Проверь подключение.",
+        "Policy identity or progress unavailable"=>"Работа управления маршрутами не подтверждена. Проверь журнал.",
+        "Component operation exceeded its deadline; bridge safety remains active"=>"Восстановление выполняется слишком долго. Проверь журнал.",
+        "VPN paused while another component operation is in progress"=>"VPN приостановлен. Выполняется операция восстановления.",
+        _=>"Проверь профиль подключения и расширенный журнал."
+    };
     public static bool Fresh(DateTime value,DateTime now,int seconds)=>value<=now.AddSeconds(2) && value>now.AddSeconds(-seconds);
     public static bool Matches(EngineSession session,SessionHealthState health,DateTime now)=>
         session.Running && session.BridgeReady && string.IsNullOrEmpty(session.VpnHoldReason) && !string.IsNullOrEmpty(session.Id) &&
         health.SessionId==session.Id && health.BridgeGeneration==session.BridgeGeneration && Fresh(health.UpdatedUtc,now,90);
     public static (bool Watching,SessionHealthState? Health,WatchState? Watch) Read(string root,EngineSession session,DateTime now)
     {
+        if(string.IsNullOrEmpty(session.VpnHoldReason))session.VpnHoldReason=Hold(root,session);
         var watch=AppPaths.Read(System.IO.Path.Combine(root,"runtime","watch-state.json"),()=>new WatchState());
         var health=AppPaths.Read(System.IO.Path.Combine(root,"runtime","session-health.json"),()=>new SessionHealthState());
         bool watching=session.Running && !string.IsNullOrEmpty(session.Id) && watch.SessionId==session.Id && Fresh(watch.UpdatedUtc,now,25);

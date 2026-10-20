@@ -225,8 +225,8 @@ public partial class MainWindow : Window
             }
             if(!_compact){TrafficChart.SetPoints(_points);UpdateConnectionGrids();UpdateFeedState();}UpdateHistoryLabels();
             if(session.Running && session.Recovering){SetStatus("Автовосстановление",false);FooterStatus.Text="Маршрутизатор переподключается автоматически. «Отключить» отменит повторные попытки.";}
-            if(!string.IsNullOrEmpty(session.VpnHoldReason)){_egressVerified=false;SetStatus("Проверь подключение",false);FooterStatus.Text="Выход VPN не совпал с профилем. Отключи маршрут и проверь настройки подключения.";}
-            else if(cachedHealth.Watch?.Phase=="NeedsAttention"){SetStatus("Требуется внимание",false);FooterStatus.Text="Автовосстановление исчерпало попытки. Подробности — в расширенном журнале.";}
+            if(!string.IsNullOrEmpty(session.VpnHoldReason)){_egressVerified=false;SetStatus("Проверь подключение",false);FooterStatus.Text=session.VpnHoldReason=="EgressMismatch"?"Выход VPN не совпал с профилем. Отключи маршрут и проверь настройки подключения.":"Безопасность VPN не подтверждена. Отключи маршрут и проверь журнал.";}
+            else if(cachedHealth.Watch?.Phase=="NeedsAttention"){SetStatus("Требуется внимание",false);FooterStatus.Text=SessionHealthCache.Attention(cachedHealth.Watch.Reason);}
             if(_rescueState.Active){SetStatus("Автономный тест",false);FooterStatus.Text="Служба проверяет сеть и контролирует возврат VPNUS. Результаты — в настройках.";}
             if(vpnReady)_lastNoticeError=false;
             _pendingConnectionOperation=ConnectionOperation.Active(_root)&&!_busy;

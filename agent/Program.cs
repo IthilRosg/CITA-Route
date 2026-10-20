@@ -33,6 +33,18 @@ public static class Program
             if(args.Length>=1 && args[0]=="--probe-worker"){await ProbeWorker.Run(args);return 0;}
             if(args.Length==2 && args[0]=="--cleanup-worker"){await ProbeWorker.Cleanup(args[1]);return 0;}
             if(args.Length==2 && args[0]=="--policy-worker"){await PolicyWorker.Run(args[1]);return 0;}
+            if(args.Length==3 && args[0]=="--stop-stale-policy")
+            {
+                string root=Path.GetFullPath(args[1]);ComponentLiveness.Configured(root);
+                Console.WriteLine(JsonSerializer.Serialize(ComponentLiveness.StopStalePolicy(root,args[2],Path.Combine(AppContext.BaseDirectory,"RoutePilot.Agent.exe")),Storage.Wire));return 0;
+            }
+            if(args.Length==4 && args[0]=="--pause-unsafe-bridge")
+            {
+                string root=Path.GetFullPath(args[1]);var config=ComponentLiveness.Configured(root);
+                if(!int.TryParse(args[3],out int generation)||generation<0)throw new ArgumentException("Invalid bridge generation.");
+                var result=await ComponentLiveness.PauseBridge(root,args[2],generation,Path.Combine(AppContext.BaseDirectory,"vpn-bridge.exe"),()=>Telemetry.WireSockStatistics.Read(config.WireSockCliPath));
+                Console.WriteLine(JsonSerializer.Serialize(result,Storage.Wire));return 0;
+            }
             if(args.Length==2 && args[0]=="--network-signature"){Console.WriteLine(PolicyNetwork.Signature(Path.GetFullPath(args[1])));return 0;}
             if(args.Length==2 && args[0]=="--prepare-policy"){PolicyWorker.Prepare(args[1]);return 0;}
             if(args.Length==2 && args[0]=="--integration-policy"){await PolicyIntegration.Run(args[1]);return 0;}

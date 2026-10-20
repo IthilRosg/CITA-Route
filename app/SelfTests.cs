@@ -31,6 +31,18 @@ public static class SelfTests
             using(var held=new FileStream(Path.Combine(maintenance,"runtime","installation-maintenance.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None))
                 Assert(InstallationMaintenance.Active(maintenance),"Startup must refuse to open files during installation/uninstallation.");
             Assert(!InstallationMaintenance.Active(maintenance),"An old unlocked lock file cannot block startup.");
+            var session=new EngineSession{Id="held",Running=true,BridgeReady=true,BridgeGeneration=2};
+            string safety=Path.Combine(maintenance,"runtime","bridge-safety.json");
+            AppPaths.Write(safety,new{schema=1,sessionId="old",hold=true,code="EgressMismatch"});
+            Assert(SessionHealthCache.Hold(maintenance,session)=="","An old session's hold cannot affect a new session.");
+            AppPaths.Write(safety,new{schema=1,sessionId="held",hold=true,code="EgressMismatch"});
+            Assert(SessionHealthCache.Hold(maintenance,session)=="EgressMismatch","GUI must honor independent safety holds while the coordinator is busy.");
+            AppPaths.Write(Path.Combine(maintenance,"runtime","session-health.json"),new SessionHealthState{SessionId="held",BridgeGeneration=2,Healthy=true,UpdatedUtc=DateTime.UtcNow});
+            Assert(SessionHealthCache.Read(maintenance,session,DateTime.UtcNow).Health==null,"An earlier HTTPS success cannot conceal an independent hold.");
+            File.WriteAllText(safety,"{");
+            Assert(SessionHealthCache.Hold(maintenance,session)=="SafetyStateUnavailable","Unreadable safety state cannot claim a safe exit.");
+            session.Running=false;Assert(SessionHealthCache.Hold(maintenance,session)=="","Manual Stop remains stopped.");
+            Assert(!SessionHealthCache.Attention("Policy identity or progress unavailable").Contains("исчерпало"),"A metadata error must not falsely claim retries were exhausted.");
         }
         finally{Directory.Delete(maintenance,true);}
         var healthSession=new EngineSession{Running=true,BridgeReady=true,Id="current",BridgeGeneration=4};

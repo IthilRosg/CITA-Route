@@ -5,7 +5,7 @@ Part of the CITA family: [AWG CITA](https://github.com/IthilRosg/AWG-CITA) manag
 
 The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspired palette, sharp frames and terminal typography.
 
-**0.5.4** adds service-based observation of UDP port pressure, system memory and sustained CITA resource growth, with confirmed warnings and a local report. The Windows installer, Desktop/Start shortcuts and automatic connection/update handoff remain included.
+**0.5.5** detects a live but stalled policy controller and can pause only the owned VPN bridge while another recovery operation holds the coordinator. Independent per-session safety holds also invalidate old GUI health results. Resource warnings, the Windows installer and verified updates remain included. See [component liveness and limits](docs/COMPONENT-LIVENESS.md): this release does not claim driver-enforced zero-leak VPN-only isolation.
 
 [Download stable releases](https://github.com/IthilRosg/CITA-Route/releases) · [Report a bug](https://github.com/IthilRosg/CITA-Route/issues)
 
