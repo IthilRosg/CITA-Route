@@ -52,6 +52,10 @@ function Get-SessionRouter($Session) {
 }
 
 function Get-WatchRecoveryAction([bool]$RouterAlive,[int]$NetworkMismatch,[string]$WireSockState,[int]$DisconnectedSamples) {
+    # Reconnect itself requires a confirmed managed state. Do not consume its
+    # retry budget while WireSock is restoring a link after sleep, or when
+    # ownership is unknown. The independent bridge safety pause still applies.
+    if($WireSockState -notin @('Connected','Disconnected')){return 'Observe'}
     if(-not $RouterAlive){return 'Reconnect'}
     if($NetworkMismatch -ge 2){return 'Reconnect'}
     if($WireSockState -eq 'Disconnected' -and $DisconnectedSamples -ge 3){return 'RepairVpn'}

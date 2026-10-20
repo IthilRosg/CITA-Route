@@ -5,6 +5,19 @@ $fixture=Join-Path $PSScriptRoot ('runtime\session-tests-'+[guid]::NewGuid().ToS
 New-Item -ItemType Directory -Path $fixture | Out-Null
 $runtime=$fixture
 try {
+    foreach($wireState in @('Transitioning','Unknown','Foreign','Unexpected')){
+        foreach($alive in @($true,$false)){
+            foreach($mismatch in @(0,2,9)){
+                if((Get-WatchRecoveryAction $alive $mismatch $wireState 9) -ne 'Observe'){throw 'Unconfirmed WireSock ownership/state must not consume recovery attempts, including after resume.'}
+            }
+        }
+    }
+    foreach($wireState in @('Connected','Disconnected')){
+        if((Get-WatchRecoveryAction $false 0 $wireState 0) -ne 'Reconnect'){throw 'A missing router with confirmed ownership must still recover.'}
+        if((Get-WatchRecoveryAction $true 2 $wireState 0) -ne 'Reconnect'){throw 'A confirmed changed network must still recover after WireSock settles.'}
+    }
+    if((Get-WatchRecoveryAction $true 0 'Disconnected' 3) -ne 'RepairVpn'){throw 'Confirmed transport disconnection must retain component repair.'}
+    if((Get-WatchRecoveryAction $true 1 'Connected' 0) -ne 'Observe'){throw 'A single network observation cannot restart a healthy router.'}
     if((@(0,1,2,3,4,9) | ForEach-Object {Get-RecoveryDelay $_}) -join ',' -ne '2,5,15,30,60,60'){throw 'Recovery delays must remain bounded.'}
     $path=Join-Path $runtime 'session.json'
     Write-JsonFile $path @{id='current';running=$true;bridgeReady=$true;mode='ProxyOnly'}

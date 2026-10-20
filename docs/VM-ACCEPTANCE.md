@@ -98,6 +98,40 @@ on the actual stand. Long mixed traffic, Wi-Fi changes, sleep/resume, repeated
 real boot stability and native driver isolation remain separate acceptance
 items. The alternative port is not a permanent DPI mechanism.
 
+## Live control and resources
+
+A 601-second startup-session run completed 38 protected health and independent
+VPN HTTPS/exit checks without failure, session/generation changes or stale
+watch/policy observations. Native WireSock telemetry ended at 56 ms handshake
+RTT and 0% estimated loss; that estimate is not an independently measured WAN
+packet-loss rate. Intentional Stop completed successfully.
+
+On the two-logical-CPU guest, the sampled routing processes plus WireSock and
+occasional diagnostic child processes averaged 1.92% machine CPU and peaked at
+304.18 MiB private memory, without the GUI. The long-lived policy worker changed
+54.41 -> 54.53 MiB, router 79.60 -> 77.97 MiB and bridge 57.44 -> 56.98 MiB.
+The rescue service changed 37.02 -> 47.77 MiB and WireSock's service 28.23 ->
+38.59 MiB. These short, controlled HTTPS measurements are not gaming/video load,
+a complete application footprint or proof against long-term leaks.
+
+## Pause/resume boundary
+
+A single certificate-validated TLS/TCP connection survived a minute of normal
+requests without reconnecting. During a separate controlled 12-second VM pause
+(about 16 seconds including VMware resume), the existing connection was aborted
+immediately on resume. The CITA session ID survived, while the bridge generation
+advanced and protected HTTPS recovered later. Existing VPN TCP continuity across
+this pause is therefore **not passed**.
+
+The recovery history exposed rejected full-reconnect attempts while WireSock was
+still Transitioning; they unnecessarily consumed its retry budget. Observe an
+unconfirmed/transitioning/foreign state until ownership is confirmed, including
+when the router is missing or network mismatch is repeated. Independent bridge
+pausing continues to prevent unconfirmed direct egress. Confirmed managed
+disconnection, router failure and changed networks retain their repair paths.
+The regression matrix covers these combined cases. This avoids invalid retry
+attempts; it does not promise to revive a socket already closed by the stack.
+
 The VM's own idle sleep interrupted tests. Resetting its sleep idle timer during
 diagnostic invocations avoids changing the permanent power plan. Guest checksum
 offload changes did not restore the original path and were reverted and verified.
