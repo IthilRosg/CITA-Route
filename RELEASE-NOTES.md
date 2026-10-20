@@ -1,12 +1,10 @@
-CITA Route 0.5.5 — stalled-controller recovery and isolated VPN bridge safety.
+CITA Route 0.5.6 — connection lifecycle fixes and regression debugging.
 
-- A live policy process now needs real execution progress. Startup/publication have bounded grace; ordinary progress expires after 15 seconds. Two stale observations and a fresh check precede replacement. Wrong PID/start/session identity and unknown metadata do not justify arbitrary process termination.
-- An uncertain/lost VPN or a fresh exit mismatch can pause only the owned VPN bridge while the ordinary coordinator is busy. The direct router remains running. Native image, user and exact process creation time are validated using the same Windows handle used for termination.
-- Exit mismatch holds persist independently of the ordinary session writer. Automatic bridge resume and cached GUI HTTPS success cannot bypass them. A deliberate new connection retires the previous session's hold. Corrupt safety data require attention.
-- The watcher continues bridge checks during a running recovery operation and reports an operation exceeding 90 seconds. Retry budgets and Stop/session priority remain bounded. A confirmed bridge stop is deduplicated to avoid helper churn.
-- Status messages distinguish retry exhaustion, unknown controller metadata, long recovery and VPN safety holds.
-- Tests cover progress/deadlines, PID reuse, Stop/generation races, the actual Watch loop with injected operations, GUI safety state and real sing-box over loopback. One direct TCP socket survives bridge pause/resume and native stale-worker termination; VPN sockets close and new VPN connections fail during a pause. Busy coordinator and one-tick process-time mismatch cases are included.
+- Prevent profile setup/import/protected-agent replacement from overlapping startup or reconnect after the initial setup check. The gate stays held through the action and is released on failure; manual Stop remains available.
+- Report an unverified WireSock disconnect instead of silently claiming success. Require a disconnected state after the command; preserve a foreign profile selected during the operation.
+- Protect similarly named foreign profiles during crashed-router cleanup by using exact managed-profile identity rather than substring matching.
+- Add a real entry-point race regression and a short 20-cycle loopback recovery soak with continuous direct traffic, refused paused VPN flows, memory/handle growth and latency observations. Extend release checks for profile rollback, disconnect and maintenance lifecycle.
 
-This release strengthens observation-triggered component safety. It does not provide per-packet driver-enforced VPN-only isolation or a zero-leak guarantee between status observations. Full WireSock/TUN, UDP/QUIC/IPv6 and physical-network failure validation remain separate work. The stock system-wide WireSock Kill Switch is not enabled.
+The real WireSock SDK/Windows-filter experiments remain development tools on disposable machines. This release does not enable a new driver boundary, change WireSock modes, prove zero leakage, or promise seamless migration of existing connections across external IP changes. Loopback tests do not replace a physical WAN/AWG/game/voice soak.
 
-The protected helper updates on the next Connect through normal Windows confirmation. Windows 10/11 x64 and separately installed WireSock Secure Connect are required. Setup and ZIP include .NET. Release executables are not yet code signed.
+The protected agent updates on the next Connect through normal Windows confirmation. Windows 10/11 x64 and separately installed WireSock Secure Connect are required. Setup and ZIP include .NET. Release executables are not yet code signed.

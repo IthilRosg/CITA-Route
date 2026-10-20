@@ -40,7 +40,7 @@ function Service-Scenario([string]$Command){
     $script:report.runs+=@{command=$Command;id=$state.Id;generation=$state.Generation;phase=$state.Phase}
 }
 try {
-    foreach($scriptName in @('Verify-Prepare.ps1','Verify-Storage.ps1','Verify-RuleFeeds.ps1','Verify-ProfileSync.ps1','Verify-WireSockRecovery.ps1','Verify-AgentPackage.ps1','Verify-SessionRecovery.ps1','Verify-ComponentLiveness.ps1')){
+    foreach($scriptName in @('Verify-Prepare.ps1','Verify-Lifecycle.ps1','Verify-Storage.ps1','Verify-RuleFeeds.ps1','Verify-ProfileSync.ps1','Verify-WireSockRecovery.ps1','Verify-AgentPackage.ps1','Verify-SessionRecovery.ps1','Verify-ComponentLiveness.ps1')){
         Step $scriptName {Run-Script $scriptName}
     }
     Step 'agent-self-tests' {
