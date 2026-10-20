@@ -50,6 +50,7 @@ public static class Program
             if(args.Length==2 && args[0]=="--integration-policy"){await PolicyIntegration.Run(args[1]);return 0;}
             if(args.Length==2 && args[0]=="--optimization-integration"){await PolicyEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--component-integration"){await ComponentRecoveryTests.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==2 && args[0]=="--component-soak"){await ComponentRecoveryTests.Run(Path.GetFullPath(args[1]),20);return 0;}
             if(args.Length==2 && args[0]=="--udp-integration"){await UdpEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--resource-integration"){await ResourceGuardTests.Integration(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--optimization-live"){await PolicyLiveCheck.Run(Path.GetFullPath(args[1]));return 0;}

@@ -13,11 +13,11 @@ internal static class ComponentRecoveryTests
     static void Assert(bool value,string message){if(!value)throw new IOException(message);}
     static int FreePort(){var listener=new TcpListener(IPAddress.Loopback,0);listener.Start();int port=((IPEndPoint)listener.LocalEndpoint).Port;listener.Stop();return port;}
     static string Quote(string value)=>"'"+value.Replace("'","''")+"'";
-    internal static async Task Run(string projectRoot)
+    internal static async Task Run(string projectRoot,int soakCycles=0)
     {
         string root=Path.Combine(Path.GetFullPath(projectRoot),"runtime","component-engine-"+Guid.NewGuid().ToString("N"));
         foreach(string name in new[]{"runtime","logs","data"})Directory.CreateDirectory(Path.Combine(root,name));
-        using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(soakCycles>0?150:45));
         var echo=new TcpListener(IPAddress.Loopback,0);echo.Start();int echoPort=((IPEndPoint)echo.LocalEndpoint).Port;
         var peers=new ConcurrentBag<Task>();
         var server=Task.Run(async()=>
@@ -125,20 +125,59 @@ internal static class ComponentRecoveryTests
             }
             Assert(ComponentLiveness.Read<BridgeSafety>(Path.Combine(root,"runtime/bridge-safety.json")).Hold,"An exit mismatch must remain held after its original health result expires.");
             await Update("Connected");Assert(!Storage.Read<JsonElement>(sessionPath).GetProperty("bridgeReady").GetBoolean(),"Automatic resume bypassed the independent per-session safety hold.");
-            await Ping(direct);frames++;success=true;
+            await Ping(direct);frames++;
+            if(soakCycles>0)
+            {
+                Assert(soakCycles<=20,"Soak process/port budgets are capped.");
+                File.Delete(safetyPath);File.Delete(Path.Combine(root,"runtime/session-health.json"));
+                await using var continuous=await Open(directPort);
+                using var trafficStop=CancellationTokenSource.CreateLinkedTokenSource(budget.Token);
+                long continuousFrames=0,maxRttMs=0;Exception? trafficFailure=null;
+                var traffic=Task.Run(async()=>
+                {
+                    try{while(!trafficStop.IsCancellationRequested){var timer=Stopwatch.StartNew();await Ping(continuous);Interlocked.Increment(ref continuousFrames);maxRttMs=Math.Max(maxRttMs,timer.ElapsedMilliseconds);await Task.Delay(20,trafficStop.Token);}}
+                    catch(OperationCanceledException)when(trafficStop.IsCancellationRequested){}
+                    catch(Exception ex){trafficFailure=ex;}
+                });
+                router.Refresh();long startBytes=router.PrivateMemorySize64;int startHandles=router.HandleCount;
+                try
+                {
+                    for(int cycle=0;cycle<soakCycles;cycle++)
+                    {
+                        await Update("Connected");var current=Storage.Read<JsonElement>(sessionPath);
+                        restarted?.Dispose();restarted=Process.GetProcessById(current.GetProperty("bridgePid").GetInt32());
+                        await using var flow=await Open(vpnPort);await Ping(flow);
+                        var paused=await ComponentLiveness.PauseBridge(root,"fixture",current.GetProperty("bridgeGeneration").GetInt32(),bridgeExe,Unknown);
+                        Assert(paused.Stopped,"Repeated bridge pause failed.");
+                        bool cycleRefused=false;try{await using var rejected=await Open(vpnPort,false);await Ping(rejected);}catch(Exception ex)when(ex is IOException or SocketException or OperationCanceledException){cycleRefused=true;}
+                        Assert(cycleRefused,"Repeated paused VPN route fell back instead of refusing a new flow.");
+                        await Ping(direct);Assert(trafficFailure==null,"Continuous direct traffic failed during recovery.");
+                        Assert(Storage.Read<JsonElement>(sessionPath).GetProperty("routerPid").GetInt32()==router.Id,"Soak replaced the direct router.");
+                    }
+                }
+                finally{trafficStop.Cancel();await traffic;}
+                router.Refresh();long deltaBytes=router.PrivateMemorySize64-startBytes;int deltaHandles=router.HandleCount-startHandles;
+                Assert(trafficFailure==null&&continuousFrames>0,"The persistent direct soak stream did not survive.");
+                Assert(deltaHandles<64&&deltaBytes<128L*1024*1024,"Repeated recovery caused excessive short-run router resource growth.");
+                Storage.Write(Path.Combine(projectRoot,"data","lifecycle-soak.json"),new{schema=1,cycles=soakCycles,continuousFrames,maxRttMs,routerPrivateBytesDelta=deltaBytes,routerHandlesDelta=deltaHandles,passed=true,
+                    loopbackOnly=true,wireSockMocked=true,longTermStabilityProved=false,checkedUtc=DateTime.UtcNow});
+                Console.WriteLine($"PASS: {soakCycles} bridge recovery cycles; same direct TCP stream delivered {continuousFrames} frames, max RTT {maxRttMs} ms, router private bytes delta {deltaBytes}, handles delta {deltaHandles}. Short loopback soak only.");
+            }
+            success=true;
             Console.WriteLine("PASS: same direct TCP socket survives bridge safety/repair and policy termination; established VPN sockets close, new VPN cannot fall back, busy coordinator cannot prevent a confirmed pause, native/generation/identity guards and persistent exit hold. Loopback only.");
         }
         finally
         {
             // A failed handoff may leave the resumed fixture alive before Update
             // returns. Recover it only by this fixture's PID/path/start identity.
-            if(restarted==null)try
+            try
             {
                 var saved=Storage.Read<JsonElement>(Path.Combine(root,"runtime/session.json"));int pid=saved.GetProperty("bridgePid").GetInt32();
-                if(pid!=bridge?.Id)
+                if(pid!=bridge?.Id && pid!=restarted?.Id && pid!=guarded?.Id)
                 {
                     var p=Process.GetProcessById(pid);
-                    if(Path.GetFullPath(p.MainModule!.FileName).Equals(bridgeExe,StringComparison.OrdinalIgnoreCase) && Math.Abs((p.StartTime.ToUniversalTime()-saved.GetProperty("bridgeStartedUtc").GetDateTime().ToUniversalTime()).TotalMilliseconds)<100)restarted=p;
+                    if(Path.GetFullPath(p.MainModule!.FileName).Equals(bridgeExe,StringComparison.OrdinalIgnoreCase) && p.StartTime.ToUniversalTime().ToFileTimeUtc()==saved.GetProperty("bridgeStartedUtc").GetDateTime().ToUniversalTime().ToFileTimeUtc())
+                    {restarted?.Dispose();restarted=p;}
                     else p.Dispose();
                 }
             }catch{}

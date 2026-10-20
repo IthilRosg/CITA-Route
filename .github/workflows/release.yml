@@ -35,8 +35,13 @@ jobs:
           ./Verify-Prepare.ps1
           ./Verify-ConnectionHandoff.ps1
           ./Verify-InstallationGuard.ps1
+          ./Verify-Lifecycle.ps1
+          ./Verify-WireSockRecovery.ps1
+          ./Verify-ProfileSync.ps1
           ./Verify-ComponentLiveness.ps1
           ./Verify-ComponentRecovery.ps1 -Engine
+          & ./runtime/agent-build/RoutePilot.Agent.exe --component-soak $PWD.Path
+          if($LASTEXITCODE -ne 0){throw 'Connection lifecycle soak failed.'}
           ./Verify-Optimization.ps1
           & ./runtime/agent-build/RoutePilot.Agent.exe --resource-integration $PWD.Path
           if($LASTEXITCODE -ne 0){throw 'Resource guard integration failed.'}

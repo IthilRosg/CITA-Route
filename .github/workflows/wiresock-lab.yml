@@ -20,27 +20,38 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-      - name: Install pinned signed SDK on this disposable VM only
-        shell: powershell
-        run: ./tools/transport-lab/Setup-WireSockFixture.ps1
       - name: Fetch verified test engine
         shell: powershell
         run: ./Bootstrap.ps1
       - name: Build development-only lab
         shell: powershell
         run: ./Verify-TransportBoundary.ps1
+      - name: Verify synthetic server before installing a driver
+        shell: powershell
+        run: |
+          & ./runtime/transport-lab-build/Cita.TransportLab.exe --crypto-control $PWD.Path
+          if($LASTEXITCODE -ne 0){throw 'Independent synthetic WireGuard server control failed.'}
+      - name: Install pinned signed SDK on this disposable VM only
+        shell: powershell
+        run: ./tools/transport-lab/Setup-WireSockFixture.ps1
       - name: Compare actual transparent and virtual WireSock paths
         shell: powershell
         run: |
           & ./runtime/transport-lab-build/Cita.TransportLab.exe --wiresock $PWD.Path
           if($LASTEXITCODE -ne 0){throw 'Synthetic real WireSock experiment failed.'}
+      - name: Remove the owned SDK fixture
+        if: always()
+        shell: powershell
+        run: ./tools/transport-lab/Setup-WireSockFixture.ps1 -Uninstall
       - name: Save sanitized verdicts only
         if: always()
         shell: powershell
-        run: Get-ChildItem runtime/transport-lab-*/wiresock-result.json -ErrorAction SilentlyContinue | ForEach-Object { Get-Content -LiteralPath $_.FullName }
+        run: Get-ChildItem runtime/transport-lab-*/wiresock-result.json,runtime/transport-lab-*/crypto-result.json -ErrorAction SilentlyContinue | ForEach-Object { Get-Content -LiteralPath $_.FullName }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: synthetic-wiresock-verdicts
-          path: runtime/transport-lab-*/wiresock-result.json
+          path: |
+            runtime/transport-lab-*/wiresock-result.json
+            runtime/transport-lab-*/crypto-result.json
           if-no-files-found: warn
