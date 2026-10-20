@@ -11,10 +11,32 @@ $owner=$null
 try{
     $owner=Get-Process -Id $OwnerPid -ErrorAction Stop
     $rootPath=[IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $userSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $dataOwnerFile=Join-Path $rootPath 'data\installation-owner.json'
+    function Test-RetainedDataOwner {
+        if(Test-Path -LiteralPath $dataOwnerFile){
+            try{
+                if((Get-Item -LiteralPath $dataOwnerFile -Force).Length -gt 4096){return $false}
+                $saved=[IO.File]::ReadAllText($dataOwnerFile)|ConvertFrom-Json
+                return $saved.schema -eq 1 -and $saved.name -eq 'CITA Route' -and $saved.userSid -eq $userSid -and [IO.Path]::GetFullPath($saved.root).TrimEnd('\') -ieq $rootPath
+            }catch{return $false}
+        }
+        # Earlier uninstallers did not retain a marker. Recover only the exact
+        # source root and Windows owner recorded by the protected installation.
+        $installed=Join-Path $env:ProgramFiles 'RoutePilot\Agent\agent-config.json'
+        try{
+            if(-not(Test-Path -LiteralPath $installed) -or (Get-Item -LiteralPath $installed).Length -gt 16384){return $false}
+            $saved=[IO.File]::ReadAllText($installed)|ConvertFrom-Json
+            return $saved.UserSid -eq $userSid -and [IO.Path]::GetFullPath($saved.AppRoot).TrimEnd('\') -ieq $rootPath
+        }catch{return $false}
+    }
     if((Split-Path $rootPath -Leaf) -ne 'client'){throw 'Неверная папка установки.'}
     # An installer must never follow a link into another working directory.
     for($part=$rootPath;$part;$part=Split-Path $part){
         if((Test-Path -LiteralPath $part) -and ((Get-Item -LiteralPath $part -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Папка установки содержит перенаправление. Выбери обычную папку.'}
+    }
+    foreach($part in @((Split-Path $dataOwnerFile),$dataOwnerFile)){
+        if((Test-Path -LiteralPath $part) -and ((Get-Item -LiteralPath $part -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Сохранённые данные установки содержат перенаправление.'}
     }
     if(Test-Path -LiteralPath $rootPath){
         $productPath=Join-Path $rootPath 'product.json'
@@ -22,7 +44,7 @@ try{
             $product=[IO.File]::ReadAllText($productPath) | ConvertFrom-Json
             if($product.name -ne 'CITA Route'){throw 'В этой папке находится другое приложение.'}
             if($Mode -eq 'Install' -and [version]$product.version -gt $Version){throw 'Уже установлена более новая версия. Понижение версии отменено.'}
-        }elseif(@(Get-ChildItem -LiteralPath $rootPath -Force | Where-Object Name -ne 'runtime').Count){throw 'Папка не является установкой CITA Route.'}
+        }elseif(@(Get-ChildItem -LiteralPath $rootPath -Force | Where-Object Name -ne 'runtime').Count -and -not(Test-RetainedDataOwner)){throw 'Папка не является установкой CITA Route.'}
     }
     $runtime=Join-Path $rootPath 'runtime'
     $startupFile=Join-Path $env:ProgramData 'RoutePilot\startup-state.json'
@@ -57,6 +79,12 @@ try{
         finally{$process.Dispose()}
     }
     if($owner.HasExited){throw 'Установщик уже завершён.'}
+    if($Mode -eq 'Uninstall'){
+        # Generated personal metadata is outside Setup's public-file deletion
+        # list, so a later installer can recognize this retained data directory.
+        New-Item -ItemType Directory -Path (Split-Path $dataOwnerFile) -Force|Out-Null
+        [IO.File]::WriteAllText($dataOwnerFile,(@{schema=1;name='CITA Route';root=$rootPath;userSid=$userSid}|ConvertTo-Json),(New-Object Text.UTF8Encoding($false)))
+    }
     [IO.File]::WriteAllText($ReadyFile,'READY')
     while(-not $owner.HasExited -and -not (Test-Path -LiteralPath $ReleaseFile)){Start-Sleep -Milliseconds 100}
 }catch{
