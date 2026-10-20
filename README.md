@@ -5,7 +5,7 @@ Part of the CITA family: [AWG CITA](https://github.com/IthilRosg/AWG-CITA) manag
 
 The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspired palette, sharp frames and terminal typography.
 
-**0.5.5** detects a live but stalled policy controller and can pause only the owned VPN bridge while another recovery operation holds the coordinator. Independent per-session safety holds also invalidate old GUI health results. Resource warnings, the Windows installer and verified updates remain included. See [component liveness and limits](docs/COMPONENT-LIVENESS.md): this release does not claim driver-enforced zero-leak VPN-only isolation.
+**0.5.6** prevents setup from overlapping startup/reconnect, verifies WireSock disconnection and preserves similarly named foreign profiles. A short 20-cycle recovery soak checks continuous direct traffic and resource growth. See [lifecycle debugging](docs/LIFECYCLE-DEBUG.md) and [component liveness and limits](docs/COMPONENT-LIVENESS.md). Driver-enforced VPN-only isolation and real WAN/AWG stability remain separate acceptance gates.
 
 [Download stable releases](https://github.com/IthilRosg/CITA-Route/releases) · [Report a bug](https://github.com/IthilRosg/CITA-Route/issues)
 

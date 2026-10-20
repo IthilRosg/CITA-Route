@@ -38,7 +38,8 @@ local keys. No user profile, secret, native VPN log or configuration is uploaded
 
 ## Real WireSock research
 
-`wiresock-lab.yml` fetches verified dependencies and independently validates a
+The separate `codex/wiresock-driver-lab` research branch contains
+`wiresock-lab.yml`; it is not part of this release. It fetches verified dependencies and independently validates a
 synthetic user-space WireGuard server before installing the pinned, signed
 WireSock SDK. The SDK is evaluation-only and is not redistributed in the client.
 The installer and uninstaller are scoped to the disposable hosted runner. A DNS
