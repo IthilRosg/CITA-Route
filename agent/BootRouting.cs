@@ -50,6 +50,14 @@ internal sealed class BootRouting
     }
     static string Hash(string path){using var input=File.OpenRead(path);return Convert.ToHexString(SHA256.HashData(input));}
     internal static string ConnectionSignature(AgentConfig config)=>Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(new{config.WireSockCliPath,config.WireSockSourceProfile,config.SourceEndpoint,config.ExpectedEgressIp}))));
+    internal static bool WireSockReady(int exitCode,string status)
+    {
+        if(exitCode!=0)return false;
+        const System.Text.RegularExpressions.RegexOptions options=System.Text.RegularExpressions.RegexOptions.IgnoreCase|System.Text.RegularExpressions.RegexOptions.CultureInvariant;
+        string text=status.Trim();
+        return System.Text.RegularExpressions.Regex.IsMatch(text,@"\A(?:Not connected|NotConnected|No connection|Disconnected|Не\s+подключено|Отключено|Нет\s+подключения)\z",options)||
+            System.Text.RegularExpressions.Regex.IsMatch(text,@"\A(?:Connected to|Подключено к серверу)\s+\S",options);
+    }
     static void State(BootSettings settings,string phase,string message,DateTime? boot=null)=>Storage.Write(StartupPaths.StateFile,new StartupState{
         SourceRoot=settings.SourceRoot,Enabled=settings.Enabled,Phase=phase,Message=message,UpdatedUtc=DateTime.UtcNow,BootUtc=boot??BootUtc});
     // Keep the caller's exclusive setup reservation alive across the native
@@ -204,7 +212,7 @@ internal sealed class BootRouting
                     try
                     {
                         var observation=await Tools.Run(_config.WireSockCliPath,new[]{"status"},4,linked.Token);
-                        if(observation.Code==0&&System.Text.RegularExpressions.Regex.IsMatch(observation.Text,@"(?i)Not connected|Disconnected|Connected to|Не\s+подключено|Отключено|Подключено к серверу"))break;
+                        if(WireSockReady(observation.Code,observation.Text))break;
                     }
                     catch(OperationCanceledException)when(linked.IsCancellationRequested){throw;}
                     catch(Exception ex)when(ex is IOException or OperationCanceledException or System.ComponentModel.Win32Exception){}
