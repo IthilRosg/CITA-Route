@@ -33,6 +33,8 @@ jobs:
           ./Verify-ReleaseUpdate.ps1
           ./Verify-ReleaseUpdate.ps1 -InstallerSource tests/fixtures/Install-Release-0.5.4.ps1
           ./Verify-Prepare.ps1
+          ./Verify-AgentPackage.ps1
+          ./Verify-OptimizationGate.ps1
           ./Verify-ConnectionHandoff.ps1
           ./Verify-InstallationGuard.ps1
           ./Verify-Lifecycle.ps1

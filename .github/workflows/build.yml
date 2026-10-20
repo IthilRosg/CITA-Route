@@ -43,6 +43,7 @@ jobs:
           ./Verify-ProfileSync.ps1
           ./Verify-RuleFeeds.ps1
           ./Verify-AgentPackage.ps1
+          ./Verify-OptimizationGate.ps1
           ./Verify-WireSockRecovery.ps1
           ./Verify-SessionRecovery.ps1
           ./Verify-ComponentLiveness.ps1
@@ -105,4 +106,7 @@ jobs:
             data/lifecycle-soak.json
             data/mixed-soak.json
             logs/udp-engine-test.json
+            logs/optimization-check-last.json
+            runtime/optimization-check-*/optimization-integration.log
+            runtime/optimization-*/result.json
           if-no-files-found: ignore
