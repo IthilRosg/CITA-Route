@@ -23,7 +23,7 @@
             <Button Content="КОМПАКТНЫЙ ВИД ↗" Click="CompactView_Click" FontSize="10" Margin="0,0,0,12" AutomationProperties.Name="Компактный вид"/>
             <Border BorderBrush="{StaticResource LineSoft}" BorderThickness="0,1,0,0" Padding="8,17,0,18"><StackPanel><TextBlock Text="ПОЛИТИКА МАРШРУТОВ" FontFamily="Consolas" FontSize="9" Foreground="{StaticResource Faint}"/><TextBlock Text="Ограниченные сайты → VPN" FontSize="11" Margin="0,10,0,0"/><TextBlock Text="Остальное → напрямую" FontSize="11" Foreground="{StaticResource Muted}" Margin="0,5,0,0"/></StackPanel></Border>
             <StackPanel Orientation="Horizontal" Margin="8,0,0,0"><Ellipse x:Name="SidebarDot" Width="6" Height="6" Fill="{StaticResource Muted}" Margin="0,0,8,0"/><TextBlock x:Name="SidebarState" Text="Отключено" FontFamily="Consolas" FontSize="11" Foreground="{StaticResource Muted}"/></StackPanel>
-            <TextBlock Text="CITA / X64 / 0.5.5" FontFamily="Consolas" FontSize="9" Foreground="{StaticResource Faint}" Margin="8,11,0,0"/>
+            <TextBlock Text="CITA / X64 / 0.5.7" FontFamily="Consolas" FontSize="9" Foreground="{StaticResource Faint}" Margin="8,11,0,0"/>
           </StackPanel>
           <Grid/>
         </DockPanel>
@@ -116,7 +116,7 @@
             <Border Style="{StaticResource Card}" Margin="0,0,0,16"><StackPanel>
               <TextBlock Text="Запуск Windows" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12"/>
               <CheckBox x:Name="StartOnSignInBox" Content="Открывать CITA Route в трее при входе в Windows"/>
-              <CheckBox x:Name="ConnectBeforeSignInBox" Content="Подключать маршрут до входа в Windows" Margin="0,12,0,0"/>
+              <CheckBox x:Name="ConnectBeforeSignInBox" Content="Подключать маршрут до входа в Windows · экспериментально" Margin="0,12,0,0"/>
               <TextBlock Text="Раннее подключение выполняет защищённая служба после готовности сети. Окно откроется после входа, если включён автозапуск. Wi-Fi с входом через браузер потребует входа пользователя." Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,10,0,0"/>
               <TextBlock Text="Сохраняется защищённая копия выбранного профиля и правил. После их изменения или обновления приложения примени настройку заново. Ручное отключение действует до следующего запуска Windows." Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0"/>
               <TextBlock x:Name="StartupStatusLabel" TextWrapping="Wrap" Margin="0,10,0,0"/>
