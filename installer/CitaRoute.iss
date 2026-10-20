@@ -199,3 +199,15 @@ procedure DeinitializeUninstall();
 begin
   ReleaseGuard();
 end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  StartupCommand: String;
+begin
+  if CurUninstallStep = usPostUninstall then begin
+    if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#ProductName}', StartupCommand) then begin
+      if CompareText(StartupCommand, '"' + ExpandConstant('{app}\client\RoutePilot.exe') + '" --startup') = 0 then
+        RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#ProductName}');
+    end;
+  end;
+end;

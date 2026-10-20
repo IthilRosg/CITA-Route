@@ -92,11 +92,14 @@ try{
     Assert (-not(Get-ItemProperty -LiteralPath $runKey -Name $label -ErrorAction SilentlyContinue)) 'Unchecking startup during reinstall did not remove it.'
     Assert ([IO.File]::ReadAllText((Join-Path $client 'force-vpn.txt')) -eq 'keep-user-rule.example') 'Repeat installation changed user rules.'
     Assert ([IO.File]::ReadAllText((Join-Path $client 'data\preferences.json')) -eq '{"fixture":true}') 'Repeat installation changed preferences.'
+    # Match enabling tray startup in the application after Setup's task was unchecked.
+    Set-ItemProperty -LiteralPath $runKey -Name $label -Value ('"'+(Join-Path $client 'RoutePilot.exe')+'" --startup')
     # Simulate an internal update: the old uninstaller must accept a newer product.json.
     [IO.File]::WriteAllText((Join-Path $client 'product.json'),'{"name":"CITA Route","version":"99.0.0"}')
     Assert ((Uninstall 'uninstall.log') -eq 0) 'Upgraded application could not be uninstalled.'
     Assert (-not(Test-Path -LiteralPath (Join-Path $client 'RoutePilot.exe'))) 'Uninstall left public application files.'
     Assert (-not(Test-Path -LiteralPath $registry)) 'Uninstall left its registry entry.'
+    Assert (-not(Get-ItemProperty -LiteralPath $runKey -Name $label -ErrorAction SilentlyContinue)) 'Uninstall left startup enabled from application settings.'
     foreach($link in $links){Assert (-not(Test-Path -LiteralPath $link)) 'Uninstall left a shortcut.'}
     Assert ([IO.File]::ReadAllText((Join-Path $client 'force-vpn.txt')) -eq 'keep-user-rule.example') 'Uninstall removed personal rules.'
     Assert ([IO.File]::ReadAllText((Join-Path $client 'private\fixture.txt')) -eq 'keep-local-data') 'Uninstall removed private local files.'
