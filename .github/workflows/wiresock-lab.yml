@@ -1,0 +1,25 @@
+name: Disposable real WireSock driver experiment
+on:
+  push:
+    branches: [codex/lifecycle-debug]
+  pull_request:
+    paths:
+      - 'tools/transport-lab/**'
+      - '.github/workflows/wiresock-lab.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  wiresock-fixture:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    env:
+      CITA_DISPOSABLE_WIRESOCK_LAB: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install pinned signed SDK on this disposable VM only
+        shell: powershell
+        run: ./tools/transport-lab/Setup-WireSockFixture.ps1
