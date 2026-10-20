@@ -72,7 +72,7 @@ if($Action -eq 'Start'){
     $proof.Starts++
     $id=[guid]::NewGuid().ToString('N')
     [IO.File]::WriteAllText((Join-Path $runtime 'session.json'),(@{id=$id;running=$true;bridgeReady=$true;bridgeGeneration=1}|ConvertTo-Json))
-    [IO.File]::WriteAllText((Join-Path $runtime 'session-health.json'),(@{sessionId=$id;bridgeGeneration=1;healthy=$true;updatedUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json))
+    [IO.File]::WriteAllText((Join-Path $runtime 'session-health.json'),(@{sessionId=$id;bridgeGeneration=1;healthy=(-not(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'data\fail-health.txt')));updatedUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json))
 }elseif($Action -eq 'Stop'){$proof.Stops++;[IO.File]::WriteAllText((Join-Path $runtime 'session.json'),'{"running":false}')}else{exit 2}
 [IO.File]::WriteAllText($proofFile,($proof|ConvertTo-Json))
 '@,(New-Object Text.UTF8Encoding($true)))
@@ -102,15 +102,37 @@ if($Action -eq 'Start'){
     & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
     $proof=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
     Assert ($proof.Starts -eq 1 -and $proof.Stops -eq 1) 'Cancelling network readiness touched the transport.'
+    # Stale journals from the previous Windows boot cannot block startup.
+    StopFixtureService;[IO.File]::WriteAllText($ready,'ready')
+    [IO.File]::WriteAllText((Join-Path $client 'runtime\session.json'),'{"running":true,"routerPid":2147483000,"bridgePid":2147483001}')
+    NewBoot;Start-Service -Name $serviceName;WaitPhase 'Connected'
+    & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
+    [IO.File]::WriteAllText((Join-Path $client 'runtime\session.json'),'{"running":false}')
+    # A failed independent health postcondition rolls back the attempted route.
+    StopFixtureService;[IO.File]::WriteAllText((Join-Path $bootClient 'data\fail-health.txt'),'fail');NewBoot
+    $before=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
+    Start-Service -Name $serviceName;WaitPhase 'NeedsAttention'
+    $after=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
+    Assert ($after.Starts -eq ($before.Starts+1) -and $after.Stops -eq ($before.Stops+1)) 'Failed startup health did not roll back exactly one attempted route.'
+    & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
+    Remove-Item -LiteralPath (Join-Path $bootClient 'data\fail-health.txt')
     # A client update invalidates the old protected startup snapshot.
     StopFixtureService;[IO.File]::WriteAllText((Join-Path $client 'product.json'),'{"version":"99.0.0"}');NewBoot
     Start-Service -Name $serviceName;WaitPhase 'NeedsAttention'
+    & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
+    # Code tampering cannot execute even when no profile/version changed.
+    StopFixtureService;Copy-Item -LiteralPath (Join-Path $root 'product.json') -Destination (Join-Path $client 'product.json')
+    [IO.File]::AppendAllText((Join-Path $bootClient 'ConnectionEnvironment.ps1'),"`r`n# tamper fixture")
+    $before=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
+    NewBoot;Start-Service -Name $serviceName;WaitPhase 'NeedsAttention'
+    $after=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
+    Assert ($after.Starts -eq $before.Starts) 'Changed startup code was executed.'
     & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
     & $agent boot-disable $client|Out-Null
     Assert ($LASTEXITCODE -eq 0 -and -not (ReadState).Enabled) 'Uninstall could not disable the inactive startup setting.'
     StopFixtureService;NewBoot;Start-Service -Name $serviceName;Start-Sleep -Seconds 2
     Assert ((ReadState).Phase -eq 'Disabled') 'Disabled startup connected after a new boot.'
-    Write-Output 'PASS: real SYSTEM/session-0 service, protected snapshot, delayed activation, one startup, disconnect, no same-boot reconnect, waiting cancellation, update invalidation and disable. Synthetic transport only; no VPN/driver/network mutation.'
+    Write-Output 'PASS: real SYSTEM/session-0 service, protected snapshot, delayed activation, one startup, disconnect, no same-boot reconnect, waiting cancellation, stale reboot journal, failed-health rollback, update/code invalidation and disable. Synthetic transport only; no VPN/driver/network mutation.'
 }finally{
     if($created){StopFixtureService;& sc.exe delete $serviceName|Out-Null}
     foreach($target in @($protected,$shared,$base)){

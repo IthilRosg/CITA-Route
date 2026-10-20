@@ -60,6 +60,7 @@ internal sealed class BootRouting
         NoLinks(root);NoLinks(StartupPaths.Client);
         var locks=new List<FileStream>();
         string stage=Path.Combine(StartupPaths.AgentDirectory,"startup-stage-"+Guid.NewGuid().ToString("N"));
+        string backup=Path.Combine(StartupPaths.AgentDirectory,"startup-backup-"+Guid.NewGuid().ToString("N"));
         try
         {
             foreach(string name in new[]{"setup.lock","connection-operation.lock","network-control.lock","installation-maintenance.lock","update-preparation.lock"})
@@ -92,9 +93,19 @@ internal sealed class BootRouting
             Storage.Write(Path.Combine(stage,"data","routing-policy.json"),policy);
             // The whole tree inherits the protected agent ACL: user read only.
             // Do not carry source ACLs, mutable binaries, journals or WG secrets.
-            if(Directory.Exists(StartupPaths.Client))Directory.Delete(StartupPaths.Client,true);
-            Directory.Move(stage,StartupPaths.Client);
-            Storage.Write(SettingsFile,settings);
+            if(Directory.Exists(StartupPaths.Client)){NoLinks(StartupPaths.Client);Directory.Move(StartupPaths.Client,backup);}
+            try
+            {
+                Directory.Move(stage,StartupPaths.Client);
+                Storage.Write(SettingsFile,settings);
+            }
+            catch
+            {
+                if(Directory.Exists(StartupPaths.Client)){NoLinks(StartupPaths.Client);Directory.Delete(StartupPaths.Client,true);}
+                if(Directory.Exists(backup)){NoLinks(backup);Directory.Move(backup,StartupPaths.Client);}
+                throw;
+            }
+            if(Directory.Exists(backup)){NoLinks(backup);Directory.Delete(backup,true);}
             // Enabling changes the next boot only, never the current connection.
             State(settings,"ReadyForBoot","Готово к следующему запуску Windows. Профиль и правила сохранены защищённой копией.");
         }
@@ -168,7 +179,13 @@ internal sealed class BootRouting
             State(settings,"Connected","Маршрут подключён до входа в Windows.");
         }
         catch(OperationCanceledException)when(linked.IsCancellationRequested){}
-        catch(Exception){State(settings,"NeedsAttention","Подключение при запуске не завершено. Открой CITA Route и проверь подключение.");}
+        catch(Exception)
+        {
+            bool restored=!_routeAttempted;
+            if(_routeAttempted)
+                try{restored=await Script("Stop",CancellationToken.None)==0;}catch{}
+            State(settings,restored?"NeedsAttention":"StopFailed",restored?"Подключение при запуске не завершено. Открой CITA Route и проверь подключение.":"Запуск не завершён, отключение не подтверждено. Проверь WireSock и CITA Route.");
+        }
         finally{_serial.Release();}
     }
     public void RequestStop()
