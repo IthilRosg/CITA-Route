@@ -121,6 +121,7 @@ try {
         elseif(Test-Path -LiteralPath $bootStatePath){Remove-Item -LiteralPath $bootStatePath -Force}
     }
     Remove-Item -LiteralPath (Join-Path $dataRoot 'guard-proof.json') -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $PSScriptRoot 'data\pending-agent-update.json') -Force -ErrorAction SilentlyContinue
     'Installed protected rescue service. No VPN was disconnected.' | Set-Content -LiteralPath $logPath -Encoding UTF8
 } catch {
     $_.Exception.ToString() | Set-Content -LiteralPath $logPath -Encoding UTF8
