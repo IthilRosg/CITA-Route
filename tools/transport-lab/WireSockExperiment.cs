@@ -75,8 +75,8 @@ internal static class WireSockExperiment
             using var port=new System.Net.Sockets.UdpClient(new IPEndPoint(IPAddress.Loopback,0));int wirePort=((IPEndPoint)port.Client.LocalEndPoint!).Port;port.Close();
             packets=new(wirePort);int endpointPort=packets.Port;
             string serverConfig=Path.Combine(fixture.Root,"server.json"),profile=Path.Combine(fixture.Root,"fixture.conf");
-            File.WriteAllText(serverConfig,JsonSerializer.Serialize(new{log=new{level="debug"},endpoints=new[]{new{type="wireguard",tag="wg",system=false,address=new[]{"10.202.0.1/24","198.18.123.1/32"},private_key=serverKeys.Private,listen_port=wirePort,
-                peers=new[]{new{public_key=clientKeys.Public,allowed_ips=new[]{"10.202.0.2/32"}},new{public_key=controlKeys.Public,allowed_ips=new[]{"10.202.0.3/32"}}}}},outbounds=new[]{new{type="direct",tag="echo"}},
+            File.WriteAllText(serverConfig,JsonSerializer.Serialize(new{log=new{level="debug"},endpoints=new[]{new{type="wireguard",tag="wg",system=false,bind_interface=loopback.Name,address=new[]{"10.202.0.1/24","198.18.123.1/32"},private_key=serverKeys.Private,listen_port=wirePort,
+                peers=new[]{new{public_key=clientKeys.Public,allowed_ips=new[]{"10.202.0.2/32"}},new{public_key=controlKeys.Public,allowed_ips=new[]{"10.202.0.3/32"}}}}},outbounds=new[]{new{type="direct",tag="echo",bind_interface=loopback.Name}},
                 route=new{rules=new[]{new{inbound=new[]{"wg"},action="route",outbound="echo",override_address="127.0.0.1"}}}}));
             // Only this benchmark /32 is routed/captured, never the runner's default route.
             File.WriteAllText(profile,$"[Interface]\nPrivateKey = {clientKeys.Private}\nAddress = 10.202.0.2/32\n[Peer]\nPublicKey = {serverKeys.Public}\nEndpoint = 127.0.0.1:{endpointPort}\nAllowedIPs = 198.18.123.1/32\n#@ws:AllowedApps = {fixture.Image}\nPersistentKeepalive = 1\n");
@@ -89,7 +89,7 @@ internal static class WireSockExperiment
             var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();int proxyPort=((IPEndPoint)listener.LocalEndpoint).Port;listener.Stop();
             string controlConfig=Path.Combine(fixture.Root,"control.json");
             File.WriteAllText(controlConfig,JsonSerializer.Serialize(new{log=new{level="error"},inbounds=new[]{new{type="socks",tag="socks",listen="127.0.0.1",listen_port=proxyPort}},
-                endpoints=new[]{new{type="wireguard",tag="control",system=false,address=new[]{"10.202.0.3/32"},private_key=controlKeys.Private,
+                endpoints=new[]{new{type="wireguard",tag="control",system=false,bind_interface=loopback.Name,address=new[]{"10.202.0.3/32"},private_key=controlKeys.Private,
                     peers=new[]{new{address="127.0.0.1",port=endpointPort,public_key=serverKeys.Public,allowed_ips=new[]{"198.18.123.1/32"}}}}},route=new{final="control"}}));
             control=Start(engine,"run","-c",controlConfig);_=control.StandardOutput.ReadToEndAsync();_=control.StandardError.ReadToEndAsync();await Task.Delay(500);
             using(var test=new System.Net.Sockets.TcpClient())
