@@ -1,3 +1,41 @@
+function Receive-SetupReservation([string]$Path,[int]$Owner,[long]$Handle) {
+    if(-not ('RoutePilotSetupNative' -as [type])){
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public static class RoutePilotSetupNative {
+    [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,int id);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool DuplicateHandle(IntPtr source,IntPtr handle,IntPtr target,out SafeFileHandle copy,uint access,bool inherit,uint options);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandle(SafeFileHandle handle,StringBuilder path,uint size,uint flags);
+    public static FileStream Receive(string expected,int owner,long handle) {
+        if(owner<=0||handle<=0)throw new IOException("Invalid setup reservation.");
+        IntPtr process=OpenProcess(0x0040,false,owner);
+        if(process==IntPtr.Zero)throw new IOException("Setup owner is no longer available.");
+        SafeFileHandle copy;
+        try{if(!DuplicateHandle(process,new IntPtr(handle),GetCurrentProcess(),out copy,0,false,2))throw new IOException("Setup reservation is no longer available.");}
+        finally{CloseHandle(process);}
+        try {
+            var path=new StringBuilder(32768);uint length=GetFinalPathNameByHandle(copy,path,(uint)path.Capacity,0);
+            string actual=path.ToString();if(actual.StartsWith(@"\\?\"))actual=actual.Substring(4);
+            if(length==0||length>=path.Capacity||!Path.GetFullPath(actual).Equals(Path.GetFullPath(expected),StringComparison.OrdinalIgnoreCase))throw new IOException("Wrong setup reservation.");
+            bool reserved=false;
+            try{using(var competing=File.Open(actual,FileMode.Open,FileAccess.ReadWrite,FileShare.ReadWrite|FileShare.Delete)){}}
+            catch(IOException ex){if(ex.HResult!=unchecked((int)0x80070020))throw;reserved=true;}
+            if(!reserved)throw new IOException("Setup reservation is not exclusive.");
+            return new FileStream(copy,FileAccess.ReadWrite);
+        }catch{copy.Dispose();throw;}
+    }
+}
+'@
+    }
+    return [RoutePilotSetupNative]::Receive([IO.Path]::GetFullPath($Path),$Owner,$Handle)
+}
+
 function Publish-AgentPackage {
     param([object[]]$Files,[string]$InstallRoot,[scriptblock]$Stop,[scriptblock]$Start,[scriptblock]$Prepare={},[scriptblock]$Restore={})
     $InstallRoot=[IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')

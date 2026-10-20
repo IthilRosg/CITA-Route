@@ -18,10 +18,10 @@ $logPath = Join-Path $PSScriptRoot 'logs\agent-install.log'
 . (Join-Path $PSScriptRoot 'ConnectionEnvironment.ps1')
 $setupReservation=$null
 try {
-    if($SetupOwner -le 0){
-        $setupReservation=[IO.File]::Open((Join-Path $PSScriptRoot 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','None')
-        $SetupOwner=$PID;$SetupHandle=$setupReservation.SafeFileHandle.DangerousGetHandle().ToInt64()
-    }
+    $setupPath=Join-Path $PSScriptRoot 'runtime\setup.lock'
+    if($SetupOwner -gt 0){$setupReservation=Receive-SetupReservation $setupPath $SetupOwner $SetupHandle}
+    else{$setupReservation=[IO.File]::Open($setupPath,'OpenOrCreate','ReadWrite','None')}
+    $SetupOwner=$PID;$SetupHandle=$setupReservation.SafeFileHandle.DangerousGetHandle().ToInt64()
     if(Get-StartupRouteState $PSScriptRoot){throw 'Disconnect the startup route before updating protected files.'}
     if (Get-Process -Name 'smart-router','vpn-bridge' -ErrorAction SilentlyContinue) { throw 'Stop the current RoutePilot engine before updating its protected files.' }
     $build = Join-Path $PSScriptRoot 'runtime\agent-build\RoutePilot.Agent.exe'

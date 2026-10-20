@@ -4,6 +4,14 @@ $fixture=Join-Path $PSScriptRoot ('runtime\package-test-'+[guid]::NewGuid().ToSt
 $installed=Join-Path $fixture 'Agent'
 New-Item -ItemType Directory -Path $installed -Force | Out-Null
 try {
+    $lockPath=Join-Path $fixture 'setup.lock'
+    $original=[IO.File]::Open($lockPath,'OpenOrCreate','ReadWrite','None');$retained=$null
+    try{
+        $retained=Receive-SetupReservation $lockPath $PID $original.SafeFileHandle.DangerousGetHandle().ToInt64()
+        $original.Dispose()
+        $blocked=$false;try{$competing=[IO.File]::Open($lockPath,'Open','ReadWrite','None');$competing.Dispose()}catch [IO.IOException]{$blocked=$true}
+        if(-not $blocked){throw 'The installer lost its setup reservation when the source owner closed its handle.'}
+    }finally{$original.Dispose();if($retained){$retained.Dispose()}}
     [IO.File]::WriteAllText((Join-Path $installed 'agent.txt'),'old')
     $source=Join-Path $fixture 'new.txt'; [IO.File]::WriteAllText($source,'new')
     $script:stops=0; $script:starts=0
