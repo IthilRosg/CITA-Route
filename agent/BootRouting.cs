@@ -58,6 +58,24 @@ internal sealed class BootRouting
         return System.Text.RegularExpressions.Regex.IsMatch(text,@"\A(?:Not connected|NotConnected|No connection|Disconnected|Не\s+подключено|Отключено|Нет\s+подключения)\z",options)||
             System.Text.RegularExpressions.Regex.IsMatch(text,@"\A(?:Connected to|Подключено к серверу)\s+\S",options);
     }
+    internal static bool RetryPolicyStartup(PolicyAckFailure failure,PolicyPulse pulse,OrdinarySession ended,DateTime began,DateTime now)
+    {
+        bool Fresh(DateTime value)=>value>=began&&value<=now.AddSeconds(2)&&value>=now.AddSeconds(-45);
+        return failure.Schema==1&&Guid.TryParseExact(failure.SessionId,"N",out _)&&!ended.Running&&
+            pulse.SessionId==failure.SessionId&&pulse.Phase=="Error"&&Fresh(failure.UpdatedUtc)&&Fresh(pulse.ProgressUtc)&&
+            (failure.Stage is "SocksHandshake" or "Proof")&&(failure.Code is "ConnectionRefused" or "TimedOut" or "LocalRouteRefused" or "OperationCanceledException" or "TaskCanceledException" or "EndOfStreamException");
+    }
+    static bool RetryPolicyStartup(DateTime began)
+    {
+        try
+        {
+            string runtime=Path.Combine(StartupPaths.Client,"runtime");
+            return RetryPolicyStartup(ComponentLiveness.Read<PolicyAckFailure>(Path.Combine(runtime,"policy-ack-failure.json")),
+                ComponentLiveness.Read<PolicyPulse>(Path.Combine(runtime,"policy-heartbeat.json")),
+                ComponentLiveness.Read<OrdinarySession>(Path.Combine(runtime,"session.json")),began,DateTime.UtcNow);
+        }
+        catch(Exception ex)when(ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException){return false;}
+    }
     static void State(BootSettings settings,string phase,string message,DateTime? boot=null)=>Storage.Write(StartupPaths.StateFile,new StartupState{
         SourceRoot=settings.SourceRoot,Enabled=settings.Enabled,Phase=phase,Message=message,UpdatedUtc=DateTime.UtcNow,BootUtc=boot??BootUtc});
     // Keep the caller's exclusive setup reservation alive across the native
@@ -230,9 +248,19 @@ internal sealed class BootRouting
             linked.Token.ThrowIfCancellationRequested();
             // The source may have changed while startup waited for networking.
             ValidateSnapshot();
-            State(settings,"Starting","Подключение WireSock, применение маршрутов и проверка HTTPS…");
-            _routeAttempted=true;
-            if(await Script("Start",linked.Token)!=0)throw new IOException("Startup connection did not pass its checks.");
+            for(int attempt=1;;attempt++)
+            {
+                linked.Token.ThrowIfCancellationRequested();ValidateSnapshot();
+                evidence.ConnectionAttempts=attempt;Storage.Write(evidenceFile,evidence);
+                State(settings,"Starting",attempt==1?"Подключение WireSock, применение маршрутов и проверка HTTPS…":"Повторная настройка маршрута после задержки сетевого движка…");
+                _routeAttempted=true;var began=DateTime.UtcNow;
+                if(await Script("Start",linked.Token)==0)break;
+                linked.Token.ThrowIfCancellationRequested();
+                // Only a fresh, matching policy timeout with completed cleanup
+                // permits one retry. Profile/exit/security failures remain final.
+                if(attempt>=2||!RetryPolicyStartup(began))throw new IOException("Startup connection did not pass its checks.");
+                await Task.Delay(2000,linked.Token);
+            }
             var connected=ComponentLiveness.Read<OrdinarySession>(Path.Combine(StartupPaths.Client,"runtime","session.json"));
             using(var health=System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(StartupPaths.Client,"runtime","session-health.json"))))
             {

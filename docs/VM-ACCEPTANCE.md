@@ -13,8 +13,11 @@ excluded from this report and release assets.
 - A real guest restart starts the protected service in session 0 before any
   interactive sign-in. The Russian CLI status `Нет подключения` now passes
   dependency readiness; the service attempts connection and safely rolls back
-  when the original UDP path fails. Successful VPN before sign-in is still **not
-  proved** by this observation.
+  when the original UDP path fails. A subsequent real restart through the
+  additional server port proves current healthy VPN before sign-in: changed
+  kernel boot, SYSTEM/session 0, zero interactive users at start and connection,
+  matching session/generation and fresh protected HTTPS. These are WTS
+  point-in-time observations, not continuous logon attestation.
 - The enabled test peer exists in the live AWG interface. Its public identity,
   server key, allowed address and protocol settings match the fresh panel export.
   On the original UDP path the server receives initiation packets and sends
@@ -34,6 +37,19 @@ excluded from this report and release assets.
   fresh temporary relay. A failed second cycle within one relay is excluded from
   product conclusions: the disposable relay intentionally pins the first source
   endpoint and rejects the new UDP source port after reconnecting.
+- With explicit authorization, the server now has a separate owned nftables NAT
+  table and enabled systemd unit for the already allowed alternative UDP port.
+  Existing AWG interfaces, keys, peers, original port and firewall tables were
+  preserved. The temporary rollback timer was armed before the live rule and
+  cancelled only after complete standalone WireSock/HTTPS cycles passed before
+  and after persistent installation. Server reboot persistence is configured,
+  not tested by rebooting the production server. This is operator configuration,
+  not client-side port scanning or proof that DPI caused the original failure.
+- Two consecutive complete CITA Route cycles through that native alternative
+  take 12.443 and 12.145 seconds, independently verify the selected exit and stop
+  correctly. One native-port test transiently failed a public HTTPS request;
+  the subsequent three complete standalone cycles all passed. Do not count that
+  failed request as a successful sample or hide it in the median.
 
 ## Fixes discovered during testing
 
@@ -52,12 +68,35 @@ success, relax identity checks or allow direct fallback. Retain a bounded reason
 code, attempts and generation in `logs/connection-health-last.json` after cleanup,
 and show distinct missing-exit/profile/status failures to the user.
 
+A repeated connection exposed an initial policy canary timeout: the worker
+previously exited after the first four-second engine acknowledgement deadline.
+Retry actual publication within one 25-second startup budget, preserving Stop,
+generation and proof checks. The loopback integration starts the real engine
+after the first canary deadline and requires a later actual acknowledgement;
+30 subsequent route transitions preserve the existing VPN TCP flow.
+
+Boot commands use primary-process completion without capturing inherited
+background pipes. A Windows PowerShell fixture retains a live owned child while
+requiring primary completion, exact exit status and cancellation. Background
+processes are cleaned by identity, not by a global process name.
+
+One real boot after delayed DHCP still exhausted initial policy confirmation;
+a repeat real boot connected successfully. Record bounded canary stage/reason
+and session identity. Allow at most one whole startup retry only for a fresh,
+matching transient policy failure after the session is fully stopped. Wrong
+exit, unknown/permission errors, stale/foreign records and active sessions do not
+authorize that retry. A disposable SYSTEM-service fixture covers exactly two
+attempts followed by health confirmation; independent failed health still rolls
+back one attempt. This mechanism is separate from the first successful real
+boot evidence and is not claimed as the proven cause of that earlier timeout.
+
 ## Limits and remaining acceptance
 
-These are short, isolated live-path tests through a temporary relay, not a soak
-test, a production endpoint change, a permanent DPI bypass, or proof of healthy
-VPN boot before sign-in. Long mixed traffic, Wi-Fi changes, sleep/resume,
-successful before-sign-in connectivity and native driver isolation remain open.
+The original reverse UDP path remains unresolved; the additional native server
+port provides a verified alternative. Healthy startup before sign-in is observed
+on the actual stand. Long mixed traffic, Wi-Fi changes, sleep/resume, repeated
+real boot stability and native driver isolation remain separate acceptance
+items. The alternative port is not a permanent DPI mechanism.
 
 The VM's own idle sleep interrupted tests. Resetting its sleep idle timer during
 diagnostic invocations avoids changing the permanent power plan. Guest checksum

@@ -29,5 +29,14 @@ internal static class StartupTests
         Assert(signature!=BootRouting.ConnectionSignature(config),"Profile change must invalidate the saved startup snapshot.");
         config.WireSockSourceProfile="A";config.ExpectedEgressIp="203.0.113.1";
         Assert(signature!=BootRouting.ConnectionSignature(config),"Egress change must invalidate the saved startup snapshot.");
+        var now=DateTime.UtcNow;var began=now.AddSeconds(-30);var id=Guid.NewGuid().ToString("N");
+        var failure=new PolicyAckFailure{SessionId=id,Stage="SocksHandshake",Code="ConnectionRefused",UpdatedUtc=now.AddSeconds(-1)};
+        var pulse=new PolicyPulse{SessionId=id,Phase="Error",ProgressUtc=now};var ended=new OrdinarySession();
+        Assert(BootRouting.RetryPolicyStartup(failure,pulse,ended,began,now),"Fresh acknowledged policy startup failure may retry after cleanup.");
+        ended.Running=true;Assert(!BootRouting.RetryPolicyStartup(failure,pulse,ended,began,now),"An active or incompletely cleaned session cannot retry.");ended.Running=false;
+        pulse.SessionId="other";Assert(!BootRouting.RetryPolicyStartup(failure,pulse,ended,began,now),"A different policy generation cannot authorize a retry.");pulse.SessionId=id;
+        pulse.Phase="Running";Assert(!BootRouting.RetryPolicyStartup(failure,pulse,ended,began,now),"Healthy publication followed by an egress failure cannot authorize a retry.");pulse.Phase="Error";
+        foreach(string reason in new[]{"AccessDenied","EgressMismatch","Unknown","ProofMismatch"}){failure.Code=reason;Assert(!BootRouting.RetryPolicyStartup(failure,pulse,ended,began,now),"A security or unknown failure is not startup warmup.");}failure.Code="ConnectionRefused";
+        foreach(var stamp in new[]{began.AddTicks(-1),now.AddSeconds(3),now.AddMinutes(-2)}){failure.UpdatedUtc=stamp;Assert(!BootRouting.RetryPolicyStartup(failure,pulse,ended,began,now),"Stale, unrelated and future-dated failures cannot authorize a retry.");}
     }
 }

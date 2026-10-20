@@ -42,6 +42,7 @@ continuous absence of logons. Unknown WTS information cannot count as zero.
 | --- | --- |
 | Restart with network ready | Real kernel boot changes; current route and HTTPS are ready before signing in. |
 | Russian WireSock CLI reports `Нет подключения` | Readiness advances to the connection attempt; a recognized disconnected status is not reported as a healthy tunnel. Unknown, transitioning and failed CLI responses keep waiting. |
+| Initial engine acknowledgement times out | Keep proof checks inside one bounded publication budget; one whole startup retry requires a fresh matching transient policy failure and completed cleanup. Unknown, security, exit and active-session failures never authorize it. |
 | Restart without network; network appears after >3 minutes | Waiting heartbeat advances, no attempted transport before readiness; then exactly one successful startup. |
 | Cancel waiting, then restore network | StoppedForBoot persists; no transport disconnect was issued merely for cancelling readiness. |
 | Manual Stop, restart only the service | No automatic reconnection during the same Windows boot. |

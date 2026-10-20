@@ -71,6 +71,14 @@ $proof.SessionZero=([Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0)
 if($Action -eq 'Start'){
     $proof.Starts++
     $id=[guid]::NewGuid().ToString('N')
+    $failOnce=Join-Path $PSScriptRoot 'data\fail-policy-once.txt'
+    if(Test-Path -LiteralPath $failOnce){
+        Remove-Item -LiteralPath $failOnce
+        [IO.File]::WriteAllText((Join-Path $runtime 'session.json'),'{"running":false}')
+        [IO.File]::WriteAllText((Join-Path $runtime 'policy-ack-failure.json'),(@{schema=1;sessionId=$id;route='direct';stage='SocksHandshake';code='ConnectionRefused';updatedUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json))
+        [IO.File]::WriteAllText((Join-Path $runtime 'policy-heartbeat.json'),(@{schema=1;sessionId=$id;phase='Error';progressUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json))
+        [IO.File]::WriteAllText($proofFile,($proof|ConvertTo-Json));exit 1
+    }
     [IO.File]::WriteAllText((Join-Path $runtime 'session.json'),(@{id=$id;running=$true;bridgeReady=$true;bridgeGeneration=1}|ConvertTo-Json))
     [IO.File]::WriteAllText((Join-Path $runtime 'session-health.json'),(@{sessionId=$id;bridgeGeneration=1;healthy=(-not(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'data\fail-health.txt')));updatedUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json))
 }elseif($Action -eq 'Stop'){$proof.Stops++;[IO.File]::WriteAllText((Join-Path $runtime 'session.json'),'{"running":false}')}else{exit 2}
@@ -141,6 +149,14 @@ if($Action -eq 'Start'){
     NewBoot;Start-Service -Name $serviceName;WaitPhase 'Connected'
     & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
     [IO.File]::WriteAllText((Join-Path $client 'runtime\session.json'),'{"running":false}')
+    # A single fresh, cleaned policy timeout can retry without requiring a login.
+    StopFixtureService;[IO.File]::WriteAllText((Join-Path $bootClient 'data\fail-policy-once.txt'),'once');NewBoot
+    $before=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
+    Start-Service -Name $serviceName;WaitPhase 'Connected'
+    $after=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
+    $evidence=Get-Content -LiteralPath (Join-Path $shared 'startup-boot-proof.json') -Raw|ConvertFrom-Json
+    Assert ($after.Starts -eq ($before.Starts+2) -and $after.Stops -eq $before.Stops -and $evidence.ConnectionAttempts -eq 2) 'A fresh cleaned policy startup failure did not receive exactly one checked retry.'
+    & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
     # A failed independent health postcondition rolls back the attempted route.
     StopFixtureService;[IO.File]::WriteAllText((Join-Path $bootClient 'data\fail-health.txt'),'fail');NewBoot
     $before=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json

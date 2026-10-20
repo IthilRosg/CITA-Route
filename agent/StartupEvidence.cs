@@ -16,6 +16,7 @@ internal sealed class StartupEvidence
     public int? InteractiveUsersAtConnection{get;set;}
     public string SessionId{get;set;}="";
     public int BridgeGeneration{get;set;}
+    public int ConnectionAttempts{get;set;}
     public string Version{get;set;}=typeof(StartupEvidence).Assembly.GetName().Version!.ToString(3);
     public static int? CountUsers()
     {
