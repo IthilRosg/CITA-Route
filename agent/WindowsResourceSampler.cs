@@ -244,6 +244,7 @@ public sealed class WindowsResourceSampler
                     else if(!known&&!_processUnavailable.Contains("CitaProcessCoverage"))_processUnavailable.Add("CitaProcessCoverage");
                 }
                 if(listed.Length>2048)_processUnavailable.Add("ProcessCoverageLimited");
+                if(all.Count(p=>p.CitaComponent)>16&&!_processUnavailable.Contains("CitaProcessCoverage"))_processUnavailable.Add("CitaProcessCoverage");
             }
             finally{foreach(var process in listed)process.Dispose();}
             _processes=all.Where(p=>p.CitaComponent).Concat(all.OrderByDescending(p=>p.PrivateBytes).Take(5)).Concat(all.OrderByDescending(p=>p.Handles).Take(5)).DistinctBy(p=>p.Pid).Take(16).ToList();
@@ -255,6 +256,7 @@ public sealed class WindowsResourceSampler
         foreach(var owner in owners)
         {
             var current=ReadProcess(owner.Pid,now,owner.Count);
+            if(!_identities.Observe(owner.Pid,current)&&!sample.Unavailable.Contains("CitaProcessCoverage"))sample.Unavailable.Add("CitaProcessCoverage");
             if(current!=null)selected[owner.Pid]=current;
             else{selected.Remove(owner.Pid);sample.UnresolvedOwners++;}
         }
