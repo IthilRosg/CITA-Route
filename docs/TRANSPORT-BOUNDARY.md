@@ -44,10 +44,14 @@ The native fixture:
    blocked. No PERMIT filter is installed. Existing firewall restrictions remain.
 4. Kills the installer process without cleanup, then verifies allowed traffic.
    Replaces the allowed interface with a different existing LUID and kills that
-   controller too. Existing guarded flows must stop, new ones must fail with
-   Windows access denied, and the receiver must get no guarded payload. The same
-   direct sockets must continue working.
-5. Tests an unconditional hold scoped to that same private application, then
+   controller too. Existing guarded flows must stop; new TCP must fail with
+   Windows access denied. UDP can report access denied or be silently dropped.
+   A UDP timeout alone is insufficient: the receiver must get no guarded payload,
+   an unguarded positive control must reach that same receiver, and restored
+   guarded traffic must work. The same direct sockets must continue working.
+5. Kills a replacement controller before its transaction commits; the previous
+   restriction must remain enforced. Tests an unconditional hold scoped to that
+   same private application, then
    restores the loopback restriction. New guarded flows must work again without
    restarting the direct sockets. No seamless revival of revoked TCP is claimed.
 6. Removes only filters whose deterministic fixture keys, sublayer, display label

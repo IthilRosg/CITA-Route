@@ -23,10 +23,11 @@ internal static class Program
                 Console.WriteLine("PASS: x64 native ABI, bounded fixture scope and distinct stable object identities. No filters installed.");return 0;
             }
             if(args.Length==4 && args[0] is "--peer" or "--once"){await Peer.Run(args,args[0]=="--once");return 0;}
-            if(args.Length==3 && args[0]=="--arm" && args[2] is "loopback" or "foreign" or "blocked")
+            if(args.Length==3 && args[0] is "--arm" or "--arm-uncommitted" && args[2] is "loopback" or "foreign" or "blocked")
             {
                 var fixture=Fixture.Load(args[1]);using var wfp=new Wfp();
-                wfp.Replace(fixture,args[2]=="loopback"?fixture.LoopbackLuid:args[2]=="foreign"?fixture.OtherLuid:null);
+                wfp.Replace(fixture,args[2]=="loopback"?fixture.LoopbackLuid:args[2]=="foreign"?fixture.OtherLuid:null,
+                    args[0]=="--arm-uncommitted"?()=>{Console.WriteLine("PREPARED");Thread.Sleep(Timeout.Infinite);}:null);
                 Console.WriteLine("ARMED");await Task.Delay(Timeout.Infinite);return 0;
             }
             if(args.Length==2 && args[0]=="--cleanup")
@@ -48,10 +49,10 @@ internal static class Program
         return value??throw new IOException("Fixture exited: "+await process.StandardError.ReadToEndAsync());
     }
     static void Stop(Process process){if(!process.HasExited){process.Kill();Assert(process.WaitForExit(4000),"Fixture process remained alive.");}}
-    static async Task Arm(Fixture fixture,string mode)
+    static async Task Arm(Fixture fixture,string mode,bool beforeCommit=false)
     {
-        using var controller=Start(Environment.ProcessPath!,"--arm",fixture.Root,mode);
-        try{Assert(await Line(controller)=="ARMED","Fixture policy did not commit.");}
+        using var controller=Start(Environment.ProcessPath!,beforeCommit?"--arm-uncommitted":"--arm",fixture.Root,mode);
+        try{Assert(await Line(controller)==(beforeCommit?"PREPARED":"ARMED"),"Fixture policy did not reach its checkpoint.");}
         finally{Stop(controller);}
         // The owner was killed without Dispose. Only persistent BFE objects can survive.
     }
@@ -64,6 +65,19 @@ internal static class Program
         finally{Stop(peer);}
     }
     static void Good(Pulse pulse,string context)=>Assert(pulse.Tcp&&pulse.Udp,context+": "+JsonSerializer.Serialize(pulse));
+    static void Denied(Pulse pulse)
+    {
+        // Windows can silently discard UDP after Send succeeds. A timeout alone
+        // is not proof: callers also check receiver counters and an unguarded
+        // positive control to that SAME receiver, before/after recovery.
+        Assert(!pulse.Tcp&&!pulse.Udp&&pulse.TcpError==10013&&pulse.UdpError is 10013 or -2,
+            "New flows were not denied as expected: "+JsonSerializer.Serialize(pulse));
+    }
+    static async Task Control(int family,Echo echo)
+    {
+        using var peer=new Peer(family==4?IPAddress.Loopback:IPAddress.IPv6Loopback,echo.TcpPort,echo.UdpPort);
+        await peer.Connect();Good(await peer.Check(),"Unguarded positive control to the same guarded receiver");
+    }
     static async Task Integration()
     {
         using(var identity=WindowsIdentity.GetCurrent())
@@ -94,15 +108,28 @@ internal static class Program
             {
                 long before=echoes[i*2].Received;var old=await Pulse(peers[i]);var fresh=await Once(fixture,i==0?4:6,echoes[i*2]);
                 Assert(!old.Tcp&&!old.Udp,"An established guarded flow bypassed the block.");
-                Assert(!fresh.Tcp&&!fresh.Udp&&fresh.TcpError==10013&&fresh.UdpError==10013,"New connections did not fail with Windows access denied: "+JsonSerializer.Serialize(fresh));
-                Assert(echoes[i*2].Received==before,"Guarded payload reached the receiver during block.");Good(await direct[i].Check(),"The same direct TCP/UDP sockets must survive");
+                Denied(fresh);
+                Assert(echoes[i*2].Received==before,"Guarded payload reached the receiver during block.");
+                await Control(i==0?4:6,echoes[i*2]);Good(await direct[i].Check(),"The same direct TCP/UDP sockets must survive");
             }
             checks.Add("Persistent interface restriction after controller death: existing/new IPv4/IPv6 TCP/UDP denied, no guarded payload, same direct sockets survive");
+            await Arm(fixture,"loopback",beforeCommit:true);
+            for(int i=0;i<2;i++)
+            {
+                long before=echoes[i*2].Received;
+                var fresh=await Once(fixture,i==0?4:6,echoes[i*2]);
+                Denied(fresh);Assert(echoes[i*2].Received==before,"Uncommitted replacement admitted guarded payload.");
+                await Control(i==0?4:6,echoes[i*2]);
+                Good(await direct[i].Check(),"Direct preserved during aborted policy replacement");
+            }
+            checks.Add("Controller death before transaction commit preserves the previous restriction");
             await Arm(fixture,"blocked");
             for(int i=0;i<2;i++)
             {
+                long before=echoes[i*2].Received;
                 var fresh=await Once(fixture,i==0?4:6,echoes[i*2]);
-                Assert(fresh.TcpError==10013&&fresh.UdpError==10013,"Unconditional fixture block did not deny new flows.");
+                Denied(fresh);Assert(echoes[i*2].Received==before,"Unconditional hold admitted guarded payload.");
+                await Control(i==0?4:6,echoes[i*2]);
                 Good(await direct[i].Check(),"Direct preserved under unconditional fixture block");
             }
             checks.Add("Unconditional application-specific hold blocks both address families without a broad network rule");
@@ -117,12 +144,15 @@ internal static class Program
         finally
         {
             // Stop test senders first. Persistent objects are removed only by exact ledger identity.
-            foreach(var peer in peers){Stop(peer);peer.Dispose();}
+            foreach(var peer in peers){try{Stop(peer);}finally{peer.Dispose();}}
             foreach(var peer in direct)peer.Dispose();foreach(var echo in echoes)echo.Dispose();
-            if(!cleanup){using var wfp=new Wfp();wfp.Remove(fixture);cleanup=true;}
+            string? cleanupError=null;
+            try{if(!cleanup){using var wfp=new Wfp();wfp.Remove(fixture);cleanup=true;}}
+            catch(Exception ex){cleanupError=ex.Message;}
             File.WriteAllText(receipt,JsonSerializer.Serialize(new{schema=1,passed,cleanup,checks,failure,checkedUtc=DateTime.UtcNow,
-                wiresockDriverTested=false,physicalInterfaceFailoverTested=false,perPacketIsolationProved=false},new JsonSerializerOptions{WriteIndented=true}));
+                cleanupError,wiresockDriverTested=false,physicalInterfaceFailoverTested=false,perPacketIsolationProved=false},new JsonSerializerOptions{WriteIndented=true}));
             Console.WriteLine("Receipt: "+receipt);
+            Assert(cleanup,"Fixture cleanup failed. Retain the ledger and use --cleanup on the isolated test machine: "+cleanupError);
         }
         foreach(string check in checks)Console.WriteLine("PASS: "+check);
         Console.WriteLine("LIMIT: loopback ALE/BFE experiment only. No production WireSock, adapter, route or client policy changed.");

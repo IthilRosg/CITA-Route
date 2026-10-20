@@ -23,7 +23,7 @@ internal sealed class Wfp : IDisposable
     }
     static void Check(uint code,string operation){if(code!=0)throw new Win32Exception(unchecked((int)code),operation+": 0x"+code.ToString("X8"));}
     internal static ulong Luid(uint index){Check(ConvertInterfaceIndexToLuid(index,out ulong luid),"Resolve interface LUID");return luid;}
-    internal void Replace(Fixture fixture,ulong? allowedLuid)
+    internal void Replace(Fixture fixture,ulong? allowedLuid,Action? beforeCommit=null)
     {
         fixture.Validate();
         Check(FwpmGetAppIdFromFileName0(fixture.Image,out IntPtr app),"Resolve fixture application ID");
@@ -57,6 +57,7 @@ internal sealed class Wfp : IDisposable
                     }
                     finally{Marshal.FreeHGlobal(conditions);conditions=IntPtr.Zero;}
                 }
+                beforeCommit?.Invoke();
             });
         }
         finally{Marshal.FreeHGlobal(luid);FwpmFreeMemory0(ref app);}
