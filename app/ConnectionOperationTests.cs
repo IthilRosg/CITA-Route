@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
@@ -46,6 +47,12 @@ public static class ConnectionOperationTests
                         for($i=0;$i -lt 50;$i++){Assert-ConnectionOperation;Start-Sleep -Milliseconds 100}
                     }
                     Assert-ConnectionOperation
+                    if(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'background.request')){
+                        $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('Start-Sleep -Seconds 20'))
+                        $child=Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile','-EncodedCommand',$encoded) -RedirectStandardOutput (Join-Path $PSScriptRoot 'background.out') -RedirectStandardError (Join-Path $PSScriptRoot 'background.err')
+                        $null=$child.Handle
+                        Write-JsonFile (Join-Path $PSScriptRoot 'background-owner.json') @{pid=$child.Id;startedUtc=$child.StartTime.ToUniversalTime().ToString('o')}
+                    }
                     Write-JsonFile (Join-Path $PSScriptRoot 'route.json') @{connected=($Action -eq 'Start');cleaned=($Action -eq 'Stop')}
                     Write-JsonFile (Join-Path $runtime 'session.json') @{running=($Action -eq 'Start');operationId=$OperationId}
                     exit 0
@@ -65,6 +72,23 @@ public static class ConnectionOperationTests
                 if(captured.RootElement.GetProperty("profile").GetString()!=profile || captured.RootElement.GetProperty("egress").GetString()!="")throw new Exception("Encoded setup values changed.");
             var stopped=await ConnectionOperation.Run(folder,"Stop",false);
             if(!stopped.Success)throw new Exception("A script's exit 0 bypassed the operation report.");
+            File.WriteAllText(Path.Combine(folder,"background.request"),"");
+            Task<ConnectionResult>? background=null;
+            try
+            {
+                background=ConnectionOperation.Run(folder,"Stop",false);
+                var completed=await background.WaitAsync(TimeSpan.FromSeconds(10));
+                if(!completed.Success)throw new Exception("A completed operation must not wait for a surviving background worker: "+completed.Message);
+                using var owner=JsonDocument.Parse(File.ReadAllText(Path.Combine(folder,"background-owner.json")));
+                using var child=Process.GetProcessById(owner.RootElement.GetProperty("pid").GetInt32());
+                if(child.HasExited)throw new Exception("The operation must finish while its background worker is still alive.");
+            }
+            finally
+            {
+                StopBackgroundFixture(folder);
+                if(background!=null)try{await background.WaitAsync(TimeSpan.FromSeconds(5));}catch{}
+                File.Delete(Path.Combine(folder,"background.request"));
+            }
             var failed=await ConnectionOperation.Run(folder,"Start",false,selected with{Profile="Failure"});
             if(failed.Success || failed.Applied || !failed.Message.Contains("Controlled setup failure"))throw new Exception("Setup failure was not preserved.");
             if(File.Exists(Path.Combine(folder,"handoff.active")) || !File.ReadAllText(Path.Combine(folder,"handoff-actions.txt")).EndsWith("Apply\n"))throw new Exception("Setup failure must leave the previous connection untouched.");
@@ -112,10 +136,25 @@ public static class ConnectionOperationTests
         }
         finally
         {
+            StopBackgroundFixture(folder);
             string allowed=Path.GetFullPath(Path.Combine(root,"runtime"))+Path.DirectorySeparatorChar;
             if(!Path.GetFullPath(folder).StartsWith(allowed,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Unsafe operation fixture cleanup.");
             if(Directory.Exists(folder))Directory.Delete(folder,true);
         }
+    }
+    static void StopBackgroundFixture(string folder)
+    {
+        string path=Path.Combine(folder,"background-owner.json");
+        if(!File.Exists(path))return;
+        using var owner=JsonDocument.Parse(File.ReadAllText(path));
+        try
+        {
+            using var child=Process.GetProcessById(owner.RootElement.GetProperty("pid").GetInt32());
+            if(!child.HasExited && child.ProcessName.Equals("powershell",StringComparison.OrdinalIgnoreCase) &&
+                child.StartTime.ToUniversalTime()==owner.RootElement.GetProperty("startedUtc").GetDateTime().ToUniversalTime())
+            {child.Kill();if(!child.WaitForExit(3000))throw new Exception("Owned fixture worker did not stop.");}
+        }
+        catch(ArgumentException){} // The bounded fixture may already have ended.
     }
     sealed class InlineProgress(Action<ConnectionProgress> action):IProgress<ConnectionProgress>{public void Report(ConnectionProgress value)=>action(value);}
 }

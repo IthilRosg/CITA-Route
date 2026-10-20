@@ -572,10 +572,23 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
     }while(-not $policyReady -and [DateTime]::UtcNow -lt $policyDeadline)
     if(-not $policyReady){throw 'The routing controller did not become ready.'}
     Write-ConnectionProgress 'Verifying'
-    $health=& (Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe') --session-health | ConvertFrom-Json
-    Assert-ConnectionOperation
-    if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
-    if(-not $health.healthy){throw 'The AWG2 data path did not pass HTTPS verification.'}
+    $healthAttempts=0
+    do{
+        $healthAttempts++
+        $health=& (Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe') --session-health | ConvertFrom-Json
+        Assert-ConnectionOperation
+        if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
+        $current=Read-JsonFile (Join-Path $runtime 'session.json')
+        if($current.id -ne $startedSession.id -or $current.bridgeGeneration -ne $startedSession.bridgeGeneration -or -not $current.running){throw 'Session changed during HTTPS verification.'}
+        if($health.healthy -or $healthAttempts -ge 2 -or $health.code -notin @('ControlHttpsUnavailable','StatusUnavailable','MissingExpectedEgress')){break}
+        Start-Sleep -Milliseconds 500
+    }while($true)
+    $healthCode=[string]$health.code
+    if($healthCode -notmatch '^[A-Za-z][A-Za-z0-9]{0,63}$'){$healthCode='UnknownHealthFailure'}
+    # Cleanup retires session-health.json. Keep only the bounded reason and
+    # session identity for diagnosis; no addresses, keys or raw CLI output.
+    try{Write-JsonFile (Join-Path $root 'logs\connection-health-last.json') @{schema=1;sessionId=$startedSession.id;bridgeGeneration=$startedSession.bridgeGeneration;healthy=[bool]$health.healthy;code=$healthCode;attempts=$healthAttempts;updatedUtc=[DateTime]::UtcNow.ToString('o')}}catch{}
+    if(-not $health.healthy){throw ('The AWG2 data path did not pass HTTPS verification. ['+$healthCode+']')}
     Write-JsonFile (Join-Path $runtime 'session-health.json') @{sessionId=$startedSession.id;bridgeGeneration=$startedSession.bridgeGeneration;healthy=$true;code='Verified';message=$health.message;updatedUtc=[DateTime]::UtcNow.ToString('o')}
     $startedSession.recovering=$false;$startedSession.bridgeReady=$true
     Write-JsonFile (Join-Path $runtime 'session.json') $startedSession
