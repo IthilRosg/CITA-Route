@@ -113,7 +113,15 @@ try {
     # This detects integration errors beyond testing the recovery decision table.
     [IO.File]::WriteAllText((Join-Path $runtime 'rules\russia_inside.srs'),'fixture')
     $script:tick=0;$script:launches=0;$script:scenario='Unknown'
-    function Test-PolicyProcess {$true}
+    function Test-PolicyProcess {return $script:scenario -notin @('HungPolicy','UnknownPolicy') -or $script:policyRecovered}
+    function Get-PolicyObservation {return @{state=$(if($script:scenario -eq 'UnknownPolicy'){'Unknown'}elseif($script:policyRecovered){'Healthy'}else{'Stale'})}}
+    function Repair-PolicyController($ExpectedId){Assert ($ExpectedId -eq 'session') 'Policy repair used a stale session';$script:policyRecovered=$true;$script:policyRepairs++;return $true}
+    function Invoke-EmergencyBridgePause($Session,[switch]$PersistHold){
+        if($script:scenario -eq 'RepairBusy'){
+            if($script:coordinatorBusy -and $script:bridgeRunning){$script:busyPauses++}
+            $script:bridgeRunning=$false
+        }else{Update-WireSockBridge $false $Session.id}
+    }
     function Start-Sleep {
         param($Seconds,$Milliseconds)
         $script:tick++
@@ -122,6 +130,9 @@ try {
             'Disconnected' {if($script:tick -le 3){'Disconnected'}else{'Connected'}}
             'Foreign' {'Foreign'}
             'BridgeBusy' {'Connected'}
+            'HungPolicy' {'Connected'}
+            'UnknownPolicy' {'Connected'}
+            'RepairBusy' {if($script:tick -le 3){'Disconnected'}else{'Unknown'}}
             default {'Disconnected'}
         }
         if($script:tick -ge 8 -or $script:scenario -eq 'Stop'){[IO.File]::WriteAllText((Join-Path $runtime 'stop.request'),'stop')}
@@ -131,11 +142,16 @@ try {
         $position=[Array]::IndexOf($ArgumentList,'-Action');$operation=$ArgumentList[$position+1]
         Assert ($operation -eq 'RepairVpn') 'Watch requested a full reconnect for a VPN-only problem.'
         $script:launches++
+        if($script:scenario -eq 'RepairBusy'){
+            $script:coordinatorBusy=$true;$script:bridgeRunning=$true
+            $process=[pscustomobject]@{HasExited=$false;ExitCode=0};$process|Add-Member ScriptMethod Dispose {};return $process
+        }
         $code=0;if($script:scenario -eq 'Busy'){$code=75}else{Repair-SessionVpn 'session'}
         $process=[pscustomobject]@{HasExited=$true;ExitCode=$code};$process|Add-Member ScriptMethod Dispose {};return $process
     }
-    foreach($scenario in @('Unknown','Disconnected','Foreign','Limit','Stop','Busy','BridgeBusy')){
+    foreach($scenario in @('Unknown','Disconnected','Foreign','Limit','Stop','Busy','BridgeBusy','HungPolicy','UnknownPolicy','RepairBusy')){
         $script:scenario=$scenario;$script:tick=0;$script:bridgeRunning=$true
+        $script:policyRecovered=$false;$script:policyRepairs=0;$script:busyPauses=0
         $script:coordinatorBusy=$scenario -eq 'BridgeBusy'
         if($script:coordinatorBusy){$script:bridgeRunning=$false}
         $beforeLaunches=$script:launches;$beforeConnects=$script:connects
@@ -144,13 +160,16 @@ try {
         Remove-Item -LiteralPath (Join-Path $runtime 'stop.request'),(Join-Path $runtime 'component-recovery.json') -ErrorAction SilentlyContinue
         if($scenario -eq 'Limit'){Write-JsonFile (Join-Path $runtime 'component-recovery.json') @{sessionId='session';RepairVpn=3}}
         Watch-Session 'fixture.ps1'
-        $expectedLaunches=if($scenario -in @('Disconnected','Busy')){1}else{0}
+        $expectedLaunches=if($scenario -in @('Disconnected','Busy','RepairBusy')){1}else{0}
         $expectedConnects=if($scenario -eq 'Disconnected'){1}else{0}
         Assert ($script:launches-$beforeLaunches -eq $expectedLaunches -and $script:connects-$beforeConnects -eq $expectedConnects) ('Watch recovery scope/budget failed: '+$scenario)
         Assert ((Read-JsonFile $path).routerPid -eq 10 -and $script:leases -eq 0) 'Watch replaced the router or leaked coordinator ownership.'
         if($scenario -eq 'Limit'){Assert ((Read-JsonFile (Join-Path $runtime 'watch-state.json')).phase -eq 'NeedsAttention') 'Persisted retry limit was ignored.'}
         if($scenario -eq 'Busy'){Assert ((Read-JsonFile (Join-Path $runtime 'component-recovery.json')).RepairVpn -eq 0) 'Coordinator rejection consumed a real VPN attempt.'}
         if($scenario -eq 'BridgeBusy'){Assert (-not(Test-Path -LiteralPath (Join-Path $runtime 'component-recovery.json'))) 'Coordinator rejection consumed a bridge attempt.'}
+        if($scenario -eq 'HungPolicy'){Assert ($script:policyRepairs -eq 1 -and (Read-JsonFile (Join-Path $runtime 'component-recovery.json')).Policy -eq 1) 'Watch did not repair the confirmed stale policy exactly once.'}
+        if($scenario -eq 'UnknownPolicy'){Assert ($script:policyRepairs -eq 0 -and (Read-JsonFile (Join-Path $runtime 'watch-state.json')).phase -eq 'NeedsAttention') 'Unverifiable policy metadata caused a blind process restart.'}
+        if($scenario -eq 'RepairBusy'){Assert ($script:busyPauses -gt 0 -and -not $script:bridgeRunning) 'A running component operation suppressed isolated bridge safety.'}
     }
     $script:coordinatorBusy=$false
     Remove-Item -LiteralPath (Join-Path $runtime 'stop.request')

@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace RoutePilot.Agent;
 
@@ -28,7 +29,7 @@ internal static class ComponentRecoveryTests
             }));}}
             catch(Exception ex)when(ex is SocketException or OperationCanceledException or ObjectDisposedException){}
         });
-        Process? router=null,bridge=null,restarted=null;var logs=new List<Task<string>>();bool success=false;int frames=0;
+        Process? router=null,bridge=null,restarted=null,guarded=null;var logs=new List<Task<string>>();bool success=false;int frames=0;
         int bridgePort=FreePort(),directPort=FreePort(),vpnPort=FreePort();
         string routerExe=Path.GetFullPath(Path.Combine(projectRoot,"runtime/smart-router.exe")),bridgeExe=Path.GetFullPath(Path.Combine(projectRoot,"runtime/vpn-bridge.exe"));
         Process Start(string image,string config)
@@ -76,6 +77,20 @@ internal static class ComponentRecoveryTests
             File.WriteAllText(Path.Combine(root,"recover.ps1"),script,new UTF8Encoding(true));
             await using var direct=await Open(directPort);await using var vpn=await Open(vpnPort);
             await Ping(direct);await Ping(vpn);frames++;
+            Task<Telemetry.WireSockSample> Connected()=>Task.FromResult(new Telemetry.WireSockSample{Profile="SmartRouting-AWG2",ConnectionState=3,Code="NoStatistics"});
+            Task<Telemetry.WireSockSample> Unknown()=>Task.FromResult(new Telemetry.WireSockSample{Code="Unavailable"});
+            Assert((await ComponentLiveness.PauseBridge(root,"old-session",1,bridgeExe,Unknown)).Code=="StaleSession"&&!bridge.HasExited,"A late safety action touched the new session.");
+            Assert((await ComponentLiveness.PauseBridge(root,"fixture",2,bridgeExe,Unknown)).Code=="StaleSession"&&!bridge.HasExited,"A late safety action touched another bridge generation.");
+            Assert((await ComponentLiveness.PauseBridge(root,"fixture",1,bridgeExe,Connected)).Code=="VpnConfirmed"&&!bridge.HasExited,"Fresh native confirmation did not supersede old CLI uncertainty.");
+            string sessionPath=Path.Combine(root,"runtime/session.json");var saved=JsonNode.Parse(File.ReadAllText(sessionPath))!;
+            var wrong=saved.DeepClone();wrong["bridgePid"]=router.Id;wrong["bridgeStartedUtc"]=router.StartTime.ToUniversalTime();Storage.Write(sessionPath,wrong);
+            Assert((await ComponentLiveness.PauseBridge(root,"fixture",1,bridgeExe,Unknown)).Code=="IdentityUnavailable"&&!router.HasExited,"Bridge safety touched the direct router.");
+            Storage.Write(sessionPath,saved);
+            using(var wrongTime=CheckedProcess.Open(new(bridge.Id,bridge.StartTime.ToUniversalTime().AddTicks(1),bridgeExe)))
+                Assert(wrongTime==null&&!bridge.HasExited,"Even a sub-millisecond process identity mismatch must not permit termination.");
+            using(var busy=File.Open(Path.Combine(root,"runtime/network-control.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None))
+                Assert((await ComponentLiveness.PauseBridge(root,"fixture",1,bridgeExe,Unknown)).Stopped,"A busy coordinator prevented isolated bridge protection.");
+            Assert(JsonNode.DeepEquals(saved,JsonNode.Parse(File.ReadAllText(sessionPath))),"Emergency protection overwrote the coordinator's session state.");
             await Update("Unknown");await bridge.WaitForExitAsync(budget.Token).WaitAsync(TimeSpan.FromSeconds(3));
             for(int i=0;i<30;i++){await Ping(direct);frames++;}
             bool refused=false;
@@ -89,8 +104,29 @@ internal static class ComponentRecoveryTests
             Assert(session.GetProperty("routerPid").GetInt32()==router.Id && session.GetProperty("id").GetString()=="fixture","Bridge repair reset session/router identity.");
             await using var restored=await Open(vpnPort);await Ping(restored);
             for(int i=0;i<30;i++){await Ping(direct);frames++;}
-            Assert(session.GetProperty("bridgeGeneration").GetInt32()==3,"Component generation did not advance on pause/resume.");success=true;
-            Console.WriteLine("PASS: same direct TCP socket survived bridge pause/resume; old VPN socket closed, new VPN refused while paused, restored VPN works. Loopback only.");
+            Assert(session.GetProperty("bridgeGeneration").GetInt32()==3,"Component generation did not advance on pause/resume.");
+            var owner=new PolicyOwner{Pid=restarted.Id,StartedUtc=restarted.StartTime.ToUniversalTime(),Path=bridgeExe,SessionId="fixture"};
+            Storage.Write(Path.Combine(root,"runtime/policy-process.json"),owner);
+            var at=DateTime.UtcNow;
+            Storage.Write(Path.Combine(root,"runtime/policy-heartbeat.json"),new PolicyPulse{InstanceId=Guid.NewGuid().ToString("N"),SessionId="fixture",Pid=owner.Pid,StartedUtc=owner.StartedUtc,Phase="Running",ProgressUtc=at,DeadlineUtc=at.AddSeconds(15),Sequence=1});
+            Assert(ComponentLiveness.StopStalePolicy(root,"fixture",bridgeExe).Code=="ProgressCurrent"&&!restarted.HasExited,"A responsive worker was stopped.");
+            Assert(ComponentLiveness.StopStalePolicy(root,"fixture",bridgeExe,at.AddSeconds(16)).Stopped,"A live but stale fixture worker was not stopped by its validated handle.");
+            await Ping(direct);frames++;
+            guarded=Start(bridgeExe,bridgeConfig);await using var finalVpn=await Open(vpnPort);await Ping(finalVpn);
+            var final=JsonNode.Parse(File.ReadAllText(sessionPath))!;final["bridgePid"]=guarded.Id;final["bridgeStartedUtc"]=guarded.StartTime.ToUniversalTime();final["bridgeGeneration"]=4;Storage.Write(sessionPath,final);
+            Storage.Write(Path.Combine(root,"runtime/session-health.json"),new{sessionId="fixture",bridgeGeneration=4,healthy=false,code="EgressMismatch",updatedUtc=DateTime.UtcNow});
+            string safetyPath=Path.Combine(root,"runtime/bridge-safety.json");
+            Storage.Write(safetyPath,new BridgeSafety{SessionId="fixture",BridgeGeneration=4,Hold=true,Code="EgressMismatch",UpdatedUtc=DateTime.UtcNow});
+            using(var busy=File.Open(Path.Combine(root,"runtime/network-control.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None))
+            using(var locked=File.Open(safetyPath,FileMode.Open,FileAccess.Read,FileShare.Read))
+            {
+                var paused=await ComponentLiveness.PauseBridge(root,"fixture",4,bridgeExe,Connected);
+                Assert(paused.Stopped&&!paused.HoldPersisted,"A locked safety file prevented bridge pause or falsely confirmed persistence.");
+            }
+            Assert(ComponentLiveness.Read<BridgeSafety>(Path.Combine(root,"runtime/bridge-safety.json")).Hold,"An exit mismatch must remain held after its original health result expires.");
+            await Update("Connected");Assert(!Storage.Read<JsonElement>(sessionPath).GetProperty("bridgeReady").GetBoolean(),"Automatic resume bypassed the independent per-session safety hold.");
+            await Ping(direct);frames++;success=true;
+            Console.WriteLine("PASS: same direct TCP socket survives bridge safety/repair and policy termination; established VPN sockets close, new VPN cannot fall back, busy coordinator cannot prevent a confirmed pause, native/generation/identity guards and persistent exit hold. Loopback only.");
         }
         finally
         {
@@ -106,7 +142,7 @@ internal static class ComponentRecoveryTests
                     else p.Dispose();
                 }
             }catch{}
-            foreach(var p in new[]{restarted,bridge,router}.Where(p=>p!=null)){try{if(!p!.HasExited){p.Kill(true);await p.WaitForExitAsync();}}catch{}p!.Dispose();}
+            foreach(var p in new[]{guarded,restarted,bridge,router}.Where(p=>p!=null)){try{if(!p!.HasExited){p.Kill(true);await p.WaitForExitAsync();}}catch{}p!.Dispose();}
             budget.Cancel();echo.Stop();await server;try{await Task.WhenAll(peers).WaitAsync(TimeSpan.FromSeconds(2));}catch{}
             File.WriteAllLines(Path.Combine(root,"logs/engines.log"),await Task.WhenAll(logs));
             Storage.Write(Path.Combine(root,"result.json"),new{success,directFrames=frames,network="loopback only; real sing-box; mocked WireSock/coordinator",finishedUtc=DateTime.UtcNow});Console.WriteLine("Component integration artifacts: "+root);

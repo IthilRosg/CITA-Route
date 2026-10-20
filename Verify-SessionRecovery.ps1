@@ -16,7 +16,12 @@ try {
     $self=Get-Process -Id $PID
     $identity=@{Pid=$PID;Path=$self.Path;StartedUtc=$self.StartTime.ToUniversalTime().ToString('o')}
     Write-JsonFile (Join-Path $runtime 'policy-process.json') $identity
-    if(-not(Test-PolicyProcess)){throw 'Valid controller process identity was rejected.'}
+    if(Test-PolicyProcess){throw 'An arbitrary executable was accepted as the protected controller.'}
+    $expected=Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe'
+    function Test-ComponentLiveness {$false} # Old-agent rollback without a progress contract.
+    function Get-Process {param($Id,$ErrorAction) [pscustomobject]@{Path=$expected;StartTime=$self.StartTime}}
+    $identity.Path=$expected;Write-JsonFile (Join-Path $runtime 'policy-process.json') $identity
+    if(-not(Test-PolicyProcess)){throw 'Valid protected controller process identity was rejected.'}
     $identity.StartedUtc=[DateTime]::UtcNow.AddDays(-1).ToString('o');Write-JsonFile (Join-Path $runtime 'policy-process.json') $identity
     if(Test-PolicyProcess){throw 'A reused PID must not count as a live controller.'}
     Write-Output 'PASS: capped recovery delays, stale generation rejection, recovering state preservation and controller PID/start-time/path identity.'
