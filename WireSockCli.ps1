@@ -1,4 +1,4 @@
-function Invoke-WireSock([string[]]$CliArguments) {
+﻿function Invoke-WireSock([string[]]$CliArguments) {
     $result = & $cli @CliArguments 2>&1
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0 -and $CliArguments[0] -eq 'disconnect') {
@@ -71,5 +71,14 @@ function Get-WireSockObservation {
 
 function Disconnect-ManagedWireSock {
     $observation=Get-WireSockObservation
-    if($observation.managed -and $observation.state -in @('Connected','Transitioning')){Invoke-WireSock @('disconnect') | Out-Null}
+    if($observation.state -in @('Disconnected','Foreign')){return}
+    if(-not $observation.managed -or $observation.state -notin @('Connected','Transitioning')){
+        throw 'Не удалось подтвердить отключение WireSock. Открой WireSock и проверь подключение.'
+    }
+    Invoke-WireSock @('disconnect') | Out-Null
+    # CLI exit 0 alone is not the postcondition. A late/manual profile switch is
+    # reported for attention; it must never trigger a second blind disconnect.
+    if((Get-WireSockObservation).state -ne 'Disconnected'){
+        throw 'WireSock не подтвердил отключение или сменил профиль. Проверь подключение в WireSock.'
+    }
 }
