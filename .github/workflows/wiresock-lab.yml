@@ -1,7 +1,5 @@
 name: Disposable real WireSock driver experiment
 on:
-  push:
-    branches: [codex/lifecycle-debug]
   pull_request:
     paths:
       - 'tools/transport-lab/**'
