@@ -146,6 +146,7 @@ public partial class MainWindow : Window
         _refreshing=true;
         try
         {
+            RefreshResourceState();
             var session=AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession());
             var cachedHealth=SessionHealthCache.Read(_root,session,DateTime.UtcNow);
             bool owned=session.Running && !string.IsNullOrWhiteSpace(session.Id) && _backend.EngineRunning(session);

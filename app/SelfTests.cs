@@ -17,6 +17,12 @@ public static class SelfTests
         Task.Run(()=>ConnectionOperationTests.Run(root)).GetAwaiter().GetResult();
         Task.Run(()=>UpdateWorkflowTests.Run(root)).GetAwaiter().GetResult();
         static void Assert(bool condition,string message){if(!condition)throw new Exception(message);}
+        Assert(ResourcePresentation.Summary(null).Contains("Нет свежего"),"Missing resource monitor must not claim system health or lost internet.");
+        var resourceNow=DateTime.UtcNow;
+        var resource=new RoutePilot.Resources.ResourceState{MonitorId=Guid.NewGuid().ToString("N"),UpdatedUtc=resourceNow,Sample=new(){ObservedUtc=resourceNow},
+            Issues=new(){new(){Key="ports-IPv4",Code="UdpPressure",Scope="IPv4",Level=2,ObservedUtc=resourceNow}}};
+        Assert(ResourcePresentation.Summary(resource).Contains("UDP"),"Resource warning is separate from VPN status.");
+        Assert(ResourcePresentation.Report(resource,resourceNow.AddMinutes(2)).StartsWith("Свежий отчёт недоступен"),"An expired report must not describe old counters as current.");
         string maintenance=Path.Combine(root,"runtime","maintenance-test-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(maintenance,"runtime"));
         try

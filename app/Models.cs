@@ -87,6 +87,9 @@ public sealed class Preferences
     public int RefreshSeconds{get;set;}=1;
     public bool AutoInstallUpdates{get;set;}=true;
     public string ViewMode{get;set;}="Compact";
+    public string ResourceNotificationKey{get;set;}="";
+    public DateTime ResourceNotificationAt{get;set;}
+    public int ResourceNotificationLevel{get;set;}
     public WindowPlacement CompactWindow{get;set;}=new(){Width=420,Height=490};
     public WindowPlacement AdvancedWindow{get;set;}=new(){Width=1360,Height=900};
 }

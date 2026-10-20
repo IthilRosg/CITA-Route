@@ -36,6 +36,8 @@ jobs:
           ./Verify-InstallationGuard.ps1
           ./Verify-ComponentRecovery.ps1 -Engine
           ./Verify-Optimization.ps1
+          & ./runtime/agent-build/RoutePilot.Agent.exe --resource-integration $PWD.Path
+          if($LASTEXITCODE -ne 0){throw 'Resource guard integration failed.'}
           if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}
           dotnet build tools/udp-reflector/Cita.UdpReflector.csproj -c Release
           if($LASTEXITCODE -ne 0){throw 'UDP reflector build failed.'}

@@ -30,7 +30,7 @@ public partial class App : Application
             catch (Exception ex) { File.WriteAllText(Path.Combine(root,"logs","app-self-test.log"),ex.ToString()); Shutdown(1); }
             return;
         }
-        bool render = e.Args.Contains("--render") || e.Args.Contains("--render-all") || e.Args.Contains("--render-update") || e.Args.Contains("--benchmark-ui");
+        bool render = e.Args.Contains("--render") || e.Args.Contains("--render-all") || e.Args.Contains("--render-update") || e.Args.Contains("--render-resources") || e.Args.Contains("--benchmark-ui");
         if (!render)
         {
             string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(root)))[..16];
@@ -73,12 +73,14 @@ public partial class App : Application
             for(int page=0;page<(e.Args.Contains("--render-all")?5:1);page++)
             {
                 if(e.Args.Contains("--compact"))window.PreviewConnection(page);else window.PreviewPage(page);
+                if(e.Args.Contains("--render-resources"))window.PreviewResourceWarning();
                 await System.Threading.Tasks.Task.Delay(150);
                 window.UpdateLayout();
                 var bitmap = new RenderTargetBitmap((int)window.ActualWidth,(int)window.ActualHeight,96,96,PixelFormats.Pbgra32);
                 bitmap.Render(window);
                 var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
                 string prefix=e.Args.Contains("--compact")?"routepilot-compact":"routepilot";
+                if(e.Args.Contains("--render-resources"))prefix+="-resources";
                 string name=page==0?prefix+".png":prefix+"-"+names[page]+".png";
                 using(var stream = File.Create(Path.Combine(root,"artifacts",name)))encoder.Save(stream);
             }

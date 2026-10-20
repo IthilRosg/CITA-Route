@@ -5,7 +5,7 @@ Part of the CITA family: [AWG CITA](https://github.com/IthilRosg/AWG-CITA) manag
 
 The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspired palette, sharp frames and terminal typography.
 
-**0.5.3** adds a regular Windows installer with Desktop/Start shortcuts and Windows Apps registration. Technical files live in a permanent application directory; the installed payload omits the redundant GUI copy. Automatic connection handoff and update disconnection from 0.5.2 remain included.
+**0.5.4** adds service-based observation of UDP port pressure, system memory and sustained CITA resource growth, with confirmed warnings and a local report. The Windows installer, Desktop/Start shortcuts and automatic connection/update handoff remain included.
 
 [Download stable releases](https://github.com/IthilRosg/CITA-Route/releases) · [Report a bug](https://github.com/IthilRosg/CITA-Route/issues)
 
@@ -49,6 +49,8 @@ Profile history contains only profile/CLI metadata in `%LOCALAPPDATA%\CITA\Route
 Mini statistics cover the current CITA session. Compact mode reads VPN RTT and estimated loss from the existing WireSock service; no additional server or tunnel is required. RTT reflects the last handshake, while loss is the engine's own estimate, whose window is not exposed. Unavailable/stale/foreign-profile data show dashes. The optional independent Direct/VPN UDP reflector measurement remains in advanced diagnostics. HTTPS failures and traffic totals are never converted into loss percentages. See [native tunnel statistics](docs/WIRESOCK-STATISTICS.md) and [optional UDP setup](docs/UDP-QUALITY.md).
 
 ## Scope and compatibility
+
+The [resource monitor](docs/RESOURCE-GUARD.md) runs in the existing protected rescue service after its normal update on the next Connect. It observes IPv4/IPv6 UDP ranges/reservations, actual bind availability, memory and process counters; the compact window warns only on confirmed issues. Settings and the compact menu offer a detailed report and Task Manager. Two distinct observations confirm pressure, and three reliable clear samples retire it. Tray alerts require the GUI to be running, including hidden to the tray. A stale/missing report is unavailable. This stage detects resource problems; it does not stop unrelated processes, reserve ports against other applications or restart the network. Long-duration workload/leak testing and integration with component recovery remain separate work.
 
 - Single-peer WireGuard / AmneziaWG profiles with an IPv4 endpoint, or a hostname resolving to IPv4. Compatibility depends on the installed WireSock version. AWG 3.1 compatibility is not yet validated; the panel's support does not imply client support.
 - Adaptive DPI probing covers IPv4 TCP/443; this does not guarantee UDP, QUIC, streaming, account or regional access. Some destinations stay pinned to VPN; manual rules take priority.
