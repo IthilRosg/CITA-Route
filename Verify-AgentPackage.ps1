@@ -19,6 +19,20 @@ try {
     if (-not $failed -or $script:starts -ne 2 -or [IO.File]::ReadAllText((Join-Path $installed 'agent.txt')) -ne 'old') { throw 'A failed startup must restore and restart the old package.' }
     Publish-AgentPackage @(@{Source=$source;Name='agent.txt'}) $installed $stop { $script:starts++ }
     if ([IO.File]::ReadAllText((Join-Path $installed 'agent.txt')) -ne 'new') { throw 'Valid package did not replace the old version.' }
+    # Snapshot preparation and shared state belong to the package transaction.
+    $state=Join-Path $fixture 'startup-state.json';[IO.File]::WriteAllText($state,'manual-stop')
+    $script:restores=0;$script:starts=0
+    $failed=$false
+    try{Publish-AgentPackage @(@{Source=$source;Name='agent.txt'}) $installed $stop { $script:starts++ } -Prepare {
+        [IO.File]::WriteAllText($state,'new-snapshot');throw 'Injected snapshot preparation failure.'
+    } -Restore { $script:restores++;[IO.File]::WriteAllText($state,'manual-stop') }}catch{$failed=$true}
+    if(-not $failed -or $script:restores -ne 1 -or $script:starts -ne 1 -or [IO.File]::ReadAllText($state) -ne 'manual-stop'){throw 'Failed snapshot preparation did not restore shared state before restarting the prior package.'}
+    $failed=$false;$script:starts=0
+    try{Publish-AgentPackage @(@{Source=$source;Name='agent.txt'}) $installed $stop {
+        $script:starts++;if($script:starts -eq 1){throw 'Injected service failure after snapshot commit.'}
+        if([IO.File]::ReadAllText($state) -ne 'manual-stop'){throw 'Old service restarted before state rollback.'}
+    } -Prepare {[IO.File]::WriteAllText($state,'new-snapshot')} -Restore {[IO.File]::WriteAllText($state,'manual-stop')}}catch{$failed=$true}
+    if(-not $failed -or $script:starts -ne 2 -or [IO.File]::ReadAllText($state) -ne 'manual-stop'){throw 'Failed activation did not roll back the committed snapshot state.'}
     Write-Output 'PASS: missing source preserves the running service; failed startup rolls back and restarts old files; successful promotion installs verified files.'
 } finally {
     $prefix=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'runtime\package-test-'))

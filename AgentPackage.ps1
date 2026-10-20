@@ -1,5 +1,5 @@
 function Publish-AgentPackage {
-    param([object[]]$Files,[string]$InstallRoot,[scriptblock]$Stop,[scriptblock]$Start)
+    param([object[]]$Files,[string]$InstallRoot,[scriptblock]$Stop,[scriptblock]$Start,[scriptblock]$Prepare={},[scriptblock]$Restore={})
     $InstallRoot=[IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
     $parent=Split-Path $InstallRoot
     $name=Split-Path $InstallRoot -Leaf
@@ -29,6 +29,7 @@ function Publish-AgentPackage {
         if (Test-Path -LiteralPath $InstallRoot) { Move-Item -LiteralPath $InstallRoot -Destination $backup; $saved=$true }
         Move-Item -LiteralPath $stage -Destination $InstallRoot
         $promoted=$true
+        & $Prepare
         & $Start
     } catch {
         $problem=$_
@@ -36,6 +37,7 @@ function Publish-AgentPackage {
             try {
                 if ($promoted) { & $Stop; Move-Item -LiteralPath $InstallRoot -Destination $failed }
                 if ($saved) { Move-Item -LiteralPath $backup -Destination $InstallRoot; $saved=$false }
+                & $Restore
                 if (Test-Path -LiteralPath $InstallRoot) { & $Start }
             } catch { throw ('Package update failed: '+$problem.Exception.Message+'; rollback failed: '+$_.Exception.Message) }
         }
@@ -43,5 +45,9 @@ function Publish-AgentPackage {
     } finally {
         if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     }
-    if ($saved) { Remove-Item -LiteralPath $backup -Recurse -Force }
+    if ($saved) {
+        # The package is committed. Cleanup must not make callers roll their
+        # selected profile back while the new protected service stays installed.
+        try{Remove-Item -LiteralPath $backup -Recurse -Force}catch{Write-Warning 'Protected update succeeded; its old backup could not be removed.'}
+    }
 }

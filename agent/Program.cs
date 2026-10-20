@@ -21,7 +21,12 @@ public static class Program
             }
             if(args.Length==1 && args[0]=="--statistics-self-test"){await WireSockStatisticsTests.Run();return 0;}
             if(args.Length==1 && args[0]=="--service"){NativeService.Run();return 0;}
-            if(args.Length==3 && args[0]=="--configure-boot"&&args[2] is "on" or "off"){BootRouting.Configure(Path.GetFullPath(args[1]),args[2]=="on");return 0;}
+            if(args.Length is 3 or 5 && args[0]=="--configure-boot"&&args[2] is "on" or "off" or "refresh")
+            {
+                int owner=args.Length==5?int.Parse(args[3]):0;long handle=args.Length==5?long.Parse(args[4]):0;
+                if(args.Length==5&&(owner<=0||handle<=0))throw new ArgumentException("Invalid setup reservation.");
+                BootRouting.Configure(Path.GetFullPath(args[1]),args[2]!="off",args[2]=="refresh",owner,handle);return 0;
+            }
             if(args.Length==1 && args[0]=="--configure-service-recovery"){ServiceRecovery.Configure();return 0;}
             if(args.Length==1 && args[0]=="--session-health"){var health=await NetworkProbe.CheckEgressDetailed();Console.WriteLine(JsonSerializer.Serialize(new{schema=2,healthy=health.Verified,code=health.Code,message=health.Message}));return 0;}
             if(args.Length==1 && args[0]=="--wiresock-statistics")
@@ -52,6 +57,7 @@ public static class Program
             if(args.Length==2 && args[0]=="--optimization-integration"){await PolicyEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--component-integration"){await ComponentRecoveryTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--component-soak"){await ComponentRecoveryTests.Run(Path.GetFullPath(args[1]),20);return 0;}
+            if(args.Length==3 && args[0]=="--mixed-soak"){await ComponentRecoveryTests.Run(Path.GetFullPath(args[1]),20,int.Parse(args[2]));return 0;}
             if(args.Length==2 && args[0]=="--udp-integration"){await UdpEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--resource-integration"){await ResourceGuardTests.Integration(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--optimization-live"){await PolicyLiveCheck.Run(Path.GetFullPath(args[1]));return 0;}

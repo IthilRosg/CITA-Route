@@ -80,7 +80,7 @@ try{
         if($LASTEXITCODE -ne 0){throw 'Connection preparation failed. Check WireSock transparent mode and the selected profile.'}
         Write-ConnectionProgress 'Installing'
         # Run separately: a failed installer must not exit this transaction before rollback.
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Install-Agent.ps1') -UserSid $UserSid -UserProfile $UserProfile
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Install-Agent.ps1') -UserSid $UserSid -UserProfile $UserProfile -SetupOwner $PID -SetupHandle $setupLock.SafeFileHandle.DangerousGetHandle().ToInt64()
         if($LASTEXITCODE -ne 0){throw 'Protected service installation failed. See logs/agent-install.log.'}
     }catch{
         if($null -ne $old){[IO.File]::WriteAllText($settingsPath,$old,(New-Object Text.UTF8Encoding($false)))}else{Remove-Item -LiteralPath $settingsPath -Force -ErrorAction SilentlyContinue}

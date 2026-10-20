@@ -1,4 +1,4 @@
-﻿param([string]$UserSid,[string]$UserProfile,[ValidateSet('Unchanged','Enable')][string]$BootStartup='Unchanged')
+﻿param([string]$UserSid,[string]$UserProfile,[ValidateSet('Unchanged','Enable')][string]$BootStartup='Unchanged',[int]$SetupOwner=0,[long]$SetupHandle=0)
 $ErrorActionPreference = 'Stop'
 if (-not $UserSid) { $UserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
 if (-not $UserProfile) { $UserProfile = $env:USERPROFILE }
@@ -16,7 +16,12 @@ $logPath = Join-Path $PSScriptRoot 'logs\agent-install.log'
 . (Join-Path $PSScriptRoot 'AgentPackage.ps1')
 . (Join-Path $PSScriptRoot 'FileStorage.ps1')
 . (Join-Path $PSScriptRoot 'ConnectionEnvironment.ps1')
+$setupReservation=$null
 try {
+    if($SetupOwner -le 0){
+        $setupReservation=[IO.File]::Open((Join-Path $PSScriptRoot 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','None')
+        $SetupOwner=$PID;$SetupHandle=$setupReservation.SafeFileHandle.DangerousGetHandle().ToInt64()
+    }
     if(Get-StartupRouteState $PSScriptRoot){throw 'Disconnect the startup route before updating protected files.'}
     if (Get-Process -Name 'smart-router','vpn-bridge' -ErrorAction SilentlyContinue) { throw 'Stop the current RoutePilot engine before updating its protected files.' }
     $build = Join-Path $PSScriptRoot 'runtime\agent-build\RoutePilot.Agent.exe'
@@ -29,6 +34,17 @@ try {
         }
     }
     $service = Get-Service -Name RoutePilotRescue -ErrorAction SilentlyContinue
+    $bootSettingsPath=Join-Path $installRoot 'startup-settings.json'
+    $refreshBoot=$false
+    if(Test-Path -LiteralPath $bootSettingsPath){
+        $oldBoot=Read-JsonFile $bootSettingsPath
+        if($oldBoot.Enabled){
+            if([IO.Path]::GetFullPath($oldBoot.SourceRoot).TrimEnd('\') -ne [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')){throw 'Enabled startup belongs to another client installation.'}
+            $refreshBoot=$true
+        }
+    }
+    $bootStatePath=Join-Path $dataRoot 'startup-state.json'
+    $oldBootState=if(Test-Path -LiteralPath $bootStatePath){[IO.File]::ReadAllBytes($bootStatePath)}else{$null}
     if ($service) {
         $image = (Get-CimInstance Win32_Service -Filter "Name='RoutePilotRescue'").PathName
         if ($image -ne ('"' + (Join-Path $installRoot 'RoutePilot.Agent.exe') + '" --service')) { throw 'The service name belongs to a different installation.' }
@@ -73,18 +89,30 @@ try {
             New-Service -Name RoutePilotRescue -BinaryPathName ('"' + (Join-Path $installRoot 'RoutePilot.Agent.exe') + '" --service') -DisplayName 'RoutePilot Rescue' -StartupType Automatic | Out-Null
         }
         $configureResult = & (Join-Path $installRoot 'RoutePilot.Agent.exe') --configure-service-recovery 2>&1
+        $configureCode=$LASTEXITCODE
         if($BootStartup -eq 'Enable'){Set-Service -Name RoutePilotRescue -StartupType Automatic}
-        if ($LASTEXITCODE -ne 0) { throw ('Could not configure service restart recovery: ' + ($configureResult -join ' ')) }
+        if ($configureCode -ne 0) { throw ('Could not configure service restart recovery: ' + ($configureResult -join ' ')) }
         Start-Service -Name RoutePilotRescue
         (Get-Service -Name RoutePilotRescue).WaitForStatus('Running',[TimeSpan]::FromSeconds(15))
+    } -Prepare {
+        if($BootStartup -eq 'Enable' -or $refreshBoot){
+            $mode=if($BootStartup -eq 'Enable'){'on'}else{'refresh'}
+            & (Join-Path $installRoot 'RoutePilot.Agent.exe') --configure-boot $PSScriptRoot $mode $SetupOwner $SetupHandle
+            if($LASTEXITCODE -ne 0){throw 'Could not prepare protected startup. The previous protected installation will be restored.'}
+        }
+    } -Restore {
+        if($null -ne $oldBootState){
+            $temporary=$bootStatePath+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
+            try{
+                [IO.File]::WriteAllBytes($temporary,$oldBootState)
+                if(Test-Path -LiteralPath $bootStatePath){[IO.File]::Replace($temporary,$bootStatePath,[NullString]::Value)}else{[IO.File]::Move($temporary,$bootStatePath)}
+            }finally{Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue}
+        }
+        elseif(Test-Path -LiteralPath $bootStatePath){Remove-Item -LiteralPath $bootStatePath -Force}
     }
     Remove-Item -LiteralPath (Join-Path $dataRoot 'guard-proof.json') -Force -ErrorAction SilentlyContinue
-    if($BootStartup -eq 'Enable'){
-        & (Join-Path $installRoot 'RoutePilot.Agent.exe') --configure-boot $PSScriptRoot on
-        if($LASTEXITCODE -ne 0){throw 'Could not prepare protected startup. Disconnect CITA Route and verify the selected profile.'}
-    }
     'Installed protected rescue service. No VPN was disconnected.' | Set-Content -LiteralPath $logPath -Encoding UTF8
 } catch {
     $_.Exception.ToString() | Set-Content -LiteralPath $logPath -Encoding UTF8
     exit 1
-}
+}finally{if($setupReservation){$setupReservation.Dispose()}}

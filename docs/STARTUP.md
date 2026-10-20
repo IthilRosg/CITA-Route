@@ -39,8 +39,21 @@ does not issue a VPN disconnect. Unknown/failed stop remains visible and blocks
 parallel starts. Removing the client disables its inactive startup setting;
 an active startup route must be stopped first. A missing source installation,
 changed client version, changed protected connection settings or changed code
-hash prevents using an old snapshot. Apply the startup setting again after
-changing profiles/rules or updating the app. Captive portals and Wi-Fi that
+hash prevents using an old snapshot. Profile Apply now refreshes an enabled
+snapshot inside the same elevated protected-package transaction. Both the old
+package (including its snapshot/settings) and shared startup state are restored
+before restarting the previous service if preparation or activation fails. An
+exclusive setup handle is duplicated from its live owner and its final Windows
+path checked; no unconditional skip-lock flag is accepted. Manual Stop remains
+suppressed for the current boot after a refresh.
+
+After an app update, a normal GUI launch refreshes enabled startup with one
+Windows confirmation and the saved profile. This also detects Setup upgrades,
+which do not have a pending-update journal. Cancellation/failure leaves startup
+pending and suppresses further automatic prompts for that client version;
+Connect or applying startup explicitly retries. Launching to tray at sign-in
+never automatically raises UAC. Changes to personal rules still require applying
+the startup setting again. Captive portals and Wi-Fi that
 requires an interactive sign-in can require manual action after Windows logon.
 
 `Verify-Startup.ps1` is a development-only disposable Windows integration test.

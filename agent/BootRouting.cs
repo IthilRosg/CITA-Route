@@ -2,6 +2,9 @@ using System.Diagnostics;
 using System.Net.NetworkInformation;
 using System.Security.Principal;
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
 using Cita.Startup;
 
 namespace RoutePilot.Agent;
@@ -49,7 +52,32 @@ internal sealed class BootRouting
     internal static string ConnectionSignature(AgentConfig config)=>Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(new{config.WireSockCliPath,config.WireSockSourceProfile,config.SourceEndpoint,config.ExpectedEgressIp}))));
     static void State(BootSettings settings,string phase,string message,DateTime? boot=null)=>Storage.Write(StartupPaths.StateFile,new StartupState{
         SourceRoot=settings.SourceRoot,Enabled=settings.Enabled,Phase=phase,Message=message,UpdatedUtc=DateTime.UtcNow,BootUtc=boot??BootUtc});
-    internal static void Configure(string root,bool enabled)
+    // Keep the caller's exclusive setup reservation alive across the native
+    // process boundary. A Boolean 'skip locks' would race other setup operations.
+    static FileStream BorrowSetup(string root,int owner,long handle)
+    {
+        using var process=OpenProcess(0x0040,false,owner);
+        if(process.IsInvalid||!DuplicateHandle(process,new IntPtr(handle),GetCurrentProcess(),out var copy,0,false,2))
+            throw new IOException("The setup reservation is no longer available.");
+        try
+        {
+            var path=new StringBuilder(32768);
+            uint length=GetFinalPathNameByHandle(copy,path,(uint)path.Capacity,0);
+            string actual=path.ToString();if(actual.StartsWith(@"\\?\"))actual=actual[4..];
+            if(length==0||length>=path.Capacity||!Same(actual,Child(root,"runtime\\setup.lock")))throw new IOException("Wrong setup reservation.");
+            bool reserved=false;
+            try{using var competing=File.Open(actual,FileMode.Open,FileAccess.ReadWrite,FileShare.ReadWrite|FileShare.Delete);}
+            catch(IOException ex)when(ex.HResult==unchecked((int)0x80070020)){reserved=true;}
+            if(!reserved)throw new IOException("The setup reservation is not exclusive.");
+            return new FileStream(copy,FileAccess.ReadWrite);
+        }
+        catch{copy.Dispose();throw;}
+    }
+    [DllImport("kernel32.dll",SetLastError=true)] static extern SafeProcessHandle OpenProcess(uint access,bool inherit,int id);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool DuplicateHandle(SafeProcessHandle source,IntPtr handle,IntPtr target,out SafeFileHandle copy,uint access,bool inherit,uint options);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandle(SafeFileHandle handle,StringBuilder path,uint size,uint flags);
+    internal static void Configure(string root,bool enabled,bool refresh=false,int setupOwner=0,long setupHandle=0)
     {
         using var identity=WindowsIdentity.GetCurrent();
         if(!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)||!Same(AppContext.BaseDirectory,StartupPaths.AgentDirectory))throw new UnauthorizedAccessException("Configure startup using the protected installed agent and Windows confirmation.");
@@ -65,7 +93,8 @@ internal sealed class BootRouting
         string backup=Path.Combine(StartupPaths.AgentDirectory,"startup-backup-"+Guid.NewGuid().ToString("N"));
         try
         {
-            foreach(string name in new[]{"setup.lock","connection-operation.lock","network-control.lock","installation-maintenance.lock","update-preparation.lock"})
+            if(setupOwner>0)locks.Add(BorrowSetup(root,setupOwner,setupHandle));
+            else foreach(string name in new[]{"setup.lock","connection-operation.lock","network-control.lock","installation-maintenance.lock","update-preparation.lock"})
                 locks.Add(new FileStream(Child(root,Path.Combine("runtime",name)),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None));
             string session=Child(root,"runtime\\session.json");
             if(File.Exists(session)&&ComponentLiveness.Read<OrdinarySession>(session).Running)throw new InvalidOperationException("Disconnect CITA Route before configuring startup.");
@@ -112,7 +141,10 @@ internal sealed class BootRouting
             }
             if(Directory.Exists(backup)){NoLinks(backup);Directory.Delete(backup,true);}
             // Enabling changes the next boot only, never the current connection.
-            State(settings,"ReadyForBoot","Готово к следующему запуску Windows. Профиль и правила сохранены защищённой копией.");
+            bool stopped=refresh&&prior.Owns(root)&&prior.Phase=="StoppedForBoot"&&StartupPaths.SameBoot(prior.BootUtc,BootUtc);
+            State(settings,stopped?"StoppedForBoot":"ReadyForBoot",stopped?
+                "Профиль автоподключения обновлён. Ручное отключение сохранено до следующего запуска Windows.":
+                "Готово к следующему запуску Windows. Профиль и правила сохранены защищённой копией.");
         }
         finally
         {

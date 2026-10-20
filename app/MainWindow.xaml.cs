@@ -91,7 +91,7 @@ public partial class MainWindow : Window
         _timer.Interval=TimeSpan.FromSeconds(_preferences.RefreshSeconds);
         _timer.Tick+=async(_,_)=>{UpdateTelemetryInterval();await RefreshAsync();};
         _timer.Tick+=async(_,_)=>{if((DateTime.UtcNow-_lastUpdateCheck).TotalHours>=6)await CheckUpdatesAsync();};
-        Loaded+=async(_,_)=>{if(render)return;await DiscoverConnectionsAsync();UpdateTelemetryInterval();_timer.Start();await RefreshAsync();_=CheckUpdatesAsync();};
+        Loaded+=async(_,_)=>{if(render)return;await DiscoverConnectionsAsync();UpdateTelemetryInterval();_timer.Start();await RefreshAsync();await RefreshStartupAfterUpdateAsync();_=CheckUpdatesAsync();};
         Closing+=OnClosing;
         NavOverview.IsChecked=true;
         LocationChanged+=(_,_)=>CapturePlacement();SizeChanged+=(_,_)=>CapturePlacement();

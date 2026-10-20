@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Security.Cryptography;
 
 namespace RoutePilot.Agent;
 
@@ -13,11 +14,12 @@ internal static class ComponentRecoveryTests
     static void Assert(bool value,string message){if(!value)throw new IOException(message);}
     static int FreePort(){var listener=new TcpListener(IPAddress.Loopback,0);listener.Start();int port=((IPEndPoint)listener.LocalEndpoint).Port;listener.Stop();return port;}
     static string Quote(string value)=>"'"+value.Replace("'","''")+"'";
-    internal static async Task Run(string projectRoot,int soakCycles=0)
+    internal static async Task Run(string projectRoot,int soakCycles=0,int soakSeconds=0)
     {
+        Assert(soakCycles is >=0 and <=20 && (soakSeconds==0||soakSeconds is >=30 and <=900),"Invalid bounded soak budget.");
         string root=Path.Combine(Path.GetFullPath(projectRoot),"runtime","component-engine-"+Guid.NewGuid().ToString("N"));
         foreach(string name in new[]{"runtime","logs","data"})Directory.CreateDirectory(Path.Combine(root,name));
-        using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(soakCycles>0?150:45));
+        using var budget=new CancellationTokenSource(TimeSpan.FromSeconds((soakCycles>0?150:45)+soakSeconds));
         var echo=new TcpListener(IPAddress.Loopback,0);echo.Start();int echoPort=((IPEndPoint)echo.LocalEndpoint).Port;
         var peers=new ConcurrentBag<Task>();
         var server=Task.Run(async()=>
@@ -43,13 +45,13 @@ internal static class ComponentRecoveryTests
         {
             for(int i=0;;i++){try{return await PolicyTransport.Socks(port,"127.0.0.1",echoPort,budget.Token);}catch(Exception ex)when(waitForReady && i<60 && ex is SocketException or IOException){await Task.Delay(40,budget.Token);}}
         }
-        async Task Ping(Stream stream)
+        async Task Exchange(Stream stream,byte[] request,byte[] reply)
         {
             using var timeout=CancellationTokenSource.CreateLinkedTokenSource(budget.Token);timeout.CancelAfter(1500);
-            byte[] request=Encoding.ASCII.GetBytes("CITA-ECHO-"+Guid.NewGuid().ToString("N")),reply=new byte[request.Length];
             await stream.WriteAsync(request,timeout.Token);await stream.ReadExactlyAsync(reply,timeout.Token);
             Assert(reply.SequenceEqual(request),"Established direct TCP socket lost/corrupted data.");
         }
+        Task Ping(Stream stream){byte[] request=Encoding.ASCII.GetBytes("CITA-ECHO-"+Guid.NewGuid().ToString("N"));return Exchange(stream,request,new byte[request.Length]);}
         async Task Update(string state)
         {
             File.WriteAllText(Path.Combine(root,"observation.txt"),state);
@@ -131,15 +133,35 @@ internal static class ComponentRecoveryTests
                 Assert(soakCycles<=20,"Soak process/port budgets are capped.");
                 File.Delete(safetyPath);File.Delete(Path.Combine(root,"runtime/session-health.json"));
                 await using var continuous=await Open(directPort);
+                await using var video=await Open(directPort);
+                byte[] udpKey=RandomNumberGenerator.GetBytes(32);
+                await using var directReflector=new UdpReflectorFixture(udpKey,true);
+                await using var vpnReflector=new UdpReflectorFixture(udpKey,true);
                 using var trafficStop=CancellationTokenSource.CreateLinkedTokenSource(budget.Token);
-                long continuousFrames=0,maxRttMs=0;Exception? trafficFailure=null;
+                long continuousFrames=0,maxRttMs=0,videoBytes=0,vpnBytes=0,udpSent=0,udpReceived=0;Exception? trafficFailure=null;
+                var elapsed=Stopwatch.StartNew();
                 var traffic=Task.Run(async()=>
                 {
                     try{while(!trafficStop.IsCancellationRequested){var timer=Stopwatch.StartNew();await Ping(continuous);Interlocked.Increment(ref continuousFrames);maxRttMs=Math.Max(maxRttMs,timer.ElapsedMilliseconds);await Task.Delay(20,trafficStop.Token);}}
                     catch(OperationCanceledException)when(trafficStop.IsCancellationRequested){}
                     catch(Exception ex){trafficFailure=ex;}
                 });
+                var videoTraffic=Task.Run(async()=>
+                {
+                    byte[] payload=RandomNumberGenerator.GetBytes(32768),reply=new byte[payload.Length];
+                    try{while(!trafficStop.IsCancellationRequested){await Exchange(video,payload,reply);Interlocked.Add(ref videoBytes,payload.Length);await Task.Delay(40,trafficStop.Token);}}
+                    catch(OperationCanceledException)when(trafficStop.IsCancellationRequested){}
+                    catch(Exception ex){trafficFailure=ex;}
+                });
+                var voiceTraffic=Task.Run(async()=>
+                {
+                    try{while(!trafficStop.IsCancellationRequested){var round=await UdpQualityProbe.Run(directPort,directReflector.Endpoint,udpKey,trafficStop.Token,20,500);
+                        Assert(round.Sent==10&&round.Received==8,"Direct UDP did not preserve the fixture's controlled 20% loss during mixed traffic.");Interlocked.Add(ref udpSent,round.Sent);Interlocked.Add(ref udpReceived,round.Received);}}
+                    catch(OperationCanceledException)when(trafficStop.IsCancellationRequested){}
+                    catch(Exception ex){trafficFailure=ex;}
+                });
                 router.Refresh();long startBytes=router.PrivateMemorySize64;int startHandles=router.HandleCount;
+                TimeSpan startCpu=router.TotalProcessorTime;long peakBytes=startBytes;int peakHandles=startHandles;
                 try
                 {
                     for(int cycle=0;cycle<soakCycles;cycle++)
@@ -147,19 +169,39 @@ internal static class ComponentRecoveryTests
                         await Update("Connected");var current=Storage.Read<JsonElement>(sessionPath);
                         restarted?.Dispose();restarted=Process.GetProcessById(current.GetProperty("bridgePid").GetInt32());
                         await using var flow=await Open(vpnPort);await Ping(flow);
+                        if(soakSeconds>0)
+                        {
+                            var round=await UdpQualityProbe.Run(vpnPort,vpnReflector.Endpoint,udpKey,budget.Token,20,500);
+                            Assert(round.Received==8,"Mixed traffic did not reach the restored VPN UDP path.");
+                            var connected=Stopwatch.StartNew();byte[] payload=RandomNumberGenerator.GetBytes(32768),reply=new byte[payload.Length];
+                            while(connected.Elapsed.TotalSeconds<soakSeconds/(2.0*soakCycles))
+                            {await Exchange(flow,payload,reply);vpnBytes+=payload.Length;await Task.Delay(40,budget.Token);}
+                        }
                         var paused=await ComponentLiveness.PauseBridge(root,"fixture",current.GetProperty("bridgeGeneration").GetInt32(),bridgeExe,Unknown);
                         Assert(paused.Stopped,"Repeated bridge pause failed.");
                         bool cycleRefused=false;try{await using var rejected=await Open(vpnPort,false);await Ping(rejected);}catch(Exception ex)when(ex is IOException or SocketException or OperationCanceledException){cycleRefused=true;}
                         Assert(cycleRefused,"Repeated paused VPN route fell back instead of refusing a new flow.");
+                        if(soakSeconds>0)
+                        {
+                            int before=vpnReflector.Requests;bool udpRefused=false;
+                            try{udpRefused=(await UdpQualityProbe.Run(vpnPort,vpnReflector.Endpoint,udpKey,budget.Token,20,500)).Received==0;}
+                            catch(Exception ex)when(ex is IOException or SocketException){udpRefused=true;}
+                            Assert(udpRefused&&vpnReflector.Requests==before,"Paused VPN UDP reached the reflector through a fallback path.");
+                            await Task.Delay(TimeSpan.FromSeconds(soakSeconds/(2.0*soakCycles)),budget.Token);
+                        }
                         await Ping(direct);Assert(trafficFailure==null,"Continuous direct traffic failed during recovery.");
                         Assert(Storage.Read<JsonElement>(sessionPath).GetProperty("routerPid").GetInt32()==router.Id,"Soak replaced the direct router.");
+                        router.Refresh();peakBytes=Math.Max(peakBytes,router.PrivateMemorySize64);peakHandles=Math.Max(peakHandles,router.HandleCount);
+                        if(soakSeconds>0)Console.WriteLine($"Mixed soak: cycle {cycle+1}/{soakCycles}, elapsed {elapsed.Elapsed.TotalSeconds:F0}s, direct frames {continuousFrames}, video bytes {videoBytes}, UDP {udpReceived}/{udpSent}.");
                     }
                 }
-                finally{trafficStop.Cancel();await traffic;}
+                finally{trafficStop.Cancel();await Task.WhenAll(traffic,videoTraffic,voiceTraffic);}
                 router.Refresh();long deltaBytes=router.PrivateMemorySize64-startBytes;int deltaHandles=router.HandleCount-startHandles;
                 Assert(trafficFailure==null&&continuousFrames>0,"The persistent direct soak stream did not survive.");
+                Assert(videoBytes>0&&udpSent>0,"Mixed TCP/UDP traffic was not exercised.");
                 Assert(deltaHandles<64&&deltaBytes<128L*1024*1024,"Repeated recovery caused excessive short-run router resource growth.");
-                Storage.Write(Path.Combine(projectRoot,"data","lifecycle-soak.json"),new{schema=1,cycles=soakCycles,continuousFrames,maxRttMs,routerPrivateBytesDelta=deltaBytes,routerHandlesDelta=deltaHandles,passed=true,
+                Storage.Write(Path.Combine(projectRoot,"data",soakSeconds>0?"mixed-soak.json":"lifecycle-soak.json"),new{schema=2,cycles=soakCycles,durationSeconds=elapsed.Elapsed.TotalSeconds,continuousFrames,maxRttMs,videoBytes,vpnBytes,udpSent,udpReceived,routerPeakPrivateBytes=peakBytes,routerPeakHandles=peakHandles,
+                    routerCpuPercent=100*(router.TotalProcessorTime-startCpu).TotalSeconds/elapsed.Elapsed.TotalSeconds/Environment.ProcessorCount,routerPrivateBytesDelta=deltaBytes,routerHandlesDelta=deltaHandles,passed=true,
                     loopbackOnly=true,wireSockMocked=true,longTermStabilityProved=false,checkedUtc=DateTime.UtcNow});
                 Console.WriteLine($"PASS: {soakCycles} bridge recovery cycles; same direct TCP stream delivered {continuousFrames} frames, max RTT {maxRttMs} ms, router private bytes delta {deltaBytes}, handles delta {deltaHandles}. Short loopback soak only.");
             }

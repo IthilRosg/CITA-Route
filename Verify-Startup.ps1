@@ -80,6 +80,23 @@ if($Action -eq 'Start'){
     [IO.File]::WriteAllText((Join-Path $protected 'agent-config.json'),($config|ConvertTo-Json))
     & $agent --configure-boot $client on
     Assert ($LASTEXITCODE -eq 0) 'Protected startup snapshot could not be configured.'
+    $reservation=[IO.File]::Open((Join-Path $client 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','None')
+    $wrong=[IO.File]::Open((Join-Path $client 'runtime\wrong.lock'),'OpenOrCreate','ReadWrite','None')
+    try{
+        & $agent --configure-boot $client refresh
+        Assert ($LASTEXITCODE -ne 0) 'A parallel setup reservation was ignored.'
+        & $agent --configure-boot $client refresh $PID $wrong.SafeFileHandle.DangerousGetHandle().ToInt64()
+        Assert ($LASTEXITCODE -ne 0) 'The snapshot accepted an unrelated file handle.'
+        & $agent --configure-boot $client refresh $PID $reservation.SafeFileHandle.DangerousGetHandle().ToInt64()
+        Assert ($LASTEXITCODE -eq 0) 'Snapshot refresh could not retain the existing exclusive setup reservation.'
+        $locked=$false;try{$extra=[IO.File]::Open((Join-Path $client 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','None');$extra.Dispose()}catch [IO.IOException]{$locked=$true}
+        Assert $locked 'Borrowing a setup reservation released the original lock.'
+    }finally{$reservation.Dispose();$wrong.Dispose()}
+    $sharedLock=[IO.File]::Open((Join-Path $client 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','ReadWrite')
+    try{
+        & $agent --configure-boot $client refresh $PID $sharedLock.SafeFileHandle.DangerousGetHandle().ToInt64()
+        Assert ($LASTEXITCODE -ne 0) 'A shared file handle was mistaken for an exclusive setup reservation.'
+    }finally{$sharedLock.Dispose()}
     Assert ((ReadState).Phase -eq 'ReadyForBoot') 'Enabling startup must defer until the next boot.'
     Assert (-not(Test-Path -LiteralPath (Join-Path $bootClient 'private\fixture.conf'))) 'Startup snapshot copied a VPN configuration.'
     New-Service -Name $serviceName -BinaryPathName ('"'+$agent+'" --service') -StartupType Automatic|Out-Null;$created=$true
@@ -128,6 +145,16 @@ if($Action -eq 'Start'){
     $after=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
     Assert ($after.Starts -eq $before.Starts) 'Changed startup code was executed.'
     & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
+    # Refresh a changed profile without undoing this boot's manual Stop.
+    StopFixtureService
+    $config.WireSockSourceProfile='fixture-next'
+    [IO.File]::WriteAllText((Join-Path $protected 'agent-config.json'),($config|ConvertTo-Json))
+    & $agent --configure-boot $client refresh
+    Assert ($LASTEXITCODE -eq 0 -and (ReadState).Phase -eq 'StoppedForBoot') 'Refreshing the profile lost the manual-stop decision.'
+    $selected=Get-Content -LiteralPath (Join-Path $bootClient 'data\connection.json') -Raw|ConvertFrom-Json
+    Assert ($selected.SourceProfile -eq 'fixture-next') 'Refreshed snapshot kept the previous profile.'
+    Start-Service -Name $serviceName;Start-Sleep -Seconds 2
+    Assert ((ReadState).Phase -eq 'StoppedForBoot') 'Profile refresh reconnected in the same Windows boot.'
     & $agent boot-disable $client|Out-Null
     Assert ($LASTEXITCODE -eq 0 -and -not (ReadState).Enabled) 'Uninstall could not disable the inactive startup setting.'
     StopFixtureService;NewBoot;Start-Service -Name $serviceName;Start-Sleep -Seconds 2

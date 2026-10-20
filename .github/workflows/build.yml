@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      soak_minutes:
+        description: Additional mixed TCP/UDP loopback soak, 0 or 1-15 minutes
+        required: false
+        default: '0'
 permissions:
   contents: read
 concurrency:
@@ -12,7 +17,7 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -50,6 +55,16 @@ jobs:
       - name: Verify startup service in SYSTEM session 0 with synthetic transport
         shell: powershell
         run: ./Verify-Startup.ps1
+      - name: Extended simultaneous TCP and UDP recovery soak
+        if: github.event_name == 'workflow_dispatch' && inputs.soak_minutes != '0'
+        shell: powershell
+        env:
+          SOAK_MINUTES: ${{ inputs.soak_minutes }}
+        run: |
+          $minutes=0
+          if(-not [int]::TryParse($env:SOAK_MINUTES,[ref]$minutes) -or $minutes -lt 1 -or $minutes -gt 15){throw 'Soak duration must be 1-15 minutes.'}
+          & ./runtime/agent-build/RoutePilot.Agent.exe --mixed-soak $PWD.Path ($minutes*60)
+          if($LASTEXITCODE -ne 0){throw 'Extended mixed recovery soak failed.'}
       - name: Build optional UDP reflector
         shell: powershell
         run: dotnet build tools/udp-reflector/Cita.UdpReflector.csproj -c Release
@@ -79,3 +94,12 @@ jobs:
             dist/CITA-Route-*-win-x64-setup.exe
             dist/SHA256SUMS.txt
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reliability-evidence
+          path: |
+            data/lifecycle-soak.json
+            data/mixed-soak.json
+            logs/udp-engine-test.json
+          if-no-files-found: ignore
