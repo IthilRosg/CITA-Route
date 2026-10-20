@@ -32,8 +32,10 @@ if($clients.Count -ne 1){throw ('Expected one SDK reference client; discovered '
 $entry=@(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -like '*WireSock*'})
 $uninstallers=@($entry|ForEach-Object {if($_.UninstallString -match '^"([^"]+\.exe)"'){$Matches[1]}elseif($_.UninstallString -match '^([^\r\n]+\.exe)$'){$Matches[1]}}|Where-Object {Test-Path -LiteralPath $_ -PathType Leaf}|Select-Object -Unique)
 if($uninstallers.Count -ne 1){throw 'Expected one owned WireSock SDK uninstaller.'}
-$installRoot=Split-Path $uninstallers[0]
-if(-not $clients[0].FullName.StartsWith(($installRoot.TrimEnd('\')+'\'),[StringComparison]::OrdinalIgnoreCase)){throw 'SDK client and uninstaller have different roots.'}
+$installRoots=@($roots|Where-Object {$clients[0].FullName.StartsWith(($_.FullName.TrimEnd('\')+'\'),[StringComparison]::OrdinalIgnoreCase)})
+if($installRoots.Count -ne 1){throw 'SDK client has no unique installed package root.'}
+$installRoot=$installRoots[0].FullName
+if(-not $uninstallers[0].StartsWith(($installRoot.TrimEnd('\')+'\'),[StringComparison]::OrdinalIgnoreCase)){throw 'SDK client and uninstaller have different package roots.'}
 $dnsReady=$false;try{$dnsReady=@(Resolve-DnsName github.com -Type A -DnsOnly -QuickTimeout -ErrorAction Stop).Count -gt 0}catch{}
 $record=@{Schema=1;Cli=$clients[0].FullName;Version=$clients[0].VersionInfo.FileVersion;InstallerVerified=$true;DriverTrafficVerified=$false;
     InstallRoot=$installRoot;Uninstaller=$uninstallers[0];UninstallerHash=(Get-FileHash -LiteralPath $uninstallers[0]).Hash;DnsReadyAfterInstall=$dnsReady}
