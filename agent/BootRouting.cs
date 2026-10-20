@@ -163,7 +163,10 @@ internal sealed class BootRouting
     async Task<int> Script(string action,CancellationToken cancellation)
     {
         string executable=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","powershell.exe");
-        var result=await Tools.Run(executable,new[]{"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",Path.Combine(StartupPaths.Client,"SmartRouting.ps1"),"-Action",action},125,cancellation);
+        // These commands intentionally leave Watch/policy children alive. Their
+        // inherited output handles must not hold completion open after the
+        // primary script exits. Script diagnostics already use owned log files.
+        var result=await Tools.Run(executable,new[]{"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",Path.Combine(StartupPaths.Client,"SmartRouting.ps1"),"-Action",action},125,cancellation,captureOutput:false);
         // Native command text can contain profile details. Publish fixed UI states only.
         return result.Code;
     }

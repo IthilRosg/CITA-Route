@@ -17,7 +17,7 @@ internal static class PolicyEngineTests
         string root=Path.Combine(Path.GetFullPath(projectRoot),"runtime","optimization-"+Guid.NewGuid().ToString("N"));
         foreach(string part in new[]{"runtime/rules","private","data","logs"})Directory.CreateDirectory(Path.Combine(root,part));
         using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(110));
-        Process? engine=null;PolicyPublisher? publisher=null;Task? controller=null;Task<string>? stderr=null,stdout=null;
+        Process? engine=null;PolicyPublisher? publisher=null;Task? controller=null,initialPublication=null;Task<string>? stderr=null,stdout=null;
         var failures=new ConcurrentQueue<string>();var latencies=new List<long>();int connections=0;bool success=false;
         var ports=new PolicyPorts{Api=FreePort(),Ack=FreePort(),Proof=FreePort()};int mixed=FreePort();
         var sinks=new Dictionary<string,TcpListener>();var sinkTasks=new List<Task>();var sinkPeers=new ConcurrentBag<Task>();
@@ -102,6 +102,12 @@ internal static class PolicyEngineTests
         Dictionary<string,JsonObject[]> Desired(string route)=>PolicyPublisher.Routes.ToDictionary(r=>r,r=>r==route?new[]{PolicyPublisher.Rule(cachedKey)}:Array.Empty<JsonObject>());
         try
         {
+            publisher=new(root,ports,()=>session.Running);
+            int initialAttempts=0;
+            initialPublication=PolicyWorker.InitializePublication(token=>{initialAttempts++;return publisher.Apply(Desired("vpn"),token);},()=>session.Running,budget.Token);
+            // Start the real loopback engine after the first 4-second canary
+            // deadline, reproducing slow socket/file-watcher startup in the VM.
+            await Task.Delay(4300,budget.Token);
             var start=new ProcessStartInfo(Path.Combine(projectRoot,"runtime/smart-router.exe")){UseShellExecute=false,CreateNoWindow=true,RedirectStandardError=true,RedirectStandardOutput=true};
             foreach(string arg in new[]{"run","-c",config,"--disable-color"})start.ArgumentList.Add(arg);
             engine=Process.Start(start)??throw new IOException("Isolated engine did not start.");
@@ -115,8 +121,9 @@ internal static class PolicyEngineTests
             }
             Console.WriteLine("PASS: isolated real engine uses cached VPN on its first connection; all test outputs stay on loopback.");
             Assert(await Request(budget.Token,"::1")=="fallback","An original IPv6 destination must not inherit an IPv4-only adaptive decision.");
-            publisher=new(root,ports,()=>session.Running);
-            await publisher.Apply(Desired("vpn"),budget.Token);
+            await initialPublication;initialPublication=null;
+            Assert(initialAttempts>=2,"A real delayed engine must recover after its first acknowledgement deadline.");
+            Console.WriteLine("PASS: delayed real engine startup retries publication and requires its actual loopback acknowledgement.");
             await using var persistent=await PolicyTransport.Socks(mixed,domain,443,budget.Token);
             using var persistentReader=new StreamReader(persistent,Encoding.ASCII,false,128,true);
             async Task CheckPersistent()
@@ -202,6 +209,7 @@ internal static class PolicyEngineTests
         finally
         {
             session.Running=false;Storage.Write(Path.Combine(root,"runtime/session.json"),session);
+            if(initialPublication!=null){budget.Cancel();try{await initialPublication;}catch(OperationCanceledException){}}
             if(publisher!=null)await publisher.DisposeAsync();
             if(controller!=null){try{await controller.WaitAsync(TimeSpan.FromSeconds(8));}catch{}}
             if(engine!=null){try{engine.Kill(true);await engine.WaitForExitAsync();}catch{}engine.Dispose();}

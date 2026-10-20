@@ -124,7 +124,7 @@ public sealed class PolicyWorker
         {
             worker.RefreshListed();worker.LoadCache();worker.LoadActiveBindings();
             worker._publisher=new(root,worker._ports,worker.Current);
-            await worker.PublishAsync(cancel.Token);
+            await InitializePublication(worker.PublishAsync,worker.Current,cancel.Token);
             while(identity.Matches())
             {
                 var current=Storage.Read<PolicySession>(Path.Combine(root,"runtime","session.json"));
@@ -170,6 +170,32 @@ public sealed class PolicyWorker
             if(worker._publisher!=null)await worker._publisher.DisposeAsync();
             foreach(var pendingStop in worker._pendingStops.Values)pendingStop.Dispose();
             worker._api.Dispose();
+        }
+    }
+    internal static async Task InitializePublication(Func<CancellationToken,Task> publish,Func<bool> current,CancellationToken stop,TimeSpan? budget=null)
+    {
+        // Engine sockets and file watchers can become ready after the worker.
+        // Keep the same checked generation and bounded startup deadline; a
+        // missing acknowledgement must never be promoted to successful routing.
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(stop);
+        deadline.CancelAfter(budget??TimeSpan.FromSeconds(25));
+        while(true)
+        {
+            deadline.Token.ThrowIfCancellationRequested();
+            if(!current())throw new OperationCanceledException("Routing generation changed.");
+            try
+            {
+                await publish(deadline.Token);
+                deadline.Token.ThrowIfCancellationRequested();
+                if(!current())throw new OperationCanceledException("Routing generation changed.");
+                return;
+            }
+            catch(Exception ex)when(ex is IOException or OperationCanceledException or System.Net.Sockets.SocketException)
+            {
+                deadline.Token.ThrowIfCancellationRequested();
+                if(!current())throw new OperationCanceledException("Routing generation changed.");
+                await Task.Delay(250,deadline.Token);
+            }
         }
     }
     internal static void Prepare(string root)
