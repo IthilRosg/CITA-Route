@@ -1,0 +1,31 @@
+name: Isolated Windows transport boundary experiment
+on:
+  push:
+    branches: [codex/transport-isolation-lab]
+  pull_request:
+    paths:
+      - 'tools/transport-lab/**'
+      - 'Verify-TransportBoundary.ps1'
+      - '.github/workflows/transport-lab.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-fixture:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build and exercise only private loopback fixtures
+        shell: powershell
+        run: ./Verify-TransportBoundary.ps1 -Native
+      - name: Save bounded experiment results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transport-boundary-results
+          path: runtime/transport-lab-*/result.json
+          if-no-files-found: warn
