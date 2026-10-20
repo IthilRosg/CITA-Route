@@ -39,7 +39,26 @@ throw 'Controlled fixture end before any network or elevation operation.'
         }
         $probe=[IO.File]::Open((Join-Path $runtime 'setup.lock'),'OpenOrCreate','ReadWrite','None');$probe.Dispose()
     }
+    . (Join-Path $project 'WireSockCli.ps1')
+    function Get-WireSockObservation {
+        if($script:observations.Count -eq 0){throw 'Unexpected status read.'}
+        return $script:observations.Dequeue()
+    }
+    function Invoke-WireSock($Arguments){Assert ($Arguments.Count -eq 1 -and $Arguments[0] -eq 'disconnect') 'Unexpected fixture CLI mutation.';$script:disconnects++}
+    foreach($case in @('unknown','unowned-transition','disconnected','foreign','connected','transition','still-connected','foreign-after-stop')){
+        $script:observations=New-Object 'System.Collections.Generic.Queue[object]';$script:disconnects=0
+        $state=switch($case){'unknown'{'Unknown'};'unowned-transition'{'Transitioning'};'disconnected'{'Disconnected'};'foreign'{'Foreign'};'transition'{'Transitioning'};default{'Connected'}}
+        $script:observations.Enqueue([pscustomobject]@{state=$state;managed=($case -notin @('unknown','unowned-transition','disconnected','foreign'))})
+        if($case -in @('connected','transition','still-connected','foreign-after-stop')){
+            $after=switch($case){'still-connected'{'Connected'};'foreign-after-stop'{'Foreign'};default{'Disconnected'}}
+            $script:observations.Enqueue([pscustomobject]@{state=$after;managed=($after -eq 'Connected')})
+        }
+        $failed=$false;try{Disconnect-ManagedWireSock}catch{$failed=$true}
+        Assert ($failed -eq ($case -in @('unknown','unowned-transition','still-connected','foreign-after-stop'))) ('Unverified WireSock disconnect was reported as complete: '+$case)
+        Assert ($script:disconnects -eq $(if($case -in @('connected','transition','still-connected','foreign-after-stop')){1}else{0})) ('Unexpected WireSock mutation: '+$case)
+    }
     Write-Output 'PASS: real routing entry holds setup exclusion for Start/ProxyOnly/Reconnect/RepairVpn/SyncProfile/Prepare; Stop/status/watch and parent-owned offline preparation remain available; exceptions release ownership. No live network or elevation.'
+    Write-Output 'PASS: disconnect requires verified ownership and disconnected postcondition; unknown/transitioning/foreign replacement cannot produce false success or a second disconnect.'
 }finally{
     $prefix=[IO.Path]::GetFullPath((Join-Path $project 'runtime\lifecycle-tests-'))
     if(-not [IO.Path]::GetFullPath($base).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe lifecycle fixture cleanup.'}

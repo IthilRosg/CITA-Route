@@ -84,8 +84,7 @@ function Stop-LostRouterSession([string]$ExpectedId) {
         $session | Add-Member -NotePropertyName bridgeReady -NotePropertyValue $false -Force
         $session | Add-Member -NotePropertyName stoppedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
         Write-JsonFile $sessionPath $session
-        $statusText = (Invoke-WireSock @('status')) -join ' '
-        if ($statusText -match [regex]::Escape($smartProfile)) { Invoke-WireSock @('disconnect') | Out-Null }
+        Disconnect-ManagedWireSock
         [IO.File]::WriteAllText((Join-Path $root 'logs\connection-lost.txt'),
             'The router exited unexpectedly. Its VPN bridge and managed WireSock connection were stopped. Connect again to restart routing.')
         return $true

@@ -48,37 +48,57 @@ internal static class WireSockExperiment
     }
     static NetworkInterface? Adapter()=>NetworkInterface.GetAllNetworkInterfaces().SingleOrDefault(n=>
         n.GetIPProperties().UnicastAddresses.Any(a=>a.Address.Equals(IPAddress.Parse("10.202.0.2"))) && n.NetworkInterfaceType!=NetworkInterfaceType.Loopback);
-    internal static async Task Run(string project)
+    internal static async Task Run(string project,bool controlOnly=false)
     {
-        Assert(Disposable,"Real WireSock experiments require the disposable GitHub-hosted Windows job.");
+        Assert(controlOnly||Disposable,"Real WireSock experiments require the disposable GitHub-hosted Windows job.");
         project=Path.GetFullPath(project);Assert(Fixture.RuntimeRoot.Equals(Path.Combine(project,"runtime"),StringComparison.OrdinalIgnoreCase),"Experiment build/root differs.");
         string sdkRecord=Path.Combine(project,"runtime","wiresock-fixture","install.json");
-        using var record=JsonDocument.Parse(File.ReadAllText(sdkRecord));string cli=record.RootElement.GetProperty("Cli").GetString()!;
-        Assert(Path.GetFullPath(cli).StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase)&&Path.GetFileName(cli)=="wiresock-client.exe","Unrecognized SDK reference client.");
+        string cli="";
+        if(!controlOnly)
+        {
+            using var record=JsonDocument.Parse(File.ReadAllText(sdkRecord));cli=record.RootElement.GetProperty("Cli").GetString()!;
+            Assert(Path.GetFullPath(cli).StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase)&&Path.GetFileName(cli)=="wiresock-client.exe","Unrecognized SDK reference client.");
+        }
         string engine=Path.Combine(project,"runtime","smart-router.exe");
         var loopback=NetworkInterface.GetAllNetworkInterfaces().Single(n=>n.NetworkInterfaceType==NetworkInterfaceType.Loopback);
         var physical=NetworkInterface.GetAllNetworkInterfaces().First(n=>n.NetworkInterfaceType!=NetworkInterfaceType.Loopback&&n.OperationalStatus==OperationalStatus.Up&&n.Supports(NetworkInterfaceComponent.IPv4));
         var fixture=Fixture.Create(Wfp.Luid((uint)loopback.GetIPProperties().GetIPv4Properties().Index),Wfp.Luid((uint)physical.GetIPProperties().GetIPv4Properties().Index));
         var checks=new List<string>();var observations=new List<object>();bool cleanup=false,passed=false;string? failure=null;
-        Process? server=null,tunnel=null,peer=null;Task<string>? tunnelOut=null,tunnelErr=null;
+        Process? server=null,tunnel=null,peer=null,control=null;Task<string>? tunnelOut=null,tunnelErr=null,serverOut=null,serverErr=null;
         using var echo=new Echo(IPAddress.Loopback);using var direct=new Peer(IPAddress.Loopback,echo.TcpPort,echo.UdpPort);
         Console.WriteLine("Synthetic WireSock fixture: "+fixture.Root);
         try
         {
             await direct.Connect();Assert((await direct.Check()) is{Tcp:true,Udp:true},"Direct baseline failed.");
-            var serverKeys=await Keys(engine);var clientKeys=await Keys(engine);
+            var serverKeys=await Keys(engine);var clientKeys=await Keys(engine);var controlKeys=await Keys(engine);
             using var port=new System.Net.Sockets.UdpClient(new IPEndPoint(IPAddress.Loopback,0));int wirePort=((IPEndPoint)port.Client.LocalEndPoint!).Port;port.Close();
             string serverConfig=Path.Combine(fixture.Root,"server.json"),profile=Path.Combine(fixture.Root,"fixture.conf");
-            File.WriteAllText(serverConfig,JsonSerializer.Serialize(new{log=new{level="error"},endpoints=new[]{new{type="wireguard",tag="wg",system=false,address=new[]{"10.202.0.1/24"},private_key=serverKeys.Private,listen_port=wirePort,
-                peers=new[]{new{public_key=clientKeys.Public,allowed_ips=new[]{"10.202.0.2/32"}}}}},outbounds=new[]{new{type="direct",tag="echo"}},
+            File.WriteAllText(serverConfig,JsonSerializer.Serialize(new{log=new{level="debug"},endpoints=new[]{new{type="wireguard",tag="wg",system=false,address=new[]{"10.202.0.1/24","198.18.123.1/32"},private_key=serverKeys.Private,listen_port=wirePort,
+                peers=new[]{new{public_key=clientKeys.Public,allowed_ips=new[]{"10.202.0.2/32"}},new{public_key=controlKeys.Public,allowed_ips=new[]{"10.202.0.3/32"}}}}},outbounds=new[]{new{type="direct",tag="echo"}},
                 route=new{rules=new[]{new{inbound=new[]{"wg"},action="route",outbound="echo",override_address="127.0.0.1"}}}}));
             // Only this benchmark /32 is routed/captured, never the runner's default route.
             File.WriteAllText(profile,$"[Interface]\nPrivateKey = {clientKeys.Private}\nAddress = 10.202.0.2/32\n[Peer]\nPublicKey = {serverKeys.Public}\nEndpoint = 127.0.0.1:{wirePort}\nAllowedIPs = 198.18.123.1/32\n#@ws:AllowedApps = {fixture.Image}\nPersistentKeepalive = 1\n");
-            server=Start(engine,"run","-c",serverConfig);_=server.StandardOutput.ReadToEndAsync();_=server.StandardError.ReadToEndAsync();await Task.Delay(500);
+            server=Start(engine,"run","-c",serverConfig);serverOut=server.StandardOutput.ReadToEndAsync();serverErr=server.StandardError.ReadToEndAsync();await Task.Delay(500);
             Assert(!server.HasExited,"Synthetic user-space WireGuard server did not start.");
+            var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();int proxyPort=((IPEndPoint)listener.LocalEndpoint).Port;listener.Stop();
+            string controlConfig=Path.Combine(fixture.Root,"control.json");
+            File.WriteAllText(controlConfig,JsonSerializer.Serialize(new{log=new{level="error"},inbounds=new[]{new{type="socks",tag="socks",listen="127.0.0.1",listen_port=proxyPort}},
+                endpoints=new[]{new{type="wireguard",tag="control",system=false,address=new[]{"10.202.0.3/32"},private_key=controlKeys.Private,
+                    peers=new[]{new{address="127.0.0.1",port=wirePort,public_key=serverKeys.Public,allowed_ips=new[]{"198.18.123.1/32"}}}}},route=new{final="control"}}));
+            control=Start(engine,"run","-c",controlConfig);_=control.StandardOutput.ReadToEndAsync();_=control.StandardError.ReadToEndAsync();await Task.Delay(500);
+            using(var test=new System.Net.Sockets.TcpClient())
+            {
+                using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(6));await test.ConnectAsync(IPAddress.Loopback,proxyPort,budget.Token);var stream=test.GetStream();
+                await stream.WriteAsync(new byte[]{5,1,0},budget.Token);byte[] greeting=new byte[2];await stream.ReadExactlyAsync(greeting,budget.Token);Assert(greeting[1]==0,"Synthetic control SOCKS authentication failed.");
+                await stream.WriteAsync(new byte[]{5,1,0,1,198,18,123,1,(byte)(echo.TcpPort>>8),(byte)echo.TcpPort},budget.Token);
+                byte[] response=new byte[10];await stream.ReadExactlyAsync(response,budget.Token);Assert(response[1]==0,"Synthetic control SOCKS route failed.");
+                await stream.WriteAsync(new byte[]{73},budget.Token);byte[] result=new byte[1];await stream.ReadExactlyAsync(result,budget.Token);Assert(result[0]==73,"Synthetic encrypted server positive control failed.");
+            }
+            Stop(control);control=null;checks.Add("Independent user-space WireGuard positive control confirms server keys and echo routing");
+            if(controlOnly){passed=true;return;}
             Process Connect(bool virtualAdapter)
             {
-                var args=new List<string>{"run","-config",profile,"-network-lock","disabled","-log-level","error"};if(virtualAdapter)args.Add("-lac");
+                var args=new List<string>{"run","-config",profile,"-network-lock","disabled","-log-level","debug"};if(virtualAdapter)args.Add("-lac");
                 var result=Start(cli,args.ToArray());tunnelOut=result.StandardOutput.ReadToEndAsync();tunnelErr=result.StandardError.ReadToEndAsync();return result;
             }
             tunnel=Connect(false);peer=await Ready(fixture,echo,tunnel);
@@ -118,11 +138,11 @@ internal static class WireSockExperiment
         catch(Exception ex){failure=ex.Message;throw;}
         finally
         {
-            Stop(peer);Stop(tunnel);Stop(server);
+            Stop(peer);Stop(tunnel);Stop(control);Stop(server);
             string? cleanupError=null;
-            try{using var wfp=new Wfp();wfp.Remove(fixture);cleanup=true;}catch(Exception ex){cleanupError=ex.Message;}
+            try{if(!controlOnly){using var wfp=new Wfp();wfp.Remove(fixture);}cleanup=true;}catch(Exception ex){cleanupError=ex.Message;}
             // Configurations/keys and native logs are never printed or uploaded.
-            foreach(string file in new[]{"server.json","fixture.conf"})File.Delete(Path.Combine(fixture.Root,file));
+            foreach(string file in new[]{"server.json","fixture.conf","control.json"})File.Delete(Path.Combine(fixture.Root,file));
             object Diagnostic(Task<string>? task)
             {
                 if(task is not{IsCompletedSuccessfully:true})return new{complete=false};
@@ -133,11 +153,12 @@ internal static class WireSockExperiment
                     permissionError=Regex.IsMatch(value,"denied|privilege|administrator",RegexOptions.IgnoreCase),
                     configurationError=Regex.IsMatch(value,"invalid|parse|configuration|decode",RegexOptions.IgnoreCase),
                     loopbackMentioned=value.Contains("loopback",StringComparison.OrdinalIgnoreCase),
+                    vocabulary=new[]{"handshake","connected","disconnected","retry","receive","send","failed","timeout","packet","driver","NDIS","usage","statistics","decrypt","encrypt"}.ToDictionary(word=>word,word=>Regex.Matches(value,Regex.Escape(word),RegexOptions.IgnoreCase).Count),
                     unknownField=Regex.Match(value,"unknown field [\\\"]?([a-z_]+)",RegexOptions.IgnoreCase).Groups[1].Value};
             }
-            File.WriteAllText(Path.Combine(fixture.Root,"wiresock-result.json"),JsonSerializer.Serialize(new{schema=1,passed,cleanup,failure,cleanupError,checks,observations,
-                diagnosticOut=Diagnostic(tunnelOut),diagnosticError=Diagnostic(tunnelErr),checkedUtc=DateTime.UtcNow,
-                wiresockDriverTested=checks.Count>0,physicalPacketCaptureVerified=false,perPacketIsolationProved=false,guiServiceLifecycleTested=false},new JsonSerializerOptions{WriteIndented=true}));
+            File.WriteAllText(Path.Combine(fixture.Root,controlOnly?"crypto-result.json":"wiresock-result.json"),JsonSerializer.Serialize(new{schema=1,controlOnly,passed,cleanup,failure,cleanupError,checks,observations,
+                diagnosticOut=Diagnostic(tunnelOut),diagnosticError=Diagnostic(tunnelErr),serverOut=Diagnostic(serverOut),serverError=Diagnostic(serverErr),checkedUtc=DateTime.UtcNow,
+                wiresockDriverTested=checks.Any(c=>c.StartsWith("Real WireSock")),physicalPacketCaptureVerified=false,perPacketIsolationProved=false,guiServiceLifecycleTested=false},new JsonSerializerOptions{WriteIndented=true}));
             foreach(string check in checks)Console.WriteLine("PASS: "+check);
             Assert(cleanup,"Synthetic fixture filter cleanup failed.");
         }

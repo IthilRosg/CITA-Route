@@ -9,7 +9,7 @@ $script:mockStatus = 'Not connected'
 $script:disconnectCalls = 0
 $cli = {
     param([string]$Command)
-    if ($Command -eq 'disconnect') { $script:disconnectCalls++; $global:LASTEXITCODE = $script:mockDisconnectCode; 'Disconnect completed' }
+    if ($Command -eq 'disconnect') { $script:disconnectCalls++; $global:LASTEXITCODE = $script:mockDisconnectCode; if($script:mockDisconnectCode -eq 0){$script:mockStatus='Not connected'}; 'Disconnect completed' }
     elseif ($Command -eq 'status') { $global:LASTEXITCODE = $script:mockStatusCode; $script:mockStatus }
     else { throw 'Unexpected CLI operation' }
 }
@@ -37,7 +37,11 @@ $script:bridgeRunning = $true
 $script:routerRunning = $true
 $smartProfile = 'SmartRouting-AWG2'
 function Invoke-AgentCoordinator($Command) {}
-function Get-WireSockObservation {[pscustomobject]@{state='Connected'}}
+$script:observeCli=$false
+function Get-WireSockObservation {
+    if($script:observeCli){return [pscustomobject]@{state=(Get-WireSockState $script:mockStatus $smartProfile);managed=(Test-WireSockManagedProfile $script:mockStatus $smartProfile)}}
+    return [pscustomobject]@{state='Connected';managed=$true}
+}
 $script:bridgeStarts = 0
 $script:bridgeStops = 0
 $script:mockBridgeId = 20
@@ -99,16 +103,21 @@ try {
     Assert-Recovery (-not (Stop-LostRouterSession 'current-session')) 'A live router was treated as crashed.'
     $script:routerRunning = $false
     $script:mockDisconnectCode = 0
-    $script:mockStatus = 'Connected to SmartRouting-AWG2'
+    $script:observeCli=$true
+    $script:mockStatus = 'Connected to server from profile SmartRouting-AWG2'
     $beforeCrashDisconnect = $script:disconnectCalls
     Assert-Recovery (Stop-LostRouterSession 'current-session') 'A crashed router was not cleaned up.'
     $stopped = [IO.File]::ReadAllText((Join-Path $runtime 'session.json')) | ConvertFrom-Json
     Assert-Recovery (-not $script:bridgeRunning -and -not $stopped.running -and -not $stopped.bridgeReady) 'Crash cleanup retained an orphaned bridge or active session.'
     Assert-Recovery ($script:disconnectCalls -eq $beforeCrashDisconnect + 1) 'Crash cleanup did not disconnect the managed profile.'
-    $script:mockStatus = 'Connected to MAIN'
+    $script:mockStatus = 'Connected to server from profile MAIN'
     Write-JsonFile (Join-Path $runtime 'session.json') @{id='another-session';running=$true;routerPid=10;bridgeReady=$false}
     [void](Stop-LostRouterSession 'another-session')
     Assert-Recovery ($script:disconnectCalls -eq $beforeCrashDisconnect + 1) 'Crash cleanup disconnected an unrelated profile.'
+    $script:mockStatus = 'Connected to server from profile SmartRouting-AWG2-copy'
+    Write-JsonFile (Join-Path $runtime 'session.json') @{id='similar-profile-session';running=$true;routerPid=10;bridgeReady=$false}
+    [void](Stop-LostRouterSession 'similar-profile-session')
+    Assert-Recovery ($script:disconnectCalls -eq $beforeCrashDisconnect + 1) 'Crash cleanup disconnected a similarly named foreign profile.'
     Write-Output 'PASS: disconnect postcondition, genuine failure detection, localized status, bridge pause/resume, failed restart retry, accurate readiness, no duplicate restart, session counters preserved, crash cleanup, old-watcher isolation.'
 } finally {
     $resolvedTestFolder = [IO.Path]::GetFullPath($root)

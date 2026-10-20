@@ -25,6 +25,7 @@ internal static class Program
             if(args.Length==4 && args[0] is "--peer" or "--once"){await Peer.Run(args,args[0]=="--once");return 0;}
             if(args.Length==5 && args[0]=="--tunnel-peer"){await Peer.Run(args,false);return 0;}
             if(args.Length==2 && args[0]=="--wiresock"){await WireSockExperiment.Run(args[1]);return 0;}
+            if(args.Length==2 && args[0]=="--crypto-control"){await WireSockExperiment.Run(args[1],controlOnly:true);return 0;}
             if(args.Length==3 && args[0] is "--arm" or "--arm-uncommitted" && args[2] is "loopback" or "foreign" or "blocked")
             {
                 var fixture=Fixture.Load(args[1]);using var wfp=new Wfp();
