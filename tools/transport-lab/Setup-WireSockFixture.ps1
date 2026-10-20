@@ -18,8 +18,10 @@ if($Uninstall){
     }elseif($record.UninstallKind -eq 'PrivateExe'){
         if(-not $uninstaller.StartsWith(($record.InstallRoot.TrimEnd('\')+'\'),[StringComparison]::OrdinalIgnoreCase)){throw 'SDK uninstaller left its package root.'}
         $uninstallArguments=$record.UninstallArguments
-    }elseif($record.UninstallKind -eq 'PinnedCachedInstaller'){
-        if($record.UninstallerHash -ne 'BDB676263FFFA4E36EC6B51155A8AFE2AC6D5680DC6D22008DE9C75C8F533ECC'){throw 'Cached SDK installer is not the pinned source.'}
+    }elseif($record.UninstallKind -eq 'SignedCachedInstaller'){
+        $signature=Get-AuthenticodeSignature -LiteralPath $uninstaller
+        $cache=Join-Path $env:ProgramData ('Package Cache\'+$record.BundleCode+'\')
+        if(-not $uninstaller.StartsWith($cache,[StringComparison]::OrdinalIgnoreCase) -or $signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $record.SignerThumbprint){throw 'Cached SDK bundle identity is not verified.'}
         $uninstallArguments=$record.UninstallArguments
     }else{throw 'Unknown fixture uninstall mode.'}
     $process=Start-Process -FilePath $uninstaller -ArgumentList $uninstallArguments -WindowStyle Hidden -PassThru
@@ -37,6 +39,7 @@ $registryPaths=@('HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','
 $previousKeys=@(Get-ItemProperty $registryPaths -ErrorAction SilentlyContinue|ForEach-Object PSPath)
 $previousWireSock=@(Get-ItemProperty $registryPaths -ErrorAction SilentlyContinue|Where-Object {$_.DisplayName -like '*WireSock*'})
 Write-Output ('WireSock uninstall entries before install: '+$previousWireSock.Count)
+if($previousWireSock.Count){throw 'Disposable WireSock fixture already contains a WireSock product. Refusing replacement.'}
 $process=Start-Process -FilePath $setup -ArgumentList '/S' -WindowStyle Hidden -PassThru
 try{if(-not $process.WaitForExit(120000)){throw 'WireSock SDK installer timed out.'};if($process.ExitCode -ne 0){throw ('WireSock SDK installer exit code '+$process.ExitCode)}}finally{$process.Dispose()}
 $roots=@(Get-ChildItem -LiteralPath $env:ProgramFiles -Directory | Where-Object Name -like '*WireSock*')
@@ -47,8 +50,9 @@ Write-Output ('New WireSock uninstall entries: '+$entry.Count)
 Get-ItemProperty $registryPaths -ErrorAction SilentlyContinue|Where-Object {$_.DisplayName -like '*WireSock*'}|ForEach-Object {
     [pscustomobject]@{Name=$_.DisplayName;ProductCode=$_.PSChildName;WindowsInstaller=$_.WindowsInstaller;UninstallString=$_.UninstallString;InstallLocation=$_.InstallLocation}|ConvertTo-Json -Compress
 }
-if($entry.Count -ne 1){throw 'Expected one newly installed WireSock SDK uninstall entry.'}
-$entry=$entry[0]
+$bundles=@($entry|Where-Object {$_.DisplayName -eq 'WireSock Secure Connect SDK' -and $_.WindowsInstaller -ne 1})
+if($bundles.Count -ne 1){throw 'Expected one newly installed SDK bundle owning its driver and SDK MSI components.'}
+$entry=$bundles[0]
 $command=if($entry.QuietUninstallString){[string]$entry.QuietUninstallString}else{[string]$entry.UninstallString}
 $arguments=''
 if($command -match '^"([^"]+\.exe)"\s*(.*)$'){$uninstaller=$Matches[1];$arguments=$Matches[2]}
@@ -65,12 +69,16 @@ if($uninstaller -ieq (Join-Path $env:SystemRoot 'System32\msiexec.exe') -and $en
     $kind='Msi';$productCode=$entry.PSChildName
 }elseif($uninstaller.StartsWith(($installRoot.TrimEnd('\')+'\'),[StringComparison]::OrdinalIgnoreCase)){
     $kind='PrivateExe';if(-not $entry.QuietUninstallString){$arguments+=' /S'}
-}elseif($uninstaller.StartsWith((Join-Path $env:ProgramData 'Package Cache\'),[StringComparison]::OrdinalIgnoreCase) -and $uninstallHash -eq 'BDB676263FFFA4E36EC6B51155A8AFE2AC6D5680DC6D22008DE9C75C8F533ECC' -and $arguments -match '/uninstall'){
-    $kind='PinnedCachedInstaller';if(-not $entry.QuietUninstallString){$arguments+=' /quiet /norestart'}
+}elseif($entry.PSChildName -match '^\{[a-fA-F0-9-]{36}\}$' -and $uninstaller.StartsWith((Join-Path $env:ProgramData ('Package Cache\'+$entry.PSChildName+'\')),[StringComparison]::OrdinalIgnoreCase) -and $arguments -match '/uninstall'){
+    $cachedSignature=Get-AuthenticodeSignature -LiteralPath $uninstaller
+    $sourceSignature=Get-AuthenticodeSignature -LiteralPath $setup
+    if($cachedSignature.Status -ne 'Valid' -or $cachedSignature.SignerCertificate.Thumbprint -ne $sourceSignature.SignerCertificate.Thumbprint){throw 'Cached SDK bundle is not signed by the pinned installer publisher.'}
+    $kind='SignedCachedInstaller';if(-not $entry.QuietUninstallString){$arguments+=' /quiet /norestart'}
 }else{throw 'SDK uninstaller is outside its package and is neither its own new MSI entry nor the pinned cached installer.'}
 $dnsReady=$false;try{$dnsReady=@(Resolve-DnsName github.com -Type A -DnsOnly -QuickTimeout -ErrorAction Stop).Count -gt 0}catch{}
 $record=@{Schema=1;Cli=$clients[0].FullName;Version=$clients[0].VersionInfo.FileVersion;InstallerVerified=$true;DriverTrafficVerified=$false;
-    InstallRoot=$installRoot;Uninstaller=$uninstaller;UninstallerHash=$uninstallHash;UninstallKind=$kind;UninstallArguments=$arguments;ProductCode=$productCode;DnsReadyAfterInstall=$dnsReady}
+    InstallRoot=$installRoot;Uninstaller=$uninstaller;UninstallerHash=$uninstallHash;UninstallKind=$kind;UninstallArguments=$arguments;ProductCode=$productCode;
+    BundleCode=$entry.PSChildName;SignerThumbprint=(Get-AuthenticodeSignature -LiteralPath $setup).SignerCertificate.Thumbprint;DnsReadyAfterInstall=$dnsReady}
 [IO.File]::WriteAllText($recordPath,($record|ConvertTo-Json),(New-Object Text.UTF8Encoding($false)))
 Write-Output ('SDK fixture client: '+$record.Cli+'; version '+$record.Version)
 Write-Output ('DNS ready immediately after SDK installation: '+$dnsReady)
