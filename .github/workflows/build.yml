@@ -30,6 +30,7 @@ jobs:
           ./Verify-Prepare.ps1
           ./Verify-ConnectionHandoff.ps1
           ./Verify-InstallationGuard.ps1
+          ./Verify-Lifecycle.ps1
           ./Verify-Storage.ps1
           ./Verify-ProfileSync.ps1
           ./Verify-RuleFeeds.ps1

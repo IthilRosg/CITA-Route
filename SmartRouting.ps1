@@ -18,6 +18,8 @@ $routerExe = Join-Path $runtime 'smart-router.exe'
 $bridgeExe = Join-Path $env:ProgramFiles 'RoutePilot\Agent\vpn-bridge.exe'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 
+$setupProbe=$null
+try {
 . (Join-Path $root 'FileStorage.ps1')
 if($Action -in @('Start','ProxyOnly')){
     $updateGate=$null
@@ -34,7 +36,8 @@ if(-not $Setup -and $Action -notin @('Status','Stop','Watch')){
     $setupProbe=$null
     try{$setupProbe=[IO.File]::Open((Join-Path $runtime 'setup.lock'),'OpenOrCreate','ReadWrite','None')}
     catch{throw 'Connection setup is in progress. Wait for it to finish.'}
-    finally{if($setupProbe){$setupProbe.Dispose()}}
+    # Retain this handle for the whole action: a check followed by an immediate
+    # release lets Apply/import/agent replacement race the startup or repair.
 }
 . (Join-Path $root 'RuleFeeds.ps1')
 . (Join-Path $root 'WireSockCli.ps1')
@@ -440,6 +443,9 @@ if ($Action -in @('Start','Stop','ProxyOnly','Reconnect','RepairVpn')) {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isAdmin) {
         if($Action -in @('Reconnect','RepairVpn')){throw 'Automatic recovery requires the original elevated session.'}
+        # The elevated child must acquire its own setup gate. Do not race that
+        # child while an unelevated parent still holds the same exclusive file.
+        if($setupProbe){$setupProbe.Dispose();$setupProbe=$null}
         $escapedScript = $PSCommandPath.Replace("'","''")
         $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(
             "& '$escapedScript' -Action $Action *>&1 | Out-File -LiteralPath '$($root.Replace("'","''"))\logs\last-action.log' -Encoding utf8"))
@@ -583,3 +589,4 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
     throw $startFailure
 }
 } finally { $controlLock.Dispose(); Invoke-AgentCoordinator 'end-operation' }
+} finally { if($setupProbe){$setupProbe.Dispose()} }
