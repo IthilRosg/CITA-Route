@@ -75,11 +75,16 @@ if($uninstaller -ieq (Join-Path $env:SystemRoot 'System32\msiexec.exe') -and $en
     if($cachedSignature.Status -ne 'Valid' -or $cachedSignature.SignerCertificate.Thumbprint -ne $sourceSignature.SignerCertificate.Thumbprint){throw 'Cached SDK bundle is not signed by the pinned installer publisher.'}
     $kind='SignedCachedInstaller';if(-not $entry.QuietUninstallString){$arguments+=' /quiet /norestart'}
 }else{throw 'SDK uninstaller is outside its package and is neither its own new MSI entry nor the pinned cached installer.'}
-$dnsReady=$false;try{$dnsReady=@(Resolve-DnsName github.com -Type A -DnsOnly -QuickTimeout -ErrorAction Stop).Count -gt 0}catch{}
+$dnsReady=$false;$settle=[Diagnostics.Stopwatch]::StartNew()
+do{
+    try{$dnsReady=@(Resolve-DnsName github.com -Type A -DnsOnly -QuickTimeout -ErrorAction Stop).Count -gt 0}catch{}
+    if($dnsReady){break}
+    Start-Sleep -Seconds 2
+}while($settle.Elapsed.TotalSeconds -lt 45)
 $record=@{Schema=1;Cli=$clients[0].FullName;Version=$clients[0].VersionInfo.FileVersion;InstallerVerified=$true;DriverTrafficVerified=$false;
     InstallRoot=$installRoot;Uninstaller=$uninstaller;UninstallerHash=$uninstallHash;UninstallKind=$kind;UninstallArguments=$arguments;ProductCode=$productCode;
     BundleCode=$entry.PSChildName;SignerThumbprint=(Get-AuthenticodeSignature -LiteralPath $setup).SignerCertificate.Thumbprint;DnsReadyAfterInstall=$dnsReady}
 [IO.File]::WriteAllText($recordPath,($record|ConvertTo-Json),(New-Object Text.UTF8Encoding($false)))
 Write-Output ('SDK fixture client: '+$record.Cli+'; version '+$record.Version)
-Write-Output ('DNS ready immediately after SDK installation: '+$dnsReady)
+Write-Output ('DNS ready after bounded SDK settle observation: '+$dnsReady+'; elapsed seconds '+[math]::Round($settle.Elapsed.TotalSeconds))
 Write-Output 'PASS: pinned signed WireSock SDK installed only on disposable runner. Tunnel traffic is a separate check.'
