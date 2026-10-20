@@ -14,6 +14,7 @@ internal sealed class BootSettings
     public string Version{get;set;}="";
     public string ConnectionSignature{get;set;}="";
     public Dictionary<string,string> CodeHashes{get;set;}=new();
+    public Dictionary<string,string> InputHashes{get;set;}=new();
 }
 
 // A fixed, administrator-owned snapshot is the only startup execution root.
@@ -85,6 +86,7 @@ internal sealed class BootRouting
                 foreach(string file in Directory.EnumerateFiles(source).Where(p=>Path.GetExtension(p) is ".json" or ".srs"))Copy(Path.Combine(directory,Path.GetFileName(file)));
             }
             foreach(string file in new[]{"force-direct.txt","force-vpn.txt","product.json","private\\controller-token.txt"})Copy(file);
+            foreach(string file in new[]{"force-direct.txt","force-vpn.txt","data\\routing-policy.json","private\\controller-token.txt"})settings.InputHashes[file]=Hash(Child(root,file));
             Copy("rules\\telegram-cidr.txt");
             Directory.CreateDirectory(Path.Combine(stage,"data"));Directory.CreateDirectory(Path.Combine(stage,"logs"));
             Storage.Write(Path.Combine(stage,"data","connection.json"),new{SourceProfile=config.WireSockSourceProfile,CliPath=config.WireSockCliPath,ExpectedEgressIp=config.ExpectedEgressIp,UserSid="S-1-5-18",UserProfile=config.UserProfile});
@@ -134,6 +136,8 @@ internal sealed class BootRouting
             if(!File.Exists(Path.Combine(_config.AppRoot,"product.json")))throw new IOException("Source installation was removed.");
             using var product=System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(_config.AppRoot,"product.json")));
             if(product.RootElement.GetProperty("version").GetString()!=settings.Version||settings.ConnectionSignature!=ConnectionSignature(_config))throw new IOException("Refresh startup after updating CITA Route or its profile.");
+            foreach(var entry in settings.InputHashes)if(Hash(Child(_config.AppRoot,entry.Key))!=entry.Value)throw new IOException("Refresh startup after changing routing preferences.");
+            if(settings.InputHashes.Count!=4)throw new IOException("Incomplete startup input snapshot.");
             foreach(var entry in settings.CodeHashes)if(Hash(Child(StartupPaths.Client,entry.Key))!=entry.Value)throw new IOException("Startup code changed.");
             if(settings.CodeHashes.Count!=10)throw new IOException("Incomplete startup code snapshot.");
             string sourceSession=Path.Combine(_config.AppRoot,"runtime","session.json");
