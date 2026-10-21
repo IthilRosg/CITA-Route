@@ -139,7 +139,9 @@ internal static class PolicyOptimizationTests
         var request=new CertificateRequest("CN=pinned.example.com",rsa,HashAlgorithmName.SHA256,RSASignaturePadding.Pkcs1);
         var san=new SubjectAlternativeNameBuilder();san.AddDnsName("pinned.example.com");request.CertificateExtensions.Add(san.Build());
         using var generated=request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1),DateTimeOffset.UtcNow.AddMinutes(5));
-        using var certificate=new X509Certificate2(generated.Export(X509ContentType.Pfx));
+        // Schannel needs a stored key; machine scope also works before a user profile is loaded.
+        // No PersistKeySet: disposing the certificate removes its temporary key container.
+        using var certificate=X509CertificateLoader.LoadPkcs12(generated.Export(X509ContentType.Pfx),null,X509KeyStorageFlags.MachineKeySet);
         string? sni=null,serverError=null;byte[]? target=null;
         var server=Task.Run(async()=>
         {
