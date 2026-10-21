@@ -30,6 +30,9 @@ try{
             if('DesktopRuntime.ps1' -notin $files){throw 'Framework fixtures require the current updater allowlist.'}
             Copy-Item -LiteralPath (Join-Path $project 'DesktopRuntime.ps1') -Destination (Join-Path $package 'DesktopRuntime.ps1') -Force
         }
+        Copy-Item -LiteralPath (Join-Path $project 'AgentPackage.ps1') -Destination (Join-Path $package 'AgentPackage.ps1') -Force
+        $agent=Join-Path $package 'runtime\agent-build\RoutePilot.Agent.exe'
+        Write-JsonFile (Join-Path $package 'product.json') @{version=$version;distribution=@{schema=1;selfContained=(-not $FrameworkDependent);desktopRuntimeMajor=10;desktopRuntimeMinimum='10.0.13';agentSha256=(Get-FileHash -LiteralPath $agent).Hash}}
         [IO.File]::WriteAllText((Join-Path $fixture 'AgentLease.ps1'),'function Assert-NoAgentRun {}; function Invoke-AgentCoordinator {}')
         [IO.File]::WriteAllText((Join-Path $fixture 'force-vpn.txt'),'keep-user-rule.example')
         Write-JsonFile (Join-Path $fixture 'data\connection.json') @{SourceProfile='Keep my WG'}
@@ -65,12 +68,16 @@ try{
             if(-not(Test-Path -LiteralPath (Join-Path $fixture 'logs\release-update-last.json'))){throw ('Installer rejected fixture before transaction: '+$failureMessage)}
             $result=Read-JsonFile (Join-Path $fixture 'logs\release-update-last.json')
             if($scenario -in @('success','handoff') -and (-not $result.success -or -not(Test-Path -LiteralPath (Join-Path $fixture 'data\pending-agent-update.json')))){throw 'Disconnected release installation failed.'}
+            if($scenario -in @('success','handoff')){
+                . (Join-Path $fixture 'AgentPackage.ps1')
+                Assert-AgentRuntimeReady $fixture
+            }
             if($scenario -eq 'handoff' -and -not $fakeGui.AckSeen){throw 'GUI did not observe the updater ownership handshake.'}
             if($scenario -eq 'locked-file-rollback' -and ($result.success -or -not $result.restored -or [IO.File]::ReadAllText((Join-Path $fixture 'RoutePilot.exe')) -ne 'old public file: RoutePilot.exe')){throw 'Failed update did not restore old public files.'}
         }
         if([IO.File]::ReadAllText((Join-Path $fixture 'force-vpn.txt')) -ne 'keep-user-rule.example' -or (Read-JsonFile (Join-Path $fixture 'data\connection.json')).SourceProfile -ne 'Keep my WG'){throw 'An update changed personal rules or connection settings.'}
     }
-    Write-Output 'PASS: release installation, locked-file rollback, active/foreign-session refusal, manifest identity, GUI ownership handshake and personal settings. No real processes, services or network routes changed.'
+    Write-Output 'PASS: release installation and subsequent agent prerequisite preflight, locked-file rollback, active/foreign-session refusal, manifest identity, GUI ownership handshake and personal settings. No real processes, services or network routes changed.'
 }finally{
     $prefix=[IO.Path]::GetFullPath((Join-Path $project 'runtime\release-install-tests-'))
     if(-not [IO.Path]::GetFullPath($base).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe update-test cleanup.'}

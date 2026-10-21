@@ -1,3 +1,23 @@
+function Assert-AgentRuntimeReady([string]$Root) {
+    # Every historical updater copies product.json, but some omit newly added
+    # helpers and leave the installed manifest unchanged. Bind the packaging
+    # declaration to the actual agent image instead of trusting that manifest.
+    $product=Read-JsonFile (Join-Path $Root 'product.json')
+    $distribution=$product.distribution
+    if($distribution){
+        $image=Join-Path $Root 'runtime\agent-build\RoutePilot.Agent.exe'
+        if($distribution.schema -ne 1 -or $distribution.selfContained -isnot [bool] -or
+            $distribution.agentSha256 -notmatch '^[a-fA-F0-9]{64}$' -or -not(Test-Path -LiteralPath $image -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash -ne $distribution.agentSha256){throw 'Agent distribution receipt does not match the installed image.'}
+        if($distribution.selfContained){return}
+    }
+    $helper=Join-Path $Root 'DesktopRuntime.ps1'
+    if(-not(Test-Path -LiteralPath $helper -PathType Leaf)){throw 'Missing runtime prerequisite helper. Use the CITA Route installer.'}
+    . $helper
+    $ready=if($distribution){Test-PackageDesktopRuntime $distribution}else{Test-MachineDesktopRuntime}
+    if(-not $ready){throw 'Machine-wide .NET Desktop Runtime 10.0.13 x64 is required before updating the protected agent. Use the CITA Route installer.'}
+}
+
 function Receive-SetupReservation([string]$Path,[int]$Owner,[long]$Handle) {
     if(-not ('RoutePilotSetupNative' -as [type])){
         Add-Type -TypeDefinition @'

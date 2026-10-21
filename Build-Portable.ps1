@@ -49,8 +49,11 @@ foreach($name in @('sing-box-LICENSE.txt','GPL-3.0.txt','sing-box-1.14.3-source.
 & $routerSource version | Set-Content -LiteralPath (Join-Path $stage 'licenses\engine-version.txt') -Encoding UTF8
 $forbidden=@(Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object {$_.Extension -in @('.conf','.log') -or $_.Name -in @('policy-heartbeat.json','bridge-safety.json','resource-state.json','udp-quality.json','session.json','controller-token.txt','connection.json','traffic.json','policy-cache.json','agent-config.json','router.json','bridge.json')})
 if($forbidden.Count){throw 'Private files detected in distribution staging.'}
-$files=@(Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {@{path=$_.FullName.Substring($stage.Length+1);bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}})
 . (Join-Path $root 'FileStorage.ps1')
+$product=Read-JsonFile (Join-Path $stage 'product.json')
+$product | Add-Member -NotePropertyName distribution -NotePropertyValue @{schema=1;selfContained=(-not $FrameworkDependent);desktopRuntimeMajor=10;desktopRuntimeMinimum='10.0.13';agentSha256=(Get-FileHash -LiteralPath (Join-Path $stage 'runtime\agent-build\RoutePilot.Agent.exe')).Hash} -Force
+Write-JsonFile (Join-Path $stage 'product.json') $product
+$files=@(Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {@{path=$_.FullName.Substring($stage.Length+1);bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}})
 Write-JsonFile (Join-Path $stage 'manifest.json') @{version=$version;architecture='win-x64';selfContained=(-not $FrameworkDependent);desktopRuntimeMajor=10;desktopRuntimeMinimum='10.0.13';files=$files;createdUtc=[DateTime]::UtcNow.ToString('o')}
 $zip=Join-Path $dist ('CITA-Route-'+$version+'-win-x64'+$flavor+'.zip')
 Compress-Archive -LiteralPath $stage -DestinationPath $zip -Force

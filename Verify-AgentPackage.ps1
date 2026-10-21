@@ -1,9 +1,29 @@
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'AgentPackage.ps1')
+. (Join-Path $PSScriptRoot 'FileStorage.ps1')
 $fixture=Join-Path $PSScriptRoot ('runtime\package-test-'+[guid]::NewGuid().ToString('N'))
 $installed=Join-Path $fixture 'Agent'
 New-Item -ItemType Directory -Path $installed -Force | Out-Null
 try {
+    $legacy=Join-Path $fixture 'legacy-client';New-Item -ItemType Directory -Path (Join-Path $legacy 'runtime\agent-build') -Force|Out-Null
+    $image=Join-Path $legacy 'runtime\agent-build\RoutePilot.Agent.exe';[IO.File]::WriteAllText($image,'self-contained fixture')
+    $distribution=@{schema=1;selfContained=$true;desktopRuntimeMajor=10;desktopRuntimeMinimum='10.0.13';agentSha256=(Get-FileHash -LiteralPath $image).Hash}
+    Write-JsonFile (Join-Path $legacy 'product.json') @{version='0.6.0';distribution=$distribution}
+    # A previous thin installation can leave a stale manifest after an old
+    # updater copies only its allowlist. The receipt must describe the new EXE.
+    Write-JsonFile (Join-Path $legacy 'manifest.json') @{version='0.5.8';selfContained=$false}
+    Assert-AgentRuntimeReady $legacy
+    $distribution.agentSha256='0'*64;Write-JsonFile (Join-Path $legacy 'product.json') @{distribution=$distribution}
+    $rejected=$false;try{Assert-AgentRuntimeReady $legacy}catch{$rejected=$_.Exception.Message -like 'Agent distribution receipt*'}
+    if(-not $rejected){throw 'Mismatched agent receipt was accepted'}
+    $distribution.agentSha256=(Get-FileHash -LiteralPath $image).Hash;$distribution.selfContained=$false
+    Write-JsonFile (Join-Path $legacy 'manifest.json') @{version='0.5.8';selfContained=$true}
+    Write-JsonFile (Join-Path $legacy 'product.json') @{distribution=$distribution}
+    $rejected=$false;try{Assert-AgentRuntimeReady $legacy}catch{$rejected=$_.Exception.Message -like 'Missing runtime prerequisite helper*'}
+    if(-not $rejected){throw 'A framework agent without its runtime helper was accepted'}
+    [IO.File]::WriteAllText((Join-Path $legacy 'DesktopRuntime.ps1'),'function Test-PackageDesktopRuntime { return $false }; function Test-MachineDesktopRuntime { return $false }')
+    $rejected=$false;try{Assert-AgentRuntimeReady $legacy}catch{$rejected=$_.Exception.Message -like 'Machine-wide .NET Desktop Runtime*'}
+    if(-not $rejected){throw 'A framework agent without the machine prerequisite was accepted'}
     $lockPath=Join-Path $fixture 'setup.lock'
     $original=[IO.File]::Open($lockPath,'OpenOrCreate','ReadWrite','None');$retained=$null
     try{
@@ -45,7 +65,7 @@ try {
     $script:starts=0;$script:restores=0;$failed=$false
     try{Publish-AgentPackage @(@{Source=$source;Name='agent.txt'}) $empty $stop {$script:starts++;throw 'Injected first-install activation failure.'} -Restore {$script:restores++}}catch{$failed=$true}
     if(-not $failed -or $script:starts -ne 1 -or $script:restores -ne 1 -or (Test-Path -LiteralPath (Join-Path $empty 'agent.txt'))){throw 'A failed first installation attempted to restart a nonexistent previous executable.'}
-    Write-Output 'PASS: missing source preserves the running service; failed startup rolls back and restarts old files; successful promotion installs verified files.'
+    Write-Output 'PASS: legacy full agent needs no new helper; image-bound receipt overrides stale manifests; framework prerequisites fail before service changes; missing sources and failed activation preserve/restore the protected package.'
 } finally {
     $prefix=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'runtime\package-test-'))
     if (-not [IO.Path]::GetFullPath($fixture).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe cleanup path.' }
