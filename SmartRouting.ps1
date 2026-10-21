@@ -267,6 +267,9 @@ function Prepare-Configuration {
     }
     $controllerToken = [IO.File]::ReadAllText($controllerTokenPath).Trim()
     $routeRules = @(
+        # Preserve the overlay's own control/DERP transport before sniffing and
+        # adaptive routing. Tailnet destinations keep their OS-specific routes.
+        @{ process_name=@('tailscaled.exe','tailscale.exe','tailscale-ipn.exe'); action='route'; outbound='direct' },
         @{ action='sniff'; timeout='300ms' },
         @{ protocol='dns'; action='hijack-dns' },
         @{ process_name=@('wiresock-connect-service.exe','wiresock-connect-app-service.exe'); action='route'; outbound='direct' }
@@ -383,10 +386,14 @@ function Prepare-Configuration {
         }
     }
     Write-JsonFile (Join-Path $runtime 'router-proxy.json') $router
+    # Do not attract global IPv6 onto an IPv4-only underlay. Keep an internal
+    # IPv6 address: sing-tun StrictRoute blocks ALL IPv6 if that family is absent.
+    # An explicit, nonempty internal IPv6 route prevents its automatic ::/0.
+    $tunRoutes=@('0.0.0.0/0',$(if($hasDirectIPv6){'::/0'}else{'fd7a:125::/126'}))
     $router.inbounds += @{
-        type='tun';tag='system-tun';interface_name='SmartRouting';address=@('172.30.125.1/30','fd7a:125::1/126')
+        type='tun';tag='system-tun';interface_name='SmartRouting';address=@('172.30.125.1/30','fd7a:125::1/126');route_address=$tunRoutes
         mtu=1400;auto_route=$true;strict_route=$true;stack='mixed';dns_mode='hijack'
-        route_exclude_address=@('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','100.64.0.0/10','fe80::/10','224.0.0.0/4','ff00::/8')
+        route_exclude_address=@('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','100.64.0.0/10','fd7a:115c:a1e0::/48','fe80::/10','224.0.0.0/4','ff00::/8')
     }
     $router.inbounds[-1].route_exclude_address += ($endpoint.Ip + '/32')
     Write-JsonFile (Join-Path $runtime 'router.json') $router

@@ -11,6 +11,7 @@ public static class AgentTests
         StartupTests.Run();
         ResourceGuardTests.Run();
         ComponentLivenessTests.Run();
+        SystemRouterTests.Run();
         await PolicyStartupTests.Run();
         await PolicyPublicationTests.Run();
         await DetachedCommandTests.Run();

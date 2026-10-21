@@ -208,3 +208,14 @@ offload changes did not restore the original path and were reverted and verified
 The lightweight .NET distribution is only the measured design documented in
 [LIGHTWEIGHT-DISTRIBUTION.md](LIGHTWEIGHT-DISTRIBUTION.md); no thin installer or
 runtime bootstrap is published by these tests.
+
+## Tailscale and IPv6 route boundary
+
+An additional isolated guest check reproduced a broad IPv6 TUN route on an
+IPv4-only physical network using the old configuration. Explicit route ranges
+removed it while preserving IPv4 routes, strict mode and internal IPv6. Both
+temporary engines exited and no test routes remained. Agent and PowerShell
+regressions cover both physical address-family cases and installed templates.
+See [TAILSCALE-COMPATIBILITY.md](TAILSCALE-COMPATIBILITY.md) for the Windows
+global-block trap, evidence limits and the outstanding real peer/SSH and
+MagicDNS acceptance cases. The live host has not been switched to this patch.
