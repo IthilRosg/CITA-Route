@@ -37,7 +37,7 @@ jobs:
         shell: powershell
         run: |
           $env:CITA_WFP_LAB='1'
-          & ./runtime/cita-wfp-tests.exe -test.run '^TestCitaWfpLifecycle$' -test.timeout 20s
+          & ./runtime/cita-wfp-tests.exe '-test.run=^TestCitaWfpLifecycle$' '-test.timeout=20s'
           if($LASTEXITCODE -ne 0){throw 'Native DNS filter lifecycle failed'}
       - name: Offline and loopback checks
         shell: powershell

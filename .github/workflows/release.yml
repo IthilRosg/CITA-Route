@@ -39,7 +39,7 @@ jobs:
         run: |
           ./Bootstrap.ps1
           $env:CITA_WFP_LAB='1'
-          & ./runtime/cita-wfp-tests.exe -test.run '^TestCitaWfpLifecycle$' -test.timeout 20s
+          & ./runtime/cita-wfp-tests.exe '-test.run=^TestCitaWfpLifecycle$' '-test.timeout=20s'
           if($LASTEXITCODE -ne 0){throw 'Native DNS filter lifecycle failed'}
           Remove-Item Env:CITA_WFP_LAB
           ./Build-All.ps1
