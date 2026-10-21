@@ -73,6 +73,7 @@ public sealed class AgentConfig
     public string WireSockCliPath{get;set;}="";
     public string SourceEndpoint{get;set;}="";
     public string ExpectedEgressIp{get;set;}="";
+    public string ConnectionRevision{get;set;}="";
     public string EndpointIp{get;set;}="";
     public int EndpointPort{get;set;}
 }

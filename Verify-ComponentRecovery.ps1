@@ -187,18 +187,19 @@ try {
     Assert (@(Get-SessionBridge $session).Count -eq 0 -and @(Get-SessionRouter $session).Count -eq 0) 'Invalid process identity was adopted.'
 
     $script:disposed=0;$script:killed=0
-    function FakeProbe($Generation,[bool]$Exited=$true){
+    function FakeProbe($Generation,[bool]$Exited=$true,[int]$Age=0){
         $process=[pscustomobject]@{HasExited=$Exited;ExitCode=0}
         $process|Add-Member ScriptMethod Dispose {$script:disposed++}
         $process|Add-Member ScriptMethod Kill {$script:killed++;$this.HasExited=$true}
         $process|Add-Member ScriptMethod WaitForExit {param($Timeout) return $true}
-        @{process=$process;sessionId='session';bridgeGeneration=$Generation;startedUtc=[DateTime]::UtcNow.AddSeconds(-21);output=[Threading.Tasks.Task]::FromResult('{"healthy":true}');errorOutput=[Threading.Tasks.Task]::FromResult('')}
+        @{process=$process;sessionId='session';bridgeGeneration=$Generation;startedUtc=[DateTime]::UtcNow.AddSeconds(-$Age);output=[Threading.Tasks.Task]::FromResult('{"healthy":true}');errorOutput=[Threading.Tasks.Task]::FromResult('')}
     }
     $session=Read-JsonFile $path
     Assert ((Complete-SessionHealthProbe (FakeProbe 1) $session).discarded) 'Old bridge HTTPS success was accepted.'
     Assert ((Complete-SessionHealthProbe (FakeProbe $session.bridgeGeneration) $session).healthy) 'Current HTTPS success was discarded.'
-    $timeout=Complete-SessionHealthProbe (FakeProbe $session.bridgeGeneration $false) $session
-    Assert (-not $timeout.healthy -and $script:killed -eq 1 -and $script:disposed -eq 3) 'A stuck health process was not cancelled/disposed.'
+    Assert ((Complete-SessionHealthProbe (FakeProbe $session.bridgeGeneration $true 21) $session).discarded) 'An exited probe from before sleep was accepted as fresh.'
+    $timeout=Complete-SessionHealthProbe (FakeProbe $session.bridgeGeneration $false 21) $session
+    Assert ($timeout.discarded -and $script:killed -eq 1 -and $script:disposed -eq 4) 'A stale health process was not cancelled/disposed.'
     1..80|ForEach-Object {Write-WatchState 'session' 'Suspect' ('test-'+$_) 'Unknown'}
     Assert ((Read-JsonFile (Join-Path $root 'data\recovery-events.json')).events.Count -eq 64) 'Recovery events grew without a bound.'
     Write-Output 'PASS: bounded status, exact/localized profile identity, tri-state recovery, coordinator lease, stale sample/generation, Stop priority, VPN-only repair, health cancellation and bounded events. No live network changes.'

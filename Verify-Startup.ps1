@@ -16,7 +16,13 @@ $bootClient=Join-Path $protected 'startup-client'
 $stateFile=Join-Path $shared 'startup-state.json'
 $created=$false
 function Assert($Value,[string]$Message){if(-not $Value){throw $Message}}
-function ReadState{[IO.File]::ReadAllText($stateFile) | ConvertFrom-Json}
+function ReadState{
+    # The service atomically replaces this file. Allow replacement while the
+    # fixture holds its snapshot; an exclusive reader can race that publication.
+    $stream=[IO.File]::Open($stateFile,'Open','Read','ReadWrite, Delete')
+    try{$reader=New-Object IO.StreamReader($stream,[Text.Encoding]::UTF8,$true);try{return ($reader.ReadToEnd()|ConvertFrom-Json)}finally{$reader.Dispose()}}
+    finally{$stream.Dispose()}
+}
 function WaitPhase([string]$Phase){
     $wait=[Diagnostics.Stopwatch]::StartNew()
     while($wait.Elapsed.TotalSeconds -lt 35){if((Test-Path -LiteralPath $stateFile) -and (ReadState).Phase -eq $Phase){return};Start-Sleep -Milliseconds 200}

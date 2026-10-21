@@ -5,6 +5,19 @@ $fixture=Join-Path $PSScriptRoot ('runtime\session-tests-'+[guid]::NewGuid().ToS
 New-Item -ItemType Directory -Path $fixture | Out-Null
 $runtime=$fixture
 try {
+    $gapNow=[datetime]::UtcNow
+    if((Test-WatchObservationGap $gapNow $gapNow.AddSeconds(20)) -or -not(Test-WatchObservationGap $gapNow $gapNow.AddSeconds(21)) -or -not(Test-WatchObservationGap $gapNow $gapNow.AddSeconds(-1))){throw 'Observation gaps and clock rollback must invalidate prior samples.'}
+    $script:stoppedOldProbe=0
+    function Stop-SessionHealthProbe($Probe){$script:stoppedOldProbe++}
+    $oldProbe=@{sessionId='same';bridgeGeneration=1;startedUtc=$gapNow.AddSeconds(-21)}
+    $live=@{id='same';bridgeGeneration=1;running=$true;bridgeReady=$true}
+    if(-not (Complete-SessionHealthProbe $oldProbe $live).discarded -or $script:stoppedOldProbe -ne 1){throw 'Even a completed pre-sleep probe must be discarded.'}
+    function Get-NetIPConfiguration {param($ErrorAction) @([pscustomobject]@{NetAdapter=@{HardwareInterface=$true;Status='Disconnected'};IPv4DefaultGateway='fixture'})}
+    if(Test-RecoveryNetworkAvailable){throw 'A down physical interface cannot spend reconnect attempts.'}
+    function Get-NetIPConfiguration {param($ErrorAction) @([pscustomobject]@{NetAdapter=@{HardwareInterface=$false;Status='Up'};IPv4DefaultGateway='fixture'})}
+    if(Test-RecoveryNetworkAvailable){throw 'A virtual VPN interface cannot prove underlay readiness.'}
+    function Get-NetIPConfiguration {param($ErrorAction) @([pscustomobject]@{NetAdapter=@{HardwareInterface=$true;Status='Up'};IPv4DefaultGateway='fixture'})}
+    if(-not(Test-RecoveryNetworkAvailable)){throw 'A restored physical network must allow bounded recovery.'}
     $now=[DateTime]::UtcNow;$observation=[pscustomobject]@{state='Transitioning';managed=$true}
     $progress=Get-ManagedTransitionProgress $null 'session' $observation $now
     foreach($seconds in @(10,20,30,40,45)){$progress=Get-ManagedTransitionProgress $progress 'session' $observation $now.AddSeconds($seconds)}

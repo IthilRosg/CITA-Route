@@ -33,7 +33,7 @@ internal static class ComponentRecoveryTests
         });
         Process? router=null,bridge=null,restarted=null,guarded=null;var logs=new List<Task<string>>();bool success=false;int frames=0;
         int bridgePort=FreePort(),directPort=FreePort(),vpnPort=FreePort();
-        string routerExe=Path.GetFullPath(Path.Combine(projectRoot,"runtime/smart-router.exe")),bridgeExe=Path.GetFullPath(Path.Combine(projectRoot,"runtime/vpn-bridge.exe"));
+        string routerExe=Path.GetFullPath(EngineTestAssets.Router(projectRoot)),bridgeExe=Path.GetFullPath(Path.Combine(projectRoot,"runtime/vpn-bridge.exe"));
         Process Start(string image,string config)
         {
             var info=new ProcessStartInfo(image){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};

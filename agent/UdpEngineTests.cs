@@ -32,7 +32,7 @@ internal static class UdpEngineTests
             route=new{rules=new object[]{new{inbound=new[]{"direct-probe"},action="route",outbound="direct"},new{inbound=new[]{"vpn-probe"},action="route",outbound="vpn"}},final="direct"}});
         Process Start(string config)
         {
-            var info=new ProcessStartInfo(Path.Combine(root,"runtime","smart-router.exe")){UseShellExecute=false,CreateNoWindow=true};
+            var info=new ProcessStartInfo(EngineTestAssets.Router(root)){UseShellExecute=false,CreateNoWindow=true};
             info.ArgumentList.Add("run");info.ArgumentList.Add("-c");info.ArgumentList.Add(config);return Process.Start(info)!;
         }
         using var bridgeProcess=Start(bridgeConfig);using var router=Start(routerConfig);
