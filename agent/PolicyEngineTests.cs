@@ -17,10 +17,10 @@ internal static class PolicyEngineTests
         string root=Path.Combine(Path.GetFullPath(projectRoot),"runtime","optimization-"+Guid.NewGuid().ToString("N"));
         foreach(string part in new[]{"runtime/rules","private","data","logs"})Directory.CreateDirectory(Path.Combine(root,part));
         using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(110));
-        Process? engine=null;PolicyPublisher? publisher=null;Task? controller=null;Task<string>? stderr=null,stdout=null;
+        Process? engine=null;PolicyPublisher? publisher=null;Task? controller=null,initialPublication=null;Task<string>? stderr=null,stdout=null;
         var failures=new ConcurrentQueue<string>();var latencies=new List<long>();int connections=0;bool success=false;
         var ports=new PolicyPorts{Api=FreePort(),Ack=FreePort(),Proof=FreePort()};int mixed=FreePort();
-        var sinks=new Dictionary<string,TcpListener>();var sinkTasks=new List<Task>();
+        var sinks=new Dictionary<string,TcpListener>();var sinkTasks=new List<Task>();var sinkPeers=new ConcurrentBag<Task>();
         foreach(string route in new[]{"direct","dpi","vpn","fallback"})
         {
             var listener=new TcpListener(IPAddress.Loopback,0);listener.Start();sinks[route]=listener;
@@ -31,21 +31,28 @@ internal static class PolicyEngineTests
                 {
                     while(!budget.IsCancellationRequested)
                     {
-                        using var client=await listener.AcceptTcpClientAsync(budget.Token);
-                        try
+                        var client=await listener.AcceptTcpClientAsync(budget.Token);
+                        sinkPeers.Add(Task.Run(async()=>
                         {
+                            using(client)try
+                            {
                             // Consume the request before closing, otherwise Windows can
                             // reset a socket with unread bytes and discard its reply.
-                            using var timeout=CancellationTokenSource.CreateLinkedTokenSource(budget.Token);timeout.CancelAfter(2000);
-                            byte[] buffer=new byte[2048];int length=0;
-                            while(length<buffer.Length)
+                            byte[] buffer=new byte[2048];
+                            while(!budget.IsCancellationRequested)
                             {
-                                int count=await client.GetStream().ReadAsync(buffer.AsMemory(length),timeout.Token);if(count==0)break;length+=count;
-                                if(Encoding.ASCII.GetString(buffer,0,length).Contains("\r\n\r\n"))break;
+                                int length=0;
+                                while(length<buffer.Length)
+                                {
+                                    int count=await client.GetStream().ReadAsync(buffer.AsMemory(length),budget.Token);if(count==0)return;length+=count;
+                                    if(Encoding.ASCII.GetString(buffer,0,length).Contains("\r\n\r\n"))break;
+                                }
+                                await client.GetStream().WriteAsync(label,budget.Token);
+                                if(Encoding.ASCII.GetString(buffer,0,length).Contains("Connection: close"))return;
                             }
-                            await client.GetStream().WriteAsync(label,timeout.Token);
-                        }
-                        catch(Exception ex)when(ex is IOException or OperationCanceledException or SocketException){}
+                            }
+                            catch(Exception ex)when(ex is IOException or OperationCanceledException or SocketException){}
+                        }));
                     }
                 }
                 catch(Exception ex)when(ex is OperationCanceledException or SocketException or ObjectDisposedException){}
@@ -95,6 +102,12 @@ internal static class PolicyEngineTests
         Dictionary<string,JsonObject[]> Desired(string route)=>PolicyPublisher.Routes.ToDictionary(r=>r,r=>r==route?new[]{PolicyPublisher.Rule(cachedKey)}:Array.Empty<JsonObject>());
         try
         {
+            publisher=new(root,ports,()=>session.Running);
+            int initialAttempts=0;
+            initialPublication=PolicyWorker.InitializePublication(token=>{initialAttempts++;return publisher.Apply(Desired("vpn"),token);},()=>session.Running,budget.Token);
+            // Start the real loopback engine after the first 4-second canary
+            // deadline, reproducing slow socket/file-watcher startup in the VM.
+            await Task.Delay(4300,budget.Token);
             var start=new ProcessStartInfo(Path.Combine(projectRoot,"runtime/smart-router.exe")){UseShellExecute=false,CreateNoWindow=true,RedirectStandardError=true,RedirectStandardOutput=true};
             foreach(string arg in new[]{"run","-c",config,"--disable-color"})start.ArgumentList.Add(arg);
             engine=Process.Start(start)??throw new IOException("Isolated engine did not start.");
@@ -108,8 +121,18 @@ internal static class PolicyEngineTests
             }
             Console.WriteLine("PASS: isolated real engine uses cached VPN on its first connection; all test outputs stay on loopback.");
             Assert(await Request(budget.Token,"::1")=="fallback","An original IPv6 destination must not inherit an IPv4-only adaptive decision.");
-            publisher=new(root,ports,()=>session.Running);
-            await publisher.Apply(Desired("vpn"),budget.Token);
+            await initialPublication;initialPublication=null;
+            Assert(initialAttempts>=2,"A real delayed engine must recover after its first acknowledgement deadline.");
+            Console.WriteLine("PASS: delayed real engine startup retries publication and requires its actual loopback acknowledgement.");
+            await using var persistent=await PolicyTransport.Socks(mixed,domain,443,budget.Token);
+            using var persistentReader=new StreamReader(persistent,Encoding.ASCII,false,128,true);
+            async Task CheckPersistent()
+            {
+                using var timeout=CancellationTokenSource.CreateLinkedTokenSource(budget.Token);timeout.CancelAfter(2000);
+                await persistent.WriteAsync(Encoding.ASCII.GetBytes("HEAD / HTTP/1.1\r\nHost: "+domain+"\r\nConnection: keep-alive\r\n\r\n"),timeout.Token);
+                Assert(await persistentReader.ReadLineAsync(timeout.Token)=="vpn","A rule change interrupted or migrated an established VPN TCP flow.");
+            }
+            await CheckPersistent();
             using(var traffic=CancellationTokenSource.CreateLinkedTokenSource(budget.Token))
             {
                 var hammer=Task.Run(async()=>
@@ -128,6 +151,7 @@ internal static class PolicyEngineTests
                     {
                         string target=i%2==0?"dpi":"vpn";var timer=Stopwatch.StartNew();await publisher.Apply(Desired(target),budget.Token);latencies.Add(timer.ElapsedMilliseconds);
                         Assert(await Request(budget.Token)==target,"Applied acknowledgement must match the actual new outbound.");
+                        await CheckPersistent();
                         if(i%10==9)Console.WriteLine("Transitions verified: "+(i+1)+"/30.");
                     }
                 }
@@ -146,7 +170,7 @@ internal static class PolicyEngineTests
             bool timedOut=false;try{await publisher.Apply(Desired("dpi"),budget.Token);}catch(OperationCanceledException){timedOut=true;}
             Assert(timedOut && publisher.Version==0 && await Request(budget.Token)=="vpn","Missing engine acknowledgement must not remove the old route or report Applied.");
             await publisher.DisposeAsync();publisher=null;
-            Console.WriteLine("PASS: 30 VPN/DPI transitions with mixed hostname/IPv4 requests, independent IPv6, atomic write refusal and lost-ack timeout preserve the protected path.");
+            Console.WriteLine("PASS: 30 VPN/DPI transitions preserve one established VPN TCP flow while new hostname/IPv4 requests take the confirmed path; independent IPv6, atomic write refusal and lost-ack timeout preserve the protected path.");
 
             session.RouterPid=engine.Id;Storage.Write(Path.Combine(root,"runtime/session.json"),session);
             controller=PolicyWorker.Run(root);
@@ -167,6 +191,7 @@ internal static class PolicyEngineTests
                 await Task.Delay(100,budget.Token);if(i==79)throw new IOException("Clear did not reach the engine.");
             }
             Assert(await Request(budget.Token)=="fallback","An explicit Clear must withdraw the adaptive rule after acknowledgement.");
+            await CheckPersistent();
             File.WriteAllText(Path.Combine(root,"private/SmartRouting-AWG2.conf"),"synthetic-new-profile-generation");
             await controller.WaitAsync(TimeSpan.FromSeconds(8));controller=null;
             Assert(Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("phase").GetString()=="NetworkChanged","A changed network/profile generation must stop the real controller and preserve its terminal diagnostic.");
@@ -184,12 +209,13 @@ internal static class PolicyEngineTests
         finally
         {
             session.Running=false;Storage.Write(Path.Combine(root,"runtime/session.json"),session);
+            if(initialPublication!=null){budget.Cancel();try{await initialPublication;}catch(OperationCanceledException){}}
             if(publisher!=null)await publisher.DisposeAsync();
             if(controller!=null){try{await controller.WaitAsync(TimeSpan.FromSeconds(8));}catch{}}
             if(engine!=null){try{engine.Kill(true);await engine.WaitForExitAsync();}catch{}engine.Dispose();}
             if(stderr!=null)File.WriteAllText(Path.Combine(root,"logs/stderr.log"),await stderr);
             if(stdout!=null)File.WriteAllText(Path.Combine(root,"logs/stdout.log"),await stdout);
-            budget.Cancel();foreach(var listener in sinks.Values)listener.Stop();await Task.WhenAll(sinkTasks);
+            budget.Cancel();foreach(var listener in sinks.Values)listener.Stop();await Task.WhenAll(sinkTasks);await Task.WhenAll(sinkPeers);
             var sorted=latencies.Order().ToArray();
             Storage.Write(Path.Combine(root,"result.json"),new{success,connections,transitions=sorted.Length,unexpected=failures.ToArray(),medianMilliseconds=sorted.Length>0?sorted[sorted.Length/2]:0,p95Milliseconds=sorted.Length>0?sorted[(int)Math.Ceiling(sorted.Length*.95)-1]:0,network="loopback only; no TUN, WireSock or service changes",finishedUtc=DateTime.UtcNow});
             Console.WriteLine("Optimization integration artifacts: "+root);

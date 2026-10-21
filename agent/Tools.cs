@@ -25,13 +25,14 @@ public static class Tools
     {if(!Guid.TryParseExact(id,"N",out _))throw new InvalidDataException("Invalid run ID.");return Path.Combine(config.DataDirectory,"runs",id);}
     public static string Profile(string id)
     {if(!Guid.TryParseExact(id,"N",out _))throw new InvalidDataException("Invalid run ID.");return "RoutePilot-Probe-"+id[..12];}
-    public static async Task<(int Code,string Text)> Run(string image,IEnumerable<string> args,int seconds=8,CancellationToken cancellation=default)
+    public static async Task<(int Code,string Text)> Run(string image,IEnumerable<string> args,int seconds=8,CancellationToken cancellation=default,bool captureOutput=true)
     {
-        var info=new ProcessStartInfo(image){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
+        var info=new ProcessStartInfo(image){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=captureOutput,RedirectStandardError=captureOutput};
         foreach(var argument in args)info.ArgumentList.Add(argument);
         using var process=Process.Start(info)??throw new IOException("Could not start command.");
         Task<byte[]> Read(Stream input)=>Task.Run(async()=>{using var bytes=new MemoryStream();await input.CopyToAsync(bytes);return bytes.ToArray();});
-        var output=Read(process.StandardOutput.BaseStream);var error=Read(process.StandardError.BaseStream);
+        var output=captureOutput?Read(process.StandardOutput.BaseStream):Task.FromResult(Array.Empty<byte>());
+        var error=captureOutput?Read(process.StandardError.BaseStream):Task.FromResult(Array.Empty<byte>());
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(cancellation);timeout.CancelAfter(TimeSpan.FromSeconds(seconds));
         try{await process.WaitForExitAsync(timeout.Token);}
         catch{try{process.Kill(true);await process.WaitForExitAsync();}catch{}throw;}

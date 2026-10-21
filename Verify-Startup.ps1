@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param()
+param([ValidateRange(1,240)][int]$ReadinessDelaySeconds=185)
 $ErrorActionPreference='Stop'
 # This test installs a real SYSTEM service with a synthetic filesystem-only
 # transport. It must never run on a user's existing installation.
@@ -71,6 +71,14 @@ $proof.SessionZero=([Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0)
 if($Action -eq 'Start'){
     $proof.Starts++
     $id=[guid]::NewGuid().ToString('N')
+    $failOnce=Join-Path $PSScriptRoot 'data\fail-policy-once.txt'
+    if(Test-Path -LiteralPath $failOnce){
+        Remove-Item -LiteralPath $failOnce
+        [IO.File]::WriteAllText((Join-Path $runtime 'session.json'),'{"running":false}')
+        [IO.File]::WriteAllText((Join-Path $runtime 'policy-ack-failure.json'),(@{schema=1;sessionId=$id;route='direct';stage='SocksHandshake';code='ConnectionRefused';updatedUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json))
+        [IO.File]::WriteAllText((Join-Path $runtime 'policy-heartbeat.json'),(@{schema=1;sessionId=$id;phase='Error';progressUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json))
+        [IO.File]::WriteAllText($proofFile,($proof|ConvertTo-Json));exit 1
+    }
     [IO.File]::WriteAllText((Join-Path $runtime 'session.json'),(@{id=$id;running=$true;bridgeReady=$true;bridgeGeneration=1}|ConvertTo-Json))
     [IO.File]::WriteAllText((Join-Path $runtime 'session-health.json'),(@{sessionId=$id;bridgeGeneration=1;healthy=(-not(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'data\fail-health.txt')));updatedUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json))
 }elseif($Action -eq 'Stop'){$proof.Stops++;[IO.File]::WriteAllText((Join-Path $runtime 'session.json'),'{"running":false}')}else{exit 2}
@@ -80,6 +88,23 @@ if($Action -eq 'Start'){
     [IO.File]::WriteAllText((Join-Path $protected 'agent-config.json'),($config|ConvertTo-Json))
     & $agent --configure-boot $client on
     Assert ($LASTEXITCODE -eq 0) 'Protected startup snapshot could not be configured.'
+    $reservation=[IO.File]::Open((Join-Path $client 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','None')
+    $wrong=[IO.File]::Open((Join-Path $client 'runtime\wrong.lock'),'OpenOrCreate','ReadWrite','None')
+    try{
+        & $agent --configure-boot $client refresh
+        Assert ($LASTEXITCODE -ne 0) 'A parallel setup reservation was ignored.'
+        & $agent --configure-boot $client refresh $PID $wrong.SafeFileHandle.DangerousGetHandle().ToInt64()
+        Assert ($LASTEXITCODE -ne 0) 'The snapshot accepted an unrelated file handle.'
+        & $agent --configure-boot $client refresh $PID $reservation.SafeFileHandle.DangerousGetHandle().ToInt64()
+        Assert ($LASTEXITCODE -eq 0) 'Snapshot refresh could not retain the existing exclusive setup reservation.'
+        $locked=$false;try{$extra=[IO.File]::Open((Join-Path $client 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','None');$extra.Dispose()}catch [IO.IOException]{$locked=$true}
+        Assert $locked 'Borrowing a setup reservation released the original lock.'
+    }finally{$reservation.Dispose();$wrong.Dispose()}
+    $sharedLock=[IO.File]::Open((Join-Path $client 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','ReadWrite')
+    try{
+        & $agent --configure-boot $client refresh $PID $sharedLock.SafeFileHandle.DangerousGetHandle().ToInt64()
+        Assert ($LASTEXITCODE -ne 0) 'A shared file handle was mistaken for an exclusive setup reservation.'
+    }finally{$sharedLock.Dispose()}
     Assert ((ReadState).Phase -eq 'ReadyForBoot') 'Enabling startup must defer until the next boot.'
     Assert (-not(Test-Path -LiteralPath (Join-Path $bootClient 'private\fixture.conf'))) 'Startup snapshot copied a VPN configuration.'
     New-Service -Name $serviceName -BinaryPathName ('"'+$agent+'" --service') -StartupType Automatic|Out-Null;$created=$true
@@ -90,6 +115,14 @@ if($Action -eq 'Start'){
     $proofFile=Join-Path $bootClient 'logs\startup-proof.json'
     $proof=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
     Assert ($proof.System -and $proof.SessionZero -and $proof.Starts -eq 1) 'Startup did not execute as SYSTEM in session 0, exactly once.'
+    $bootProof=Get-Content -LiteralPath (Join-Path $shared 'startup-boot-proof.json') -Raw|ConvertFrom-Json
+    Assert ($bootProof.ServiceSessionId -eq 0 -and $bootProof.ConnectedUtc -and $bootProof.SessionId -and $bootProof.BridgeGeneration -eq 1) 'Startup evidence did not identify the actual connected generation and service session.'
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\Collect-StartupEvidence.ps1') -Action Arm -ClientRoot $client|Out-Null
+    Assert ($LASTEXITCODE -eq 0) 'Startup evidence baseline failed.'
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\Collect-StartupEvidence.ps1') -ClientRoot $client|Out-Null
+    Assert ($LASTEXITCODE -eq 0) 'Startup evidence collection failed.'
+    $report=Get-Content -LiteralPath (Join-Path $client 'logs\startup-boot-report.json') -Raw|ConvertFrom-Json
+    Assert (-not $report.rebootBeforeSignInObserved -and -not $report.kernelBootChanged) 'A simulated startup was incorrectly claimed as an actual reboot before sign-in.'
     & $agent --configure-boot $client on
     Assert ($LASTEXITCODE -ne 0) 'Active startup snapshot was overwritten.'
     & $agent boot-stop $client|Out-Null
@@ -97,17 +130,33 @@ if($Action -eq 'Start'){
     WaitPhase 'StoppedForBoot'
     StopFixtureService;Start-Service -Name $serviceName;Start-Sleep -Seconds 2
     Assert ((ReadState).Phase -eq 'StoppedForBoot') 'Service restart undid intentional manual Stop.'
+    # A late WireSock dependency may become ready after the former 3-minute
+    # limit. Only the explicitly dispatched extended test waits that long.
+    StopFixtureService;Remove-Item -LiteralPath $ready;NewBoot;Start-Service -Name $serviceName;WaitPhase 'WaitingForNetwork'
+    Start-Sleep -Seconds $ReadinessDelaySeconds
+    Assert ((ReadState).Phase -eq 'WaitingForNetwork') 'Delayed readiness was abandoned instead of waiting for the dependency.'
+    [IO.File]::WriteAllText($ready,'ready');WaitPhase 'Connected'
+    & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
     # A cancel while waiting must not invoke disconnect or disturb any VPN.
     StopFixtureService;Remove-Item -LiteralPath $ready;NewBoot;Start-Service -Name $serviceName;WaitPhase 'WaitingForNetwork'
+    $beforeCancel=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
     & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
     $proof=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
-    Assert ($proof.Starts -eq 1 -and $proof.Stops -eq 1) 'Cancelling network readiness touched the transport.'
+    Assert ($proof.Starts -eq $beforeCancel.Starts -and $proof.Stops -eq $beforeCancel.Stops) 'Cancelling network readiness touched the transport.'
     # Stale journals from the previous Windows boot cannot block startup.
     StopFixtureService;[IO.File]::WriteAllText($ready,'ready')
     [IO.File]::WriteAllText((Join-Path $client 'runtime\session.json'),'{"running":true,"routerPid":2147483000,"bridgePid":2147483001}')
     NewBoot;Start-Service -Name $serviceName;WaitPhase 'Connected'
     & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
     [IO.File]::WriteAllText((Join-Path $client 'runtime\session.json'),'{"running":false}')
+    # A single fresh, cleaned policy timeout can retry without requiring a login.
+    StopFixtureService;[IO.File]::WriteAllText((Join-Path $bootClient 'data\fail-policy-once.txt'),'once');NewBoot
+    $before=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
+    Start-Service -Name $serviceName;WaitPhase 'Connected'
+    $after=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
+    $evidence=Get-Content -LiteralPath (Join-Path $shared 'startup-boot-proof.json') -Raw|ConvertFrom-Json
+    Assert ($after.Starts -eq ($before.Starts+2) -and $after.Stops -eq $before.Stops -and $evidence.ConnectionAttempts -eq 2) 'A fresh cleaned policy startup failure did not receive exactly one checked retry.'
+    & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
     # A failed independent health postcondition rolls back the attempted route.
     StopFixtureService;[IO.File]::WriteAllText((Join-Path $bootClient 'data\fail-health.txt'),'fail');NewBoot
     $before=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
@@ -128,6 +177,16 @@ if($Action -eq 'Start'){
     $after=Get-Content -LiteralPath $proofFile -Raw|ConvertFrom-Json
     Assert ($after.Starts -eq $before.Starts) 'Changed startup code was executed.'
     & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
+    # Refresh a changed profile without undoing this boot's manual Stop.
+    StopFixtureService
+    $config.WireSockSourceProfile='fixture-next'
+    [IO.File]::WriteAllText((Join-Path $protected 'agent-config.json'),($config|ConvertTo-Json))
+    & $agent --configure-boot $client refresh
+    Assert ($LASTEXITCODE -eq 0 -and (ReadState).Phase -eq 'StoppedForBoot') 'Refreshing the profile lost the manual-stop decision.'
+    $selected=Get-Content -LiteralPath (Join-Path $bootClient 'data\connection.json') -Raw|ConvertFrom-Json
+    Assert ($selected.SourceProfile -eq 'fixture-next') 'Refreshed snapshot kept the previous profile.'
+    Start-Service -Name $serviceName;Start-Sleep -Seconds 2
+    Assert ((ReadState).Phase -eq 'StoppedForBoot') 'Profile refresh reconnected in the same Windows boot.'
     & $agent boot-disable $client|Out-Null
     Assert ($LASTEXITCODE -eq 0 -and -not (ReadState).Enabled) 'Uninstall could not disable the inactive startup setting.'
     StopFixtureService;NewBoot;Start-Service -Name $serviceName;Start-Sleep -Seconds 2

@@ -112,6 +112,15 @@ public static class ResourceMonitor
             try{state=engine.Update(sample);}
             catch(InvalidDataException){engine=new ResourceMonitorEngine(ResourceStateCache.History(Path.Combine(directory,"resource-state.json")));state=engine.Update(sample);}
             try{Storage.Write(Path.Combine(directory,"resource-state.json"),state);}catch(Exception ex)when(ex is IOException or UnauthorizedAccessException){}
+            // Independent observation survives a missing watcher or a closed UI.
+            // It records evidence only; it never starts or repairs a route.
+            try
+            {
+                Cita.Diagnostics.SessionEvidence.Observe(appRoot,"ordinary",directory,DateTime.UtcNow);
+                if(File.Exists(Path.Combine(Cita.Startup.StartupPaths.Client,"runtime","session.json")))
+                    Cita.Diagnostics.SessionEvidence.Observe(Cita.Startup.StartupPaths.Client,"startup",directory,DateTime.UtcNow);
+            }
+            catch(Exception ex)when(ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException){}
             int seconds=sample.Pools.Any(p=>p.UsedPercent>=70||p.Allocation=="ResourceFailure")?2:10;
             try{await Task.Delay(TimeSpan.FromSeconds(seconds),stop);}catch(OperationCanceledException)when(stop.IsCancellationRequested){break;}
         }

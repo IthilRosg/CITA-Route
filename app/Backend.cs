@@ -151,6 +151,9 @@ public sealed class Backend : IDisposable
     public static string FriendlyError(string message)
     {
         if(message.Contains("Update preparation is in progress"))return "CITA Route готовит обновление. Подключение будет доступно после установки.";
+        if(message.Contains("virtual routing adapter is still in use"))return "Виртуальный адаптер занят или ещё отключается. Подожди и повтори подключение.";
+        if(message.Contains("Helper exited before its network interface") || message.Contains("helper did not finish network"))return "Сетевой компонент не смог завершить запуск. Подробности — в журнале.";
+        if(message.Contains("routing engine exited during policy setup"))return "Маршрутизатор остановился до применения правил. Подробности — в журнале.";
         if(message.Contains("Previous VPN restore needs attention"))return "Подключение не завершено; прежний VPN не удалось вернуть автоматически. Открой журнал и проверь прежнее подключение.";
         if(message.Contains("VPNUS reconnected") || message.Contains("VPNUS connection has no supported") || message.Contains("VPNUS service identity"))return "Не удалось безопасно остановить VPNUS автоматически. Проверь его клиент и повтори подключение.";
         if(message.Contains("competing WireSock connection did not stop"))return "WireSock не подтвердил отключение прежнего подключения. Проверь его состояние и повтори попытку.";
@@ -168,6 +171,9 @@ public sealed class Backend : IDisposable
         if(message.Contains("Disconnect RoutePilot before"))return "Перед настройкой отключи действующий маршрут CITA Route. Подробности — в журнале.";
         if(message.Contains("Select an existing WireSock"))return "Профиль больше не доступен. Выбери другой профиль подключения.";
         if(message.Contains("EgressMismatch"))return "Выход VPN отличается от профиля. Проверь IP выхода в расширенных настройках.";
+        if(message.Contains("MissingExpectedEgress"))return "WireSock не сообщил IP выхода VPN. Укажи его в расширенных настройках подключения.";
+        if(message.Contains("ProfileNotConnected") || message.Contains("ProfileChanged"))return "WireSock не подтвердил выбранный профиль во время проверки. Повтори подключение.";
+        if(message.Contains("StatusUnavailable"))return "Не удалось прочитать состояние WireSock. Проверь его службу и повтори подключение.";
         if(message.Contains("data path did not pass"))return "VPN не прошёл проверку HTTPS. Проверь профиль и доступность сервера.";
         if(message.Contains("Connection operation cancelled"))return "Подключение отменено.";
         return string.IsNullOrWhiteSpace(message)?"Операция не завершена. Открой журнал.":message;

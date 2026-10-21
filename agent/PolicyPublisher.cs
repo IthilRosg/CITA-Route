@@ -15,6 +15,8 @@ internal sealed class PolicyPublisher : IAsyncDisposable
     readonly PolicyPorts _ports;
     readonly Func<bool> _current;
     readonly Dictionary<string,JsonObject[]> _visible=new();
+    sealed record PendingPublication(string Rules,string Marker,string Document);
+    readonly Dictionary<string,PendingPublication> _pending=new();
     readonly CancellationTokenSource _stop=new();
     readonly byte[] _proof=Guid.NewGuid().ToByteArray();
     readonly TcpListener _listener;
@@ -49,26 +51,63 @@ internal sealed class PolicyPublisher : IAsyncDisposable
     internal static JsonObject Rule(PolicyKey key)=>new(){["domain"]=new JsonArray(key.Domain),["process_path"]=new JsonArray(key.Application),["network"]="tcp",["port"]=new JsonArray(443)};
     static string Key(JsonObject rule)=>rule.ToJsonString(Storage.Wire);
     void Check(CancellationToken stop){stop.ThrowIfCancellationRequested();if(!_current())throw new OperationCanceledException("Routing generation changed.");}
+    bool MatchesPending(string route,PendingPublication pending)
+    {
+        try
+        {
+            using var input=new FileStream(PathFor(route),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+            using var reader=new StreamReader(input);
+            return reader.ReadToEnd()==pending.Document;
+        }
+        catch(Exception ex)when(ex is FileNotFoundException or DirectoryNotFoundException){return false;}
+    }
     async Task WriteAndConfirm(string route,JsonObject[] rules,CancellationToken stop)
     {
         Check(stop);
-        string marker="v"+Guid.NewGuid().ToString("N")+".routepilot.invalid";
-        var all=rules.Select(r=>r.DeepClone()).ToList();
-        all.Add(new JsonObject{["domain"]=new JsonArray(marker),["network"]="tcp",["port"]=new JsonArray(443)});
-        Storage.Write(PathFor(route),new{version=3,rules=all});_visible[route]=rules;
-        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(stop,_stop.Token);deadline.CancelAfter(TimeSpan.FromSeconds(4));
-        while(true)
+        string signature=JsonSerializer.Serialize(rules,Storage.Wire);
+        // Keep an unchanged, unacknowledged generation stable across bounded
+        // retries. Rewriting a fresh marker every deadline can outrun a delayed
+        // file watcher. Changed rules or file contents always need a new proof.
+        if(!_pending.TryGetValue(route,out var pending)||pending.Rules!=signature||!MatchesPending(route,pending))
         {
-            Check(stop);deadline.Token.ThrowIfCancellationRequested();
+            string freshMarker="v"+Guid.NewGuid().ToString("N")+".routepilot.invalid";
+            var all=rules.Select(r=>r.DeepClone()).ToList();
+            all.Add(new JsonObject{["domain"]=new JsonArray(freshMarker),["network"]="tcp",["port"]=new JsonArray(443)});
+            var document=new{version=3,rules=all};Storage.Write(PathFor(route),document);
+            _pending[route]=pending=new(signature,freshMarker,JsonSerializer.Serialize(document,Storage.Json));
+        }
+        string marker=pending.Marker;_visible[route]=rules;
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(stop,_stop.Token);deadline.CancelAfter(TimeSpan.FromSeconds(4));
+        string stage="SocksHandshake",code="NotAttempted";
+        try
+        {
+            while(true)
+            {
+                Check(stop);deadline.Token.ThrowIfCancellationRequested();
+                try
+                {
+                    stage="SocksHandshake";
+                    using var attempt=CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);attempt.CancelAfter(350);
+                    await using var stream=await PolicyTransport.Socks(_ports.Ack,marker,443,attempt.Token);
+                    stage="Proof";byte[] proof=new byte[_proof.Length];await stream.ReadExactlyAsync(proof,attempt.Token);
+                    if(proof.SequenceEqual(_proof)){_pending.Remove(route);return;}
+                    code="ProofMismatch";
+                }
+                catch(Exception ex)when(ex is IOException or SocketException or OperationCanceledException)
+                {code=ex is SocketException socket?socket.SocketErrorCode.ToString():ex is IOException&&ex.Message=="Local SOCKS route refused."?"LocalRouteRefused":ex.GetType().Name;}
+                await Task.Delay(35,deadline.Token);
+            }
+        }
+        catch(OperationCanceledException)
+        {
+            // One bounded record per failed canary deadline. No marker,
+            // application path, address, payload or native exception message.
             try
             {
-                using var attempt=CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);attempt.CancelAfter(350);
-                await using var stream=await PolicyTransport.Socks(_ports.Ack,marker,443,attempt.Token);
-                byte[] proof=new byte[_proof.Length];await stream.ReadExactlyAsync(proof,attempt.Token);
-                if(proof.SequenceEqual(_proof))return;
-            }
-            catch(Exception ex)when(ex is IOException or SocketException or OperationCanceledException){}
-            await Task.Delay(35,deadline.Token);
+                if(_current()&&!stop.IsCancellationRequested&&!_stop.IsCancellationRequested)
+                    Storage.Write(Path.Combine(_root,"runtime","policy-ack-failure.json"),new PolicyAckFailure{SessionId=ComponentLiveness.Read<PolicySession>(Path.Combine(_root,"runtime","session.json")).Id,Route=route,Stage=stage,Code=code,UpdatedUtc=DateTime.UtcNow});
+            }catch{}
+            throw;
         }
     }
     internal async Task Apply(IReadOnlyDictionary<string,JsonObject[]> desired,CancellationToken stop)

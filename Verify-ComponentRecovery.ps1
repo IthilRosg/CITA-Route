@@ -74,6 +74,7 @@ try {
         if($script:bridgeRunning){[pscustomobject]@{Id=20;Path=$bridgeExe}}
     }
     function Get-WireSockObservation {[pscustomobject]@{state=$script:state}}
+    function Get-BridgeListenerObservation($Session){return $(if($script:bridgeRunning){'Ready'}else{'Missing'})}
     function Get-SessionNetworkSignature {'network'}
     function Connect-WireSock {$script:connects++;$script:state='Connected'}
     function Stop-Process {param([Parameter(ValueFromPipeline=$true)]$InputObject,[switch]$Force) process {Assert ($InputObject.Id -eq 20) 'Main router was stopped.';$script:bridgeRunning=$false;$script:stops++}}

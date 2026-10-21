@@ -41,12 +41,29 @@ function Get-SessionBridge($Session) {
     })}catch{return @()}
 }
 
+function Get-BridgeListenerObservation($Session) {
+    $owned=@(Get-SessionBridge $Session)
+    if($owned.Count -ne 1){return 'Missing'}
+    try {
+        $listeners=@(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort 20808 -ErrorAction Stop)
+        if(-not $listeners.Count){return 'Missing'}
+        if(@($listeners | Where-Object OwningProcess -eq $owned[0].Id).Count -eq $listeners.Count){return 'Ready'}
+        return 'Foreign'
+    }catch {
+        # An empty CIM result uses ObjectNotFound; access/provider errors must not
+        # be turned into proof that a live bridge needs to be killed.
+        if($_.CategoryInfo.Category -eq 'ObjectNotFound'){return 'Missing'}
+        return 'Unknown'
+    }
+}
+
 function Invoke-BridgeUpdate([bool]$Connected) {
     $session=Read-JsonFile (Join-Path $runtime 'session.json')
     if(Test-SessionVpnHold $session){$Connected=$false}
     $bridgeProcesses = @(Get-SessionBridge $session)
     $lostPath = Join-Path $root 'logs\connection-lost.txt'
     if (-not $Connected) {
+        if($session.bridgeReady -or $bridgeProcesses.Count){Write-ConnectionEvidence $root 'BridgePaused' $session}
         Set-BridgeSession $false
         $bridgeProcesses | Stop-Process -Force
         if (-not (Test-Path -LiteralPath $lostPath)) {
@@ -56,14 +73,25 @@ function Invoke-BridgeUpdate([bool]$Connected) {
         return
     }
     if ($bridgeProcesses.Count) {
-        Set-BridgeSession $true $bridgeProcesses[0].Id
-        Remove-Item -LiteralPath $lostPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath (Join-Path $root 'logs\recovery-error.log') -Force -ErrorAction SilentlyContinue
-        return
+        $listener=Get-BridgeListenerObservation $session
+        if($listener -eq 'Ready'){
+            Set-BridgeSession $true $bridgeProcesses[0].Id
+            Remove-Item -LiteralPath $lostPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath (Join-Path $root 'logs\recovery-error.log') -Force -ErrorAction SilentlyContinue
+            return
+        }
+        if($listener -eq 'Unknown'){throw 'The bridge listener could not be verified; no live process was restarted.'}
+        Set-BridgeSession $false
+        if($listener -eq 'Foreign'){throw 'The local bridge port belongs to another process; no unrelated process was stopped.'}
+        Write-JsonFile (Join-Path $root 'logs\bridge-repair-last.json') @{schema=1;sessionId=$session.id;bridgeGeneration=$session.bridgeGeneration;code='OwnedListenerMissing';updatedUtc=[DateTime]::UtcNow.ToString('o')}
+        Write-ConnectionEvidence $root 'BridgeListenerMissing' $session
+        $bridgeProcesses | Stop-Process -Force
+        foreach($process in $bridgeProcesses){if($process -is [Diagnostics.Process] -and -not $process.WaitForExit(5000)){throw 'The owned bridge has not finished stopping.'}}
     }
     Set-BridgeSession $false
     $restartedBridge = Start-Helper $bridgeExe (Join-Path $runtime 'bridge.json')
     Set-BridgeSession $true $restartedBridge.Id $restartedBridge
+    Write-ConnectionEvidence $root 'BridgeStarted' (Read-JsonFile (Join-Path $runtime 'session.json'))
     Remove-Item -LiteralPath $lostPath -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $root 'logs\recovery-error.log') -Force -ErrorAction SilentlyContinue
     [IO.File]::AppendAllText((Join-Path $root 'logs\recovery.log'),
@@ -83,6 +111,7 @@ function Stop-LostRouterSession([string]$ExpectedId) {
         $session | Add-Member -NotePropertyName running -NotePropertyValue $false -Force
         $session | Add-Member -NotePropertyName bridgeReady -NotePropertyValue $false -Force
         $session | Add-Member -NotePropertyName stoppedUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+        $session | Add-Member -NotePropertyName stopReason -NotePropertyValue 'RouterExited' -Force
         Write-JsonFile $sessionPath $session
         Disconnect-ManagedWireSock
         [IO.File]::WriteAllText((Join-Path $root 'logs\connection-lost.txt'),

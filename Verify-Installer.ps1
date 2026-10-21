@@ -103,7 +103,14 @@ try{
     foreach($link in $links){Assert (-not(Test-Path -LiteralPath $link)) 'Uninstall left a shortcut.'}
     Assert ([IO.File]::ReadAllText((Join-Path $client 'force-vpn.txt')) -eq 'keep-user-rule.example') 'Uninstall removed personal rules.'
     Assert ([IO.File]::ReadAllText((Join-Path $client 'private\fixture.txt')) -eq 'keep-local-data') 'Uninstall removed private local files.'
-    Write-Output 'PASS: actual installer, Desktop/Start shortcuts, Windows Apps registration, repeat install, active-route refusal, upgraded uninstall and personal-data preservation. No VPN/services changed.'
+    Assert ((Install 'install-after-uninstall.log') -eq 0) 'Retained personal data blocked installation after uninstall.'
+    Assert ([IO.File]::ReadAllText((Join-Path $client 'force-vpn.txt')) -eq 'keep-user-rule.example') 'Install after uninstall changed personal rules.'
+    Assert ([IO.File]::ReadAllText((Join-Path $client 'data\preferences.json')) -eq '{"fixture":true}') 'Install after uninstall changed preferences.'
+    Assert ([IO.File]::ReadAllText((Join-Path $client 'private\fixture.txt')) -eq 'keep-local-data') 'Install after uninstall changed private local files.'
+    Assert ((Uninstall 'final-uninstall.log') -eq 0) 'Final fixture uninstall failed.'
+    Assert (-not(Test-Path -LiteralPath $registry)) 'Final uninstall left its registry entry.'
+    foreach($link in $links){Assert (-not(Test-Path -LiteralPath $link)) 'Final uninstall left a shortcut.'}
+    Write-Output 'PASS: actual installer, Desktop/Start shortcuts, Windows Apps registration, repeat install, active-route refusal, upgraded uninstall, install after uninstall and personal-data preservation. No VPN/services changed.'
 }finally{
     # Do not remove the fixture on failure: keep logs and the test uninstaller
     # available for diagnosis, rather than orphaning OS integration entries.

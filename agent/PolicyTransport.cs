@@ -109,7 +109,44 @@ internal static class PolicyTransport
         }
         catch(Exception ex)when(ex is HttpRequestException or IOException or SocketException or OperationCanceledException or JsonException or FormatException or InvalidOperationException or KeyNotFoundException){return null;}
     }
-    internal static async Task<RouteSelection> Select(Func<int,CancellationToken,Task<CandidateResult>> probe,PolicyPorts ports,CancellationToken stop)
+    internal static async Task<(RouteSelection Selection,long DnsMilliseconds)> SelectResolved(string domain,PolicyPorts ports,CancellationToken stop,bool allowUnstableFallback=false,
+        Func<int,CancellationToken,Task<IPAddress[]?>>? resolve=null,Func<IPAddress,int,CancellationToken,Task<CandidateResult>>? probe=null)
+    {
+        if(PolicySafety.Domain(domain)!=domain)throw new ArgumentException("Invalid public policy domain.");
+        using var dnsStop=CancellationTokenSource.CreateLinkedTokenSource(stop);
+        async Task<(IPAddress[]? Addresses,long Milliseconds)> Lookup(int port)
+        {
+            var timer=Stopwatch.StartNew();IPAddress[]? addresses=null;
+            try
+            {
+                // Match dns-direct/dns-vpn in the prepared engine. A DNS answer
+                // obtained through VPN must not certify a broken direct resolver
+                // or pin the direct probe to another region's CDN address.
+                addresses=await (resolve?.Invoke(port,dnsStop.Token)??ResolveOne(domain,"1.1.1.1","/dns-query?type=A&name=",IPAddress.Parse("1.1.1.1"),port,dnsStop.Token));
+                if(addresses is not {Length:>0}||addresses.Any(ip=>!PolicySafety.Public(ip)))addresses=null;
+            }
+            catch(OperationCanceledException)when(dnsStop.IsCancellationRequested){}
+            return(addresses,timer.ElapsedMilliseconds);
+        }
+        var direct=Lookup(ports.Direct);var vpn=Lookup(ports.Vpn);
+        RouteSelection selected;
+        try
+        {
+            selected=await Select(async(port,token)=>
+            {
+                var answer=await (port==ports.Vpn?vpn:direct).WaitAsync(token);
+                if(answer.Addresses==null)return new(false,false,"Configured route DNS unavailable",answer.Milliseconds);
+                return await (probe?.Invoke(answer.Addresses[0],port,token)??Probe(domain,answer.Addresses[0],port,token));
+            },ports,stop,allowUnstableFallback);
+        }
+        finally{dnsStop.Cancel();await Task.WhenAll(direct,vpn);}
+        var timings=selected.Candidates.Select(c=>c.Outcome==ProbeOutcome.Unavailable&&(c.Route=="vpn"?vpn.Result:direct.Result).Addresses==null?c with{Outcome=ProbeOutcome.DnsUnavailable}:c).ToArray();
+        var outcome=selected.Route==null&&timings.Any(c=>c.Outcome==ProbeOutcome.DnsUnavailable)&&timings.All(c=>c.Outcome is ProbeOutcome.DnsUnavailable or ProbeOutcome.Cancelled)?ProbeOutcome.DnsUnavailable:selected.Outcome;
+        long dnsMs=selected.Route=="vpn"?vpn.Result.Milliseconds:selected.Route!=null?direct.Result.Milliseconds:Math.Max(direct.Result.Milliseconds,vpn.Result.Milliseconds);
+        return(selected with{Outcome=outcome,Candidates=timings},dnsMs);
+    }
+    internal static bool UnstablePreferred(RouteSelection selection)=>selection.Route!=null&&selection.Candidates.TakeWhile(c=>c.Route!=selection.Route).Any(c=>c.Outcome==ProbeOutcome.Indeterminate);
+    internal static async Task<RouteSelection> Select(Func<int,CancellationToken,Task<CandidateResult>> probe,PolicyPorts ports,CancellationToken stop,bool allowUnstableFallback=false)
     {
         using var cancel=CancellationTokenSource.CreateLinkedTokenSource(stop);
         var candidates=new[]{("direct",ports.Direct),("dpi",ports.Dpi),("vpn",ports.Vpn)};
@@ -134,7 +171,8 @@ internal static class PolicyTransport
             foreach(var task in tasks)
             {
                 var result=await task;stop.ThrowIfCancellationRequested();
-                if(result.Outcome is ProbeOutcome.TlsAuthenticationError or ProbeOutcome.Indeterminate){outcome=result.Outcome;break;}
+                if(result.Outcome==ProbeOutcome.TlsAuthenticationError){outcome=result.Outcome;break;}
+                if(result.Outcome==ProbeOutcome.Indeterminate){outcome=result.Outcome;if(!allowUnstableFallback)break;continue;}
                 if(result.Outcome==ProbeOutcome.Reachable){outcome=result.Outcome;selected=result.Route;elapsed=result.Milliseconds;break;}
             }
         }

@@ -51,7 +51,30 @@ function Get-SessionRouter($Session) {
     })}catch{return @()}
 }
 
-function Get-WatchRecoveryAction([bool]$RouterAlive,[int]$NetworkMismatch,[string]$WireSockState,[int]$DisconnectedSamples) {
+function Get-ManagedTransitionProgress($Previous,[string]$SessionId,$Observation,[datetime]$Now) {
+    if(-not $SessionId -or $Observation.state -ne 'Transitioning' -or -not $Observation.managed){return $null}
+    $first=$Now
+    try{
+        $updated=([datetime]$Previous.updatedUtc).ToUniversalTime();$started=([datetime]$Previous.startedUtc).ToUniversalTime()
+        # A long watcher pause, clock rollback or another session starts a new
+        # observation window; suspended time alone never authorizes a reset.
+        if($Previous.schema -eq 1 -and $Previous.sessionId -eq $SessionId -and $started -le $updated -and $updated -le $Now -and ($Now-$updated).TotalSeconds -le 20){$first=$started}
+    }catch{}
+    return @{schema=1;sessionId=$SessionId;startedUtc=$first.ToString('o');updatedUtc=$Now.ToString('o');elapsedSeconds=[Math]::Max(0,[Math]::Floor(($Now-$first).TotalSeconds))}
+}
+function Test-ManagedTransitionTimeout($Progress,[string]$SessionId,$Observation,[datetime]$Now) {
+    try{
+        $updated=([datetime]$Progress.updatedUtc).ToUniversalTime();$started=([datetime]$Progress.startedUtc).ToUniversalTime()
+        return [bool]($Observation.state -eq 'Transitioning' -and $Observation.managed -and $Progress.schema -eq 1 -and $Progress.sessionId -eq $SessionId -and
+            $started -le $updated -and $updated -le $Now -and ($Now-$updated).TotalSeconds -le 20 -and ($Now-$started).TotalSeconds -ge 45)
+    }catch{return $false}
+}
+function Get-WatchRecoveryAction([bool]$RouterAlive,[int]$NetworkMismatch,[string]$WireSockState,[int]$DisconnectedSamples,[int]$ManagedTransitionSeconds=0) {
+    if($WireSockState -eq 'Transitioning' -and $ManagedTransitionSeconds -ge 45){return 'RepairVpn'}
+    # Reconnect itself requires a confirmed managed state. Do not consume its
+    # retry budget while WireSock is restoring a link after sleep, or when
+    # ownership is unknown. The independent bridge safety pause still applies.
+    if($WireSockState -notin @('Connected','Disconnected')){return 'Observe'}
     if(-not $RouterAlive){return 'Reconnect'}
     if($NetworkMismatch -ge 2){return 'Reconnect'}
     if($WireSockState -eq 'Disconnected' -and $DisconnectedSamples -ge 3){return 'RepairVpn'}
@@ -65,11 +88,22 @@ function Repair-SessionVpn([string]$ExpectedId) {
     $session=Read-JsonFile (Join-Path $runtime 'session.json')
     if(Test-SessionVpnHold $session){return}
     if(-not @(Get-SessionRouter $session).Count){return}
-    $signature=Get-SessionNetworkSignature
-    if($signature -ne $session.networkSignature){throw 'Network changed; component repair deferred.'}
     if($session.mode -eq 'Start' -and (Get-NetAdapter -Name 'VPNUS' -ErrorAction SilentlyContinue).Status -eq 'Up'){throw 'VPNUS is active; component repair paused.'}
     $observation=Get-WireSockObservation
+    if($observation.state -eq 'Transitioning'){
+        $progress=$null;try{$progress=Read-JsonFile (Join-Path $runtime 'managed-transition.json')}catch{}
+        if(-not(Test-ManagedTransitionTimeout $progress $ExpectedId $observation ([DateTime]::UtcNow))){return}
+        # Reset only the confirmed managed pending connection. The ordinary
+        # disconnected-state recovery will then reconnect or rebind the router
+        # as required by the current network, under its existing checks.
+        Invoke-BridgeUpdate $false
+        if(-not(Test-RecoverySession $ExpectedId)){return}
+        Disconnect-ManagedWireSock -OnlyTransitioning
+        return
+    }
     if($observation.state -notin @('Connected','Disconnected')){return}
+    $signature=Get-SessionNetworkSignature
+    if($signature -ne $session.networkSignature){throw 'Network changed; component repair deferred.'}
     if($observation.state -eq 'Disconnected'){Invoke-BridgeUpdate $false;Connect-WireSock}
     if(-not(Test-RecoverySession $ExpectedId)){return}
     if((Get-WireSockObservation).state -ne 'Connected'){throw 'Managed WireSock connection is not confirmed.'}
@@ -151,7 +185,8 @@ function Watch-Session([string]$WatchScript) {
     $nextAttempt=[DateTime]::UtcNow;$nextBridge=[DateTime]::UtcNow;$nextPolicy=[DateTime]::UtcNow
     $healthySince=$null;$repair=$null;$repairTimer=$null;$repairAction='';$probe=$null;$healthFailures=0;$policyStaleSamples=0
     $disconnected=0;$networkMismatch=0;$nextHealth=[DateTime]::UtcNow.AddSeconds(10)
-    $lastFeedAttempt=[DateTime]::UtcNow;$feedUpdater=$null
+    $nextBridgeCheck=[DateTime]::MinValue;$listenerFailures=0;$listenerEpoch='';$listenerState='Unknown'
+    $lastFeedAttempt=[DateTime]::UtcNow;$feedUpdater=$null;$transition=$null
     try {
         while($true){
             Start-Sleep -Seconds 2
@@ -178,13 +213,18 @@ function Watch-Session([string]$WatchScript) {
                 $repair.Dispose();$repair=$null;$repairTimer=$null
             }
             $observation=Get-WireSockObservation
+            $now=[DateTime]::UtcNow
+            $transition=Get-ManagedTransitionProgress $transition $session.id $observation $now
+            $transitionPath=Join-Path $runtime 'managed-transition.json'
+            if($transition){Write-JsonFile $transitionPath $transition}else{Remove-Item -LiteralPath $transitionPath -Force -ErrorAction SilentlyContinue}
+            $transitionSeconds=if(Test-ManagedTransitionTimeout $transition $session.id $observation $now){[int][Math]::Min(300,$transition.elapsedSeconds)}else{0}
             $connected=$observation.state -eq 'Connected'
             $routerAlive=@(Get-SessionRouter $session).Count -gt 0
             $signature='unavailable'
             try{$signature=Get-SessionNetworkSignature}catch{}
             if($signature -ne 'unavailable' -and $session.networkSignature -and $signature -ne $session.networkSignature){$networkMismatch++}else{$networkMismatch=0}
             if($observation.state -eq 'Disconnected'){$disconnected++}else{$disconnected=0}
-            $action=Get-WatchRecoveryAction $routerAlive $networkMismatch $observation.state $disconnected
+            $action=Get-WatchRecoveryAction $routerAlive $networkMismatch $observation.state $disconnected $transitionSeconds
             # A busy coordinator must not lose a confirmed mismatch. Retry only
             # a fresh result from this exact session and bridge generation.
             if(-not $session.vpnHoldReason){
@@ -217,7 +257,15 @@ function Watch-Session([string]$WatchScript) {
             # Pause on Unknown/Foreign as well as Disconnected: this bridge has no
             # independently enforced VPN-only egress when WireSock is unavailable.
             $bridgeAlive=@(Get-SessionBridge $session).Count -gt 0
+            $currentBridgeEpoch=$session.id+':'+$session.bridgeGeneration
+            if($listenerEpoch -ne $currentBridgeEpoch){$listenerEpoch=$currentBridgeEpoch;$listenerFailures=0;$listenerState='Unknown';$nextBridgeCheck=[DateTime]::MinValue}
+            if($connected -and $bridgeAlive -and $session.bridgeReady -and -not(Test-SessionVpnHold $session) -and [DateTime]::UtcNow -ge $nextBridgeCheck){
+                $listenerState=Get-BridgeListenerObservation $session
+                if($listenerState -eq 'Missing'){$listenerFailures++}else{$listenerFailures=0}
+                $nextBridgeCheck=[DateTime]::UtcNow.AddSeconds(5)
+            }
             $needsBridge=if($connected -and -not(Test-SessionVpnHold $session)){-not $bridgeAlive -or -not $session.bridgeReady}else{$bridgeAlive -or $session.bridgeReady}
+            if($connected -and ($listenerFailures -ge 2 -or $listenerState -eq 'Foreign')){$needsBridge=$true}
             if($needsBridge -and (-not $connected -or ($budget.Bridge -lt 3 -and [DateTime]::UtcNow -ge $nextBridge))){
                 try {
                     $attempted=Update-WireSockBridge $connected $session.id -ReportAttempt
@@ -268,10 +316,13 @@ function Watch-Session([string]$WatchScript) {
             $phase='Watching';$reason=''
             if(Test-SessionVpnHold $session){$phase='NeedsAttention';$reason='VPN exit mismatch or safety state unavailable; disconnect and check selected profile'}
             elseif($observation.state -eq 'Foreign'){$phase='NeedsAttention';$reason='Another WireSock profile is active'}
+            elseif($listenerState -eq 'Foreign'){$phase='NeedsAttention';$reason='The local VPN bridge port belongs to another process'}
             elseif(-not $connected){$phase='Suspect';$reason='Managed VPN connection is not confirmed'}
             elseif(-not(Test-PolicyProcess) -and (Get-PolicyObservation).state -eq 'Unknown'){$phase='NeedsAttention';$reason='Policy identity or progress unavailable'}
             elseif((-not $session.bridgeReady -and $budget.Bridge -ge 3) -or (-not(Test-PolicyProcess) -and $budget.Policy -ge 3)){$phase='NeedsAttention';$reason='Component retry limit reached'}
             elseif(-not $session.bridgeReady -or -not(Test-PolicyProcess)){$phase='Degraded';$reason='A component is unavailable'}
+            elseif($listenerFailures -gt 0){$phase='Degraded';$reason='The owned VPN bridge listener is not ready'}
+            elseif($listenerState -eq 'Unknown'){$phase='Suspect';$reason='The local VPN bridge listener could not be verified'}
             elseif($healthFailures -ge 2){$phase='Degraded';$reason='Repeated control HTTPS failure; direct router retained'}
             elseif($signature -eq 'unavailable'){$phase='Suspect';$reason='Network identity unavailable'}
             if($phase -eq 'Watching'){

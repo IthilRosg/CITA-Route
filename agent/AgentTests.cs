@@ -11,6 +11,12 @@ public static class AgentTests
         StartupTests.Run();
         ResourceGuardTests.Run();
         ComponentLivenessTests.Run();
+        SystemRouterTests.Run();
+        SessionEvidenceTests.Run();
+        await PolicyStartupTests.Run();
+        await PolicyPublicationTests.Run();
+        await DetachedCommandTests.Run();
+        await PolicyDnsTests.Run();
         void Assert(bool condition,string message){if(!condition)throw new Exception(message);}
         foreach(string newline in new[]{"\n","\r\n"})
         foreach(string line in new[]{"Connected to server using profile SmartRouting-AWG2","Подключено к серверу с использованием профиля SmartRouting-AWG2"})

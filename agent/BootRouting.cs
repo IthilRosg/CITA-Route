@@ -2,6 +2,9 @@ using System.Diagnostics;
 using System.Net.NetworkInformation;
 using System.Security.Principal;
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
 using Cita.Startup;
 
 namespace RoutePilot.Agent;
@@ -47,9 +50,60 @@ internal sealed class BootRouting
     }
     static string Hash(string path){using var input=File.OpenRead(path);return Convert.ToHexString(SHA256.HashData(input));}
     internal static string ConnectionSignature(AgentConfig config)=>Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(new{config.WireSockCliPath,config.WireSockSourceProfile,config.SourceEndpoint,config.ExpectedEgressIp}))));
+    internal static bool WireSockReady(int exitCode,string status)
+    {
+        if(exitCode!=0)return false;
+        const System.Text.RegularExpressions.RegexOptions options=System.Text.RegularExpressions.RegexOptions.IgnoreCase|System.Text.RegularExpressions.RegexOptions.CultureInvariant;
+        string text=status.Trim();
+        return System.Text.RegularExpressions.Regex.IsMatch(text,@"\A(?:Not connected|NotConnected|No connection|Disconnected|Не\s+подключено|Отключено|Нет\s+подключения)\z",options)||
+            System.Text.RegularExpressions.Regex.IsMatch(text,@"\A(?:Connected to|Подключено к серверу)\s+\S",options);
+    }
+    internal static bool RetryPolicyStartup(PolicyAckFailure failure,PolicyPulse pulse,OrdinarySession ended,DateTime began,DateTime now)
+    {
+        bool Fresh(DateTime value)=>value>=began&&value<=now.AddSeconds(2)&&value>=now.AddSeconds(-45);
+        return failure.Schema==1&&Guid.TryParseExact(failure.SessionId,"N",out _)&&!ended.Running&&
+            pulse.SessionId==failure.SessionId&&pulse.Phase=="Error"&&Fresh(failure.UpdatedUtc)&&Fresh(pulse.ProgressUtc)&&
+            (failure.Stage is "SocksHandshake" or "Proof")&&(failure.Code is "ConnectionRefused" or "TimedOut" or "LocalRouteRefused" or "OperationCanceledException" or "TaskCanceledException" or "EndOfStreamException");
+    }
+    static bool RetryPolicyStartup(DateTime began)
+    {
+        try
+        {
+            string runtime=Path.Combine(StartupPaths.Client,"runtime");
+            return RetryPolicyStartup(ComponentLiveness.Read<PolicyAckFailure>(Path.Combine(runtime,"policy-ack-failure.json")),
+                ComponentLiveness.Read<PolicyPulse>(Path.Combine(runtime,"policy-heartbeat.json")),
+                ComponentLiveness.Read<OrdinarySession>(Path.Combine(runtime,"session.json")),began,DateTime.UtcNow);
+        }
+        catch(Exception ex)when(ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException){return false;}
+    }
     static void State(BootSettings settings,string phase,string message,DateTime? boot=null)=>Storage.Write(StartupPaths.StateFile,new StartupState{
         SourceRoot=settings.SourceRoot,Enabled=settings.Enabled,Phase=phase,Message=message,UpdatedUtc=DateTime.UtcNow,BootUtc=boot??BootUtc});
-    internal static void Configure(string root,bool enabled)
+    // Keep the caller's exclusive setup reservation alive across the native
+    // process boundary. A Boolean 'skip locks' would race other setup operations.
+    static FileStream BorrowSetup(string root,int owner,long handle)
+    {
+        using var process=OpenProcess(0x0040,false,owner);
+        if(process.IsInvalid||!DuplicateHandle(process,new IntPtr(handle),GetCurrentProcess(),out var copy,0,false,2))
+            throw new IOException("The setup reservation is no longer available.");
+        try
+        {
+            var path=new StringBuilder(32768);
+            uint length=GetFinalPathNameByHandle(copy,path,(uint)path.Capacity,0);
+            string actual=path.ToString();if(actual.StartsWith(@"\\?\"))actual=actual[4..];
+            if(length==0||length>=path.Capacity||!Same(actual,Child(root,"runtime\\setup.lock")))throw new IOException("Wrong setup reservation.");
+            bool reserved=false;
+            try{using var competing=File.Open(actual,FileMode.Open,FileAccess.ReadWrite,FileShare.ReadWrite|FileShare.Delete);}
+            catch(IOException ex)when(ex.HResult==unchecked((int)0x80070020)){reserved=true;}
+            if(!reserved)throw new IOException("The setup reservation is not exclusive.");
+            return new FileStream(copy,FileAccess.ReadWrite);
+        }
+        catch{copy.Dispose();throw;}
+    }
+    [DllImport("kernel32.dll",SetLastError=true)] static extern SafeProcessHandle OpenProcess(uint access,bool inherit,int id);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool DuplicateHandle(SafeProcessHandle source,IntPtr handle,IntPtr target,out SafeFileHandle copy,uint access,bool inherit,uint options);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandle(SafeFileHandle handle,StringBuilder path,uint size,uint flags);
+    internal static void Configure(string root,bool enabled,bool refresh=false,int setupOwner=0,long setupHandle=0)
     {
         using var identity=WindowsIdentity.GetCurrent();
         if(!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)||!Same(AppContext.BaseDirectory,StartupPaths.AgentDirectory))throw new UnauthorizedAccessException("Configure startup using the protected installed agent and Windows confirmation.");
@@ -65,7 +119,8 @@ internal sealed class BootRouting
         string backup=Path.Combine(StartupPaths.AgentDirectory,"startup-backup-"+Guid.NewGuid().ToString("N"));
         try
         {
-            foreach(string name in new[]{"setup.lock","connection-operation.lock","network-control.lock","installation-maintenance.lock","update-preparation.lock"})
+            if(setupOwner>0)locks.Add(BorrowSetup(root,setupOwner,setupHandle));
+            else foreach(string name in new[]{"setup.lock","connection-operation.lock","network-control.lock","installation-maintenance.lock","update-preparation.lock"})
                 locks.Add(new FileStream(Child(root,Path.Combine("runtime",name)),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None));
             string session=Child(root,"runtime\\session.json");
             if(File.Exists(session)&&ComponentLiveness.Read<OrdinarySession>(session).Running)throw new InvalidOperationException("Disconnect CITA Route before configuring startup.");
@@ -112,7 +167,10 @@ internal sealed class BootRouting
             }
             if(Directory.Exists(backup)){NoLinks(backup);Directory.Delete(backup,true);}
             // Enabling changes the next boot only, never the current connection.
-            State(settings,"ReadyForBoot","Готово к следующему запуску Windows. Профиль и правила сохранены защищённой копией.");
+            bool stopped=refresh&&prior.Owns(root)&&prior.Phase=="StoppedForBoot"&&StartupPaths.SameBoot(prior.BootUtc,BootUtc);
+            State(settings,stopped?"StoppedForBoot":"ReadyForBoot",stopped?
+                "Профиль автоподключения обновлён. Ручное отключение сохранено до следующего запуска Windows.":
+                "Готово к следующему запуску Windows. Профиль и правила сохранены защищённой копией.");
         }
         finally
         {
@@ -123,7 +181,10 @@ internal sealed class BootRouting
     async Task<int> Script(string action,CancellationToken cancellation)
     {
         string executable=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","powershell.exe");
-        var result=await Tools.Run(executable,new[]{"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",Path.Combine(StartupPaths.Client,"SmartRouting.ps1"),"-Action",action},125,cancellation);
+        // These commands intentionally leave Watch/policy children alive. Their
+        // inherited output handles must not hold completion open after the
+        // primary script exits. Script diagnostics already use owned log files.
+        var result=await Tools.Run(executable,new[]{"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",Path.Combine(StartupPaths.Client,"SmartRouting.ps1"),"-Action",action},125,cancellation,captureOutput:false);
         // Native command text can contain profile details. Publish fixed UI states only.
         return result.Code;
     }
@@ -136,6 +197,11 @@ internal sealed class BootRouting
         await _serial.WaitAsync(linked.Token);
         try
         {
+            var evidence=new StartupEvidence{BootUtc=BootUtc};
+            string evidenceFile=Path.Combine(_config.DataDirectory,"startup-boot-proof.json");
+            Storage.Write(evidenceFile,evidence);
+            void ValidateSnapshot()
+            {
             if(!File.Exists(Path.Combine(_config.AppRoot,"product.json")))throw new IOException("Source installation was removed.");
             using var product=System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(_config.AppRoot,"product.json")));
             if(product.RootElement.GetProperty("version").GetString()!=settings.Version||settings.ConnectionSignature!=ConnectionSignature(_config))throw new IOException("Refresh startup after updating CITA Route or its profile.");
@@ -152,9 +218,11 @@ internal sealed class BootRouting
                 if(ordinary.Running&&((ordinary.RouterPid>0&&new ProcessIdentity(ordinary.RouterPid,ordinary.RouterStartedUtc,Path.Combine(_config.AppRoot,"runtime","smart-router.exe")).Matches())||
                     (ordinary.BridgePid>0&&new ProcessIdentity(ordinary.BridgePid,ordinary.BridgeStartedUtc,Path.Combine(StartupPaths.AgentDirectory,"vpn-bridge.exe")).Matches())))throw new IOException("An existing ordinary session requires attention.");
             }
+            }
+            ValidateSnapshot();
             State(settings,"WaitingForNetwork","Ожидание сети и службы WireSock…");
             var clock=Stopwatch.StartNew();
-            while(clock.Elapsed<TimeSpan.FromMinutes(3))
+            while(true)
             {
                 linked.Token.ThrowIfCancellationRequested();
                 string run=Path.Combine(_config.DataDirectory,"run.json");
@@ -165,25 +233,44 @@ internal sealed class BootRouting
                     try
                     {
                         var observation=await Tools.Run(_config.WireSockCliPath,new[]{"status"},4,linked.Token);
-                        if(observation.Code==0&&System.Text.RegularExpressions.Regex.IsMatch(observation.Text,@"(?i)Not connected|Disconnected|Connected to|Не\s+подключено|Отключено|Подключено к серверу"))break;
+                        if(WireSockReady(observation.Code,observation.Text))break;
                     }
                     catch(OperationCanceledException)when(linked.IsCancellationRequested){throw;}
                     catch(Exception ex)when(ex is IOException or OperationCanceledException or System.ComponentModel.Win32Exception){}
                 }
+                if(clock.Elapsed>=TimeSpan.FromSeconds(30))
+                {
+                    State(settings,"WaitingForNetwork","Ожидание сети и службы WireSock… Можно отменить кнопкой отключения.");
+                    clock.Restart();
+                }
                 await Task.Delay(2000,linked.Token);
             }
             linked.Token.ThrowIfCancellationRequested();
-            if(clock.Elapsed>=TimeSpan.FromMinutes(3))throw new TimeoutException("Startup network readiness timed out.");
-            State(settings,"Starting","Подключение WireSock, применение маршрутов и проверка HTTPS…");
-            _routeAttempted=true;
-            if(await Script("Start",linked.Token)!=0)throw new IOException("Startup connection did not pass its checks.");
+            // The source may have changed while startup waited for networking.
+            ValidateSnapshot();
+            for(int attempt=1;;attempt++)
+            {
+                linked.Token.ThrowIfCancellationRequested();ValidateSnapshot();
+                evidence.ConnectionAttempts=attempt;Storage.Write(evidenceFile,evidence);
+                State(settings,"Starting",attempt==1?"Подключение WireSock, применение маршрутов и проверка HTTPS…":"Повторная настройка маршрута после задержки сетевого движка…");
+                _routeAttempted=true;var began=DateTime.UtcNow;
+                if(await Script("Start",linked.Token)==0)break;
+                linked.Token.ThrowIfCancellationRequested();
+                // Only a fresh, matching policy timeout with completed cleanup
+                // permits one retry. Profile/exit/security failures remain final.
+                if(attempt>=2||!RetryPolicyStartup(began))throw new IOException("Startup connection did not pass its checks.");
+                await Task.Delay(2000,linked.Token);
+            }
             var connected=ComponentLiveness.Read<OrdinarySession>(Path.Combine(StartupPaths.Client,"runtime","session.json"));
             using(var health=System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(StartupPaths.Client,"runtime","session-health.json"))))
             {
                 var proof=health.RootElement;
                 if(!connected.Running||!connected.BridgeReady||proof.GetProperty("sessionId").GetString()!=connected.Id||proof.GetProperty("bridgeGeneration").GetInt32()!=connected.BridgeGeneration||!proof.GetProperty("healthy").GetBoolean()||(DateTime.UtcNow-proof.GetProperty("updatedUtc").GetDateTime().ToUniversalTime()).TotalSeconds is <0 or >90)throw new IOException("Startup readiness was not independently confirmed.");
             }
-            State(settings,"Connected","Маршрут подключён до входа в Windows.");
+            evidence.SessionId=connected.Id;evidence.BridgeGeneration=connected.BridgeGeneration;
+            evidence.InteractiveUsersAtConnection=StartupEvidence.CountUsers();evidence.ConnectedUtc=DateTime.UtcNow;
+            Storage.Write(evidenceFile,evidence);
+            State(settings,"Connected","Маршрут подключён службой при запуске Windows.");
         }
         catch(OperationCanceledException)when(linked.IsCancellationRequested){}
         catch(Exception)

@@ -20,9 +20,8 @@ internal static class PolicyLiveCheck
         var results=new List<object>{new{test="DNS fallback with an unavailable probe-only direct listener",success=true,milliseconds=timer.ElapsedMilliseconds}};
         foreach(string domain in new[]{"yandex.ru","discord.com"})
         {
-            timer.Restart();var ips=await PolicyTransport.Resolve(domain,ports,stop.Token);
-            if(ips==null)throw new IOException("DNS unavailable for "+domain);
-            var selected=await PolicyTransport.Select((port,token)=>PolicyTransport.Probe(domain,ips[0],port,token),ports,stop.Token);
+            timer.Restart();var resolved=await PolicyTransport.SelectResolved(domain,ports,stop.Token);
+            var selected=resolved.Selection;
             results.Add(new{test=domain,success=selected.Route!=null,route=selected.Route,outcome=selected.Outcome.ToString(),milliseconds=timer.ElapsedMilliseconds,candidates=selected.Candidates});
             if(domain=="yandex.ru" && selected.Route!="direct")throw new IOException("A reachable direct control site did not select direct.");
             if(selected.Route==null)throw new IOException(domain+": "+selected.Outcome);

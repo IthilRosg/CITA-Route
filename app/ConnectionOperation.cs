@@ -24,6 +24,8 @@ public sealed class ConnectionProgress
         "Connecting"=>"Подключаем выбранный профиль WireSock…",
         "StartingBridge"=>"Запускаем канал VPN…",
         "StartingRouter"=>"Запускаем маршрутизацию…",
+        "WaitingAdapter"=>"Ждём освобождения виртуального адаптера…",
+        "RetryingRouter"=>"Повторно создаём виртуальный адаптер…",
         "ApplyingPolicy"=>"Применяем правила маршрутов…",
         "Verifying"=>"Проверяем соединение через VPN…",
         "Stopping"=>"Отключаем маршрут…",
@@ -88,7 +90,9 @@ public static class ConnectionOperation
             "function Step($encoded,$name,$cleanup=$false){if(-not $cleanup){Assert-ConnectionOperation}; $p=Start-Process powershell.exe -WindowStyle Hidden -PassThru -WorkingDirectory $root "+
             "-ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded) "+
             "-RedirectStandardOutput (Join-Path $root ('logs\\operation-'+$OperationId+'-'+$name+'.log')) "+
-            "-RedirectStandardError (Join-Path $root ('logs\\operation-'+$OperationId+'-'+$name+'-error.log')); $null=$p.Handle; $p.WaitForExit(); $p.Refresh(); "+
+            // Background Watch/policy processes may inherit a redirected pipe.
+            // Wait for the primary PID, not EOF from every surviving descendant.
+            "-RedirectStandardError (Join-Path $root ('logs\\operation-'+$OperationId+'-'+$name+'-error.log')); $null=$p.Handle; while(-not $p.WaitForExit(200)){}; $p.Refresh(); "+
             "if($p.ExitCode -ne 0){$m='Операция не завершена. Подробности есть в журнале.';if(Test-Path -LiteralPath "+Literal(error)+"){$m=(Read-JsonFile "+Literal(error)+").message};throw $m}}; "+
             "$operationLock=$null; try{$operationLock=[IO.File]::Open((Join-Path $runtime 'connection-operation.lock'),'OpenOrCreate','ReadWrite','None'); "+startGuard+"Assert-ConnectionOperation; "+steps+"Write-JsonFile "+Literal(report)+" @{id=$OperationId;success=$true;applied=$applied;cancelled=$false;message=''}}"+
             "catch{$failure=$_.Exception.Message; "+cleanup+restore+"Write-JsonFile "+Literal(report)+" @{id=$OperationId;success=$false;applied=$applied;cancelled=(Test-ConnectionCancellation);message=$failure};exit 1}finally{if($operationLock){$operationLock.Dispose()}}";

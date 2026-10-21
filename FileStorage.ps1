@@ -31,3 +31,27 @@ function Write-ConnectionProgress([string]$Phase) {
         }
     }
 }
+
+function Write-ConnectionEvidence([string]$Root,[string]$Event,$Session=$null) {
+    if($Event -notin @('StartRequested','StartVerified','StartFailed','StopRequested','Stopped','ReconnectRequested','ReconnectVerified','ReconnectFailed','BridgePaused','BridgeStarted','BridgeListenerMissing')){return}
+    try {
+        $directory=Join-Path $Root 'logs';$path=Join-Path $directory 'lifecycle-events.jsonl'
+        if(-not(Test-Path -LiteralPath $directory)){return}
+        if((Get-Item -LiteralPath $directory).Attributes -band [IO.FileAttributes]::ReparsePoint){return}
+        if((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint)){return}
+        $id=[guid]::Empty;$sessionId=''
+        if($Session -and [guid]::TryParse([string]$Session.id,[ref]$id)){$sessionId=$id.ToString('N')}
+        $entry=@{schema=1;utc=[DateTime]::UtcNow.ToString('o');event=$Event;sessionId=$sessionId;bridgeGeneration=[int]$Session.bridgeGeneration;running=[bool]$Session.running;bridgeReady=[bool]$Session.bridgeReady}
+        $stream=[IO.File]::Open($path,'OpenOrCreate','ReadWrite','Read')
+        try {
+            if($stream.Length -gt 1MB){
+                $keep=New-Object byte[] 131072;$stream.Position=$stream.Length-$keep.Length;$count=$stream.Read($keep,0,$keep.Length)
+                $start=[Array]::IndexOf($keep,[byte]10)+1
+                $stream.SetLength(0);$stream.Position=0
+                if($start -gt 0 -and $start -lt $count){$stream.Write($keep,$start,$count-$start)}
+            }
+            $stream.Position=$stream.Length;$bytes=[Text.Encoding]::UTF8.GetBytes(($entry|ConvertTo-Json -Compress)+"`n");$stream.Write($bytes,0,$bytes.Length)
+        }finally{$stream.Dispose()}
+    }catch{ # Evidence must never turn a successful disconnect into a failure.
+    }
+}

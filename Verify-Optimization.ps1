@@ -24,5 +24,5 @@ try{
     $report.success=$true
 }catch{$report.error=$_.Exception.Message}
 finally{$report.finishedUtc=[DateTime]::UtcNow.ToString('o');Write-JsonFile (Join-Path $folder 'report.json') $report;Write-JsonFile (Join-Path $root 'logs\optimization-check-last.json') $report}
-if(-not $report.success){exit 1}
+if(-not $report.success){throw ('Optimization checks failed: '+$report.error)}
 Write-Output 'PASS: optimization checks. No system routes, VPNUS or services were changed.'

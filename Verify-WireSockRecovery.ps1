@@ -46,6 +46,8 @@ $script:bridgeStarts = 0
 $script:bridgeStops = 0
 $script:mockBridgeId = 20
 $script:failBridgeStart = $false
+$script:listenerState='Ready'
+function Get-BridgeListenerObservation($Session){return $script:listenerState}
 function Get-OurProcesses {
     if ($script:routerRunning) { [pscustomobject]@{Id=10;Path=$routerExe} }
     if ($script:bridgeRunning) { [pscustomobject]@{Id=$script:mockBridgeId;Path=$bridgeExe} }
@@ -91,6 +93,16 @@ try {
     [IO.File]::WriteAllText((Join-Path $root 'logs\connection-lost.txt'),'stale warning')
     Update-WireSockBridge $true
     Assert-Recovery (-not (Test-Path -LiteralPath (Join-Path $root 'logs\connection-lost.txt'))) 'Healthy bridge retained a warning from a previous session.'
+    $startsBeforeListener=$script:bridgeStarts;$stopsBeforeListener=$script:bridgeStops
+    $script:listenerState='Unknown';$unknownRejected=$false
+    try{Update-WireSockBridge $true}catch{$unknownRejected=$true}
+    Assert-Recovery ($unknownRejected -and $script:bridgeStarts -eq $startsBeforeListener -and $script:bridgeStops -eq $stopsBeforeListener) 'An unavailable listener query restarted a live bridge.'
+    $script:listenerState='Foreign';$foreignRejected=$false
+    try{Update-WireSockBridge $true}catch{$foreignRejected=$true}
+    Assert-Recovery ($foreignRejected -and $script:bridgeStops -eq $stopsBeforeListener) 'A foreign listener caused a process kill.'
+    $script:listenerState='Missing';Update-WireSockBridge $true
+    Assert-Recovery ($script:bridgeStarts -eq $startsBeforeListener+1 -and $script:bridgeStops -eq $stopsBeforeListener+1) 'A live owned process without its listener was falsely reported ready.'
+    $script:listenerState='Ready';Update-WireSockBridge $true
     Write-JsonFile (Join-Path $runtime 'session.json') @{id='current-session';running=$true;routerPid=10;bridgePid=30;bridgeReady=$true}
     $beforeStaleWatch=(Get-FileHash -LiteralPath (Join-Path $runtime 'session.json')).Hash
     Update-WireSockBridge $false 'old-session'
@@ -118,7 +130,16 @@ try {
     Write-JsonFile (Join-Path $runtime 'session.json') @{id='similar-profile-session';running=$true;routerPid=10;bridgeReady=$false}
     [void](Stop-LostRouterSession 'similar-profile-session')
     Assert-Recovery ($script:disconnectCalls -eq $beforeCrashDisconnect + 1) 'Crash cleanup disconnected a similarly named foreign profile.'
-    Write-Output 'PASS: disconnect postcondition, genuine failure detection, localized status, bridge pause/resume, failed restart retry, accurate readiness, no duplicate restart, session counters preserved, crash cleanup, old-watcher isolation.'
+    $beforeTransitionReset=$script:disconnectCalls
+    foreach($status in @('Connected to server from profile SmartRouting-AWG2','Establishing connection using profile MAIN','Connecting','Not connected')){
+        $script:mockStatus=$status
+        Disconnect-ManagedWireSock -OnlyTransitioning
+        Assert-Recovery ($script:disconnectCalls -eq $beforeTransitionReset) 'Transitional cleanup disconnected a recovered, foreign or unconfirmed profile.'
+    }
+    $script:mockStatus='Establishing connection using profile SmartRouting-AWG2'
+    Disconnect-ManagedWireSock -OnlyTransitioning
+    Assert-Recovery ($script:disconnectCalls -eq $beforeTransitionReset+1) 'Owned stalled transition was not reset exactly once.'
+    Write-Output 'PASS: disconnect postcondition, genuine failure detection, localized status, bridge pause/resume, failed restart retry, accurate readiness, no duplicate restart, session counters preserved, crash cleanup, old-watcher isolation and owned-transition-only reset.'
 } finally {
     $resolvedTestFolder = [IO.Path]::GetFullPath($root)
     $allowedPrefix = [IO.Path]::GetFullPath($testRuntimeBase).TrimEnd('\') + '\recovery-tests-'

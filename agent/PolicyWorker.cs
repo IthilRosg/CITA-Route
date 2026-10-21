@@ -124,7 +124,7 @@ public sealed class PolicyWorker
         {
             worker.RefreshListed();worker.LoadCache();worker.LoadActiveBindings();
             worker._publisher=new(root,worker._ports,worker.Current);
-            await worker.PublishAsync(cancel.Token);
+            await InitializePublication(worker.PublishAsync,worker.Current,cancel.Token);
             while(identity.Matches())
             {
                 var current=Storage.Read<PolicySession>(Path.Combine(root,"runtime","session.json"));
@@ -170,6 +170,32 @@ public sealed class PolicyWorker
             if(worker._publisher!=null)await worker._publisher.DisposeAsync();
             foreach(var pendingStop in worker._pendingStops.Values)pendingStop.Dispose();
             worker._api.Dispose();
+        }
+    }
+    internal static async Task InitializePublication(Func<CancellationToken,Task> publish,Func<bool> current,CancellationToken stop,TimeSpan? budget=null)
+    {
+        // Engine sockets and file watchers can become ready after the worker.
+        // Keep the same checked generation and bounded startup deadline; a
+        // missing acknowledgement must never be promoted to successful routing.
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(stop);
+        deadline.CancelAfter(budget??TimeSpan.FromSeconds(25));
+        while(true)
+        {
+            deadline.Token.ThrowIfCancellationRequested();
+            if(!current())throw new OperationCanceledException("Routing generation changed.");
+            try
+            {
+                await publish(deadline.Token);
+                deadline.Token.ThrowIfCancellationRequested();
+                if(!current())throw new OperationCanceledException("Routing generation changed.");
+                return;
+            }
+            catch(Exception ex)when(ex is IOException or OperationCanceledException or System.Net.Sockets.SocketException)
+            {
+                deadline.Token.ThrowIfCancellationRequested();
+                if(!current())throw new OperationCanceledException("Routing generation changed.");
+                await Task.Delay(250,deadline.Token);
+            }
         }
     }
     internal static void Prepare(string root)
@@ -346,8 +372,18 @@ public sealed class PolicyWorker
                 // Keep the same append handle used by the router; an atomic rename would
                 // leave it writing into an unlinked file. Limit diagnostic domain logging.
                 using var trim=new FileStream(path,FileMode.Open,FileAccess.ReadWrite,FileShare.ReadWrite|FileShare.Delete);
-                byte[] tail=new byte[1024*1024];trim.Position=Math.Max(0,trim.Length-tail.Length);int count=trim.Read(tail);
-                trim.SetLength(0);trim.Position=0;trim.Write(tail,0,count);trim.Flush();_offset=0;_partial="";
+                byte[] tail=new byte[2*1024*1024];trim.Position=Math.Max(0,trim.Length-tail.Length);int count=trim.Read(tail);
+                int keep=Math.Min(count,1024*1024),older=count-keep;
+                // Retain the preceding bounded segment as well as the active tail.
+                // The active file stays open under the router's append handle.
+                if(older>0)
+                {
+                    string previous=Path.Combine(Path.GetDirectoryName(path)!,"router.previous.log"),temporary=previous+"."+Guid.NewGuid().ToString("N")+".tmp";
+                    try{File.WriteAllBytes(temporary,tail[..older]);File.Move(temporary,previous,true);}
+                    catch(Exception ex)when(ex is IOException or UnauthorizedAccessException){}
+                    finally{try{if(File.Exists(temporary))File.Delete(temporary);}catch(IOException){}catch(UnauthorizedAccessException){}}
+                }
+                trim.SetLength(0);trim.Position=0;trim.Write(tail,older,keep);trim.Flush();_offset=0;_partial="";
             }
             catch(IOException){}
         }
@@ -416,23 +452,24 @@ public sealed class PolicyWorker
             _jobMetadata[key]=(queued==default?now:queued,now,background?"refresh":"connection-hint");
             _pendingGeneration[key]=_generation;
             // Keep the active binding while a replacement is being measured.
-            _pending[key]=_calibration?.Invoke(key,linked.Token)??Calibrate(key,linked.Token);
+            _pending[key]=_calibration?.Invoke(key,linked.Token)??Calibrate(key,linked.Token,!background);
         }
         foreach(var key in _failures.Where(p=>now-p.Value.At>=TimeSpan.FromMinutes(2)).Select(p=>p.Key).ToArray()){_failures.Remove(key);_queuedAt.Remove(key);}
     }
-    async Task<CalibrationResult> Calibrate(PolicyKey key,CancellationToken stop)
+    async Task<CalibrationResult> Calibrate(PolicyKey key,CancellationToken stop,bool failureTriggered=false)
     {
         var timer=System.Diagnostics.Stopwatch.StartNew();
         using var budget=CancellationTokenSource.CreateLinkedTokenSource(stop);budget.CancelAfter(TimeSpan.FromSeconds(11));
         long dnsMs=0;
         try
         {
-            var addresses=await PolicyTransport.Resolve(key.Domain,_ports,budget.Token);dnsMs=timer.ElapsedMilliseconds;
-            if(addresses==null)return new(ProbeOutcome.DnsUnavailable,null,dnsMs,timer.ElapsedMilliseconds,Array.Empty<CandidateTiming>());
-            var chosen=await PolicyTransport.Select((port,token)=>PolicyTransport.Probe(key.Domain,addresses[0],port,token),_ports,budget.Token);
+            var resolved=await PolicyTransport.SelectResolved(key.Domain,_ports,budget.Token,failureTriggered);dnsMs=resolved.DnsMilliseconds;
+            var chosen=resolved.Selection;
             if(chosen.Route==null)return new(chosen.Outcome,null,dnsMs,timer.ElapsedMilliseconds,chosen.Candidates);
             var now=DateTime.UtcNow;
-            var decision=new PolicyDecision(key,chosen.Route,chosen.Route=="direct"?"Две прямые TLS-пробы успешны.":"Две TLS-пробы выбранного пути успешны; более приоритетные пути проверены.",now,now.AddMinutes(15),chosen.Milliseconds);
+            bool temporary=PolicyTransport.UnstablePreferred(chosen)||chosen.Candidates.TakeWhile(c=>c.Route!=chosen.Route).Any(c=>c.Outcome==ProbeOutcome.DnsUnavailable);
+            var reason=chosen.Route=="direct"?"Две прямые TLS-пробы успешны.":temporary?"Подтверждён временный путь; прямой доступ или его DNS требуют перепроверки.":"Две TLS-пробы выбранного пути успешны; более приоритетные пути проверены.";
+            var decision=new PolicyDecision(key,chosen.Route,reason,now,now.AddSeconds(temporary?60:900),chosen.Milliseconds);
             return new(ProbeOutcome.Reachable,decision,dnsMs,timer.ElapsedMilliseconds,chosen.Candidates);
         }
         catch(OperationCanceledException){return new(ProbeOutcome.Cancelled,null,dnsMs,timer.ElapsedMilliseconds,Array.Empty<CandidateTiming>());}

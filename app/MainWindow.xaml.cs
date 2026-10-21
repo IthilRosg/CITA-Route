@@ -75,6 +75,8 @@ public partial class MainWindow : Window
         _routingPolicy=AppPaths.Read(Path.Combine(root,"data","routing-policy.json"),()=>new RoutingPolicyPreferences());
         _history=AppPaths.Read(Path.Combine(root,"data","traffic.json"),()=>new TrafficHistory());
         InitializeComponent();
+        BuildVersionLabel.Text="CITA / X64 / "+ReleaseUpdates.Current.ToString(3);
+        AboutVersionLabel.Text="Версия "+ReleaseUpdates.Current.ToString(3)+" · Windows desktop";
         _preferences.RefreshSeconds=Math.Clamp(_preferences.RefreshSeconds,1,3);
         CloseToTrayBox.IsChecked=_preferences.CloseToTray;RefreshIntervalInput.SelectedIndex=_preferences.RefreshSeconds-1;
         InitializeUpdates();
@@ -91,7 +93,7 @@ public partial class MainWindow : Window
         _timer.Interval=TimeSpan.FromSeconds(_preferences.RefreshSeconds);
         _timer.Tick+=async(_,_)=>{UpdateTelemetryInterval();await RefreshAsync();};
         _timer.Tick+=async(_,_)=>{if((DateTime.UtcNow-_lastUpdateCheck).TotalHours>=6)await CheckUpdatesAsync();};
-        Loaded+=async(_,_)=>{if(render)return;await DiscoverConnectionsAsync();UpdateTelemetryInterval();_timer.Start();await RefreshAsync();_=CheckUpdatesAsync();};
+        Loaded+=async(_,_)=>{if(render)return;await DiscoverConnectionsAsync();UpdateTelemetryInterval();_timer.Start();await RefreshAsync();await RefreshStartupAfterUpdateAsync();_=CheckUpdatesAsync();};
         Closing+=OnClosing;
         NavOverview.IsChecked=true;
         LocationChanged+=(_,_)=>CapturePlacement();SizeChanged+=(_,_)=>CapturePlacement();

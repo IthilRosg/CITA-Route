@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      soak_minutes:
+        description: Additional mixed TCP/UDP loopback soak, 0 or 1-15 minutes
+        required: false
+        default: '0'
 permissions:
   contents: read
 concurrency:
@@ -12,18 +17,28 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.3
+          cache: false
       - name: Fetch verified engine and public rule data
         shell: powershell
         run: ./Bootstrap.ps1
       - name: Build and run agent tests
         shell: powershell
         run: ./Build-All.ps1
+      - name: Verify native DNS filter boundaries on isolated runner
+        shell: powershell
+        run: |
+          $env:CITA_WFP_LAB='1'
+          & ./runtime/cita-wfp-tests.exe '-test.run=^TestCitaWfpLifecycle$' '-test.timeout=20s'
+          if($LASTEXITCODE -ne 0){throw 'Native DNS filter lifecycle failed'}
       - name: Offline and loopback checks
         shell: powershell
         run: |
@@ -38,6 +53,7 @@ jobs:
           ./Verify-ProfileSync.ps1
           ./Verify-RuleFeeds.ps1
           ./Verify-AgentPackage.ps1
+          ./Verify-OptimizationGate.ps1
           ./Verify-WireSockRecovery.ps1
           ./Verify-SessionRecovery.ps1
           ./Verify-ComponentLiveness.ps1
@@ -49,7 +65,20 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Resource guard integration failed.'}
       - name: Verify startup service in SYSTEM session 0 with synthetic transport
         shell: powershell
-        run: ./Verify-Startup.ps1
+        env:
+          SOAK_MINUTES: ${{ inputs.soak_minutes }}
+        run: |
+          if($env:SOAK_MINUTES -and $env:SOAK_MINUTES -ne '0'){./Verify-Startup.ps1 -ReadinessDelaySeconds 185}else{./Verify-Startup.ps1}
+      - name: Extended simultaneous TCP and UDP recovery soak
+        if: github.event_name == 'workflow_dispatch' && inputs.soak_minutes != '0'
+        shell: powershell
+        env:
+          SOAK_MINUTES: ${{ inputs.soak_minutes }}
+        run: |
+          $minutes=0
+          if(-not [int]::TryParse($env:SOAK_MINUTES,[ref]$minutes) -or $minutes -lt 1 -or $minutes -gt 15){throw 'Soak duration must be 1-15 minutes.'}
+          & ./runtime/agent-build/RoutePilot.Agent.exe --mixed-soak $PWD.Path ($minutes*60)
+          if($LASTEXITCODE -ne 0){throw 'Extended mixed recovery soak failed.'}
       - name: Build optional UDP reflector
         shell: powershell
         run: dotnet build tools/udp-reflector/Cita.UdpReflector.csproj -c Release
@@ -79,3 +108,15 @@ jobs:
             dist/CITA-Route-*-win-x64-setup.exe
             dist/SHA256SUMS.txt
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reliability-evidence
+          path: |
+            data/lifecycle-soak.json
+            data/mixed-soak.json
+            logs/udp-engine-test.json
+            logs/optimization-check-last.json
+            runtime/optimization-check-*/optimization-integration.log
+            runtime/optimization-*/result.json
+          if-no-files-found: ignore

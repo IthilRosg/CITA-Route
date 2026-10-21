@@ -34,6 +34,11 @@ shortcuts valid. Setup handles initial installation/manual repair; it does not
 replace the transactional updater. An older Setup cannot downgrade an internally
 updated client.
 
+The planned framework-dependent installer, shared-runtime bootstrap and compatible
+update migration are specified in [LIGHTWEIGHT-DISTRIBUTION.md](LIGHTWEIGHT-DISTRIBUTION.md).
+That format is not implemented or published yet; the existing downloads remain
+self-contained.
+
 ## Reinstall and removal
 
 Setup never copies developer `data`, `private`, logs, tokens or live sessions.

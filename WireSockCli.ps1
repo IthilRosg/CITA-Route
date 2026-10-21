@@ -69,8 +69,9 @@ function Get-WireSockObservation {
     return [pscustomobject]@{state=$state;managed=$managed;checkedUtc=[DateTime]::UtcNow.ToString('o')}
 }
 
-function Disconnect-ManagedWireSock {
+function Disconnect-ManagedWireSock([switch]$OnlyTransitioning) {
     $observation=Get-WireSockObservation
+    if($OnlyTransitioning -and ($observation.state -ne 'Transitioning' -or -not $observation.managed)){return}
     if($observation.state -in @('Disconnected','Foreign')){return}
     if(-not $observation.managed -or $observation.state -notin @('Connected','Transitioning')){
         throw 'Не удалось подтвердить отключение WireSock. Открой WireSock и проверь подключение.'

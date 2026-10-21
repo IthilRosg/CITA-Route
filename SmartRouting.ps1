@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [ValidateSet('Prepare','ProxyOnly','Start','Stop','Status','Watch','UpdateRules','SyncProfile','Reconnect','RepairVpn')]
     [string]$Action = 'Start',
@@ -112,7 +112,9 @@ function Stop-OurProcesses([switch]$KeepWatch) {
         }
         Remove-Item -LiteralPath $watchPath -Force
     }
-    Get-OurProcesses | Stop-Process -Force
+    $helpers=@(Get-OurProcesses)
+    $helpers | Stop-Process -Force
+    foreach($helper in $helpers){if(-not $helper.WaitForExit(5000)){throw 'A routing helper has not finished stopping.'}}
     # Closing Wintun removes the temporary routes and interface DNS settings.
     Start-Sleep -Milliseconds 500
     Clear-DnsClientCache -ErrorAction SilentlyContinue
@@ -201,6 +203,9 @@ function Prepare-Configuration {
         }
     }
     $interface = $physical.InterfaceAlias
+    $tailInterface='Tailscale'
+    $tailAdapter=@(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | Where-Object InterfaceDescription -match '^Tailscale(?: Tunnel(?: #\d+)?)?$' | Select-Object -First 1)
+    if($tailAdapter.Count){$tailInterface=[string]$tailAdapter[0].Name}
     $hasDirectIPv6 = [bool]$physical.IPv6DefaultGateway
     $directDnsStrategy = if ($hasDirectIPv6) { 'prefer_ipv4' } else { 'ipv4_only' }
     $originalPath = Join-Path $private 'awg2.original.conf'
@@ -265,6 +270,9 @@ function Prepare-Configuration {
     }
     $controllerToken = [IO.File]::ReadAllText($controllerTokenPath).Trim()
     $routeRules = @(
+        # Preserve the overlay's own control/DERP transport before sniffing and
+        # adaptive routing. Tailnet destinations keep their OS-specific routes.
+        @{ process_name=@('tailscaled.exe','tailscale.exe','tailscale-ipn.exe'); action='route'; outbound='direct' },
         @{ action='sniff'; timeout='300ms' },
         @{ protocol='dns'; action='hijack-dns' },
         @{ process_name=@('wiresock-connect-service.exe','wiresock-connect-app-service.exe'); action='route'; outbound='direct' }
@@ -283,6 +291,10 @@ function Prepare-Configuration {
     }
     $routeRules += @{inbound=@('direct-probe');action='route';outbound='direct'}
     $routeRules += @{inbound=@('dpi-probe');network='tcp';action='route';outbound='dpi';tls_record_fragment=$true}
+    # Explicit proxy names and overlay addresses must not enter FakeIP,
+    # physical-interface binding or adaptive DPI/VPN classification.
+    $routeRules += @{domain_suffix=@('ts.net');action='resolve';server='dns-tailnet';strategy='prefer_ipv4'}
+    $routeRules += @{ip_cidr=@('100.64.0.0/10','fd7a:115c:a1e0::/48');action='route';outbound='tailnet'}
     $routeRules += @{rule_set=@('personal-direct');action='route';outbound='direct'}
     $routeRules += @{rule_set=@('personal-vpn');action='route';outbound='vpn'}
     $routeRules += @{domain_suffix=@('openai.com','chatgpt.com','oaistatic.com','oaiusercontent.com','sora.com');action='route';outbound='vpn'}
@@ -302,6 +314,7 @@ function Prepare-Configuration {
     $ackRules += @{inbound=@('policy-ack');action='reject'}
     $routeRules = $ackRules + $routeRules
     $dnsRules = @(
+        @{domain_suffix=@('ts.net');action='route';server='dns-tailnet'},
         @{rule_set=@('personal-direct');action='route';server='dns-direct'},
         @{rule_set=@('personal-vpn');query_type=@('A','AAAA');action='route';server='fakeip'},
         @{rule_set=@('personal-vpn');action='route';server='dns-vpn'}
@@ -351,6 +364,7 @@ function Prepare-Configuration {
             servers=@(
                 @{type='https';tag='dns-direct';server='1.1.1.1';detour='direct'},
                 @{type='https';tag='dns-vpn';server='1.1.1.1';detour='vpn'},
+                @{type='udp';tag='dns-tailnet';server='100.100.100.100';server_port=53;detour='tailnet'},
                 @{type='fakeip';tag='fakeip';inet4_range='198.18.0.0/15';inet6_range='fc00::/18'}
             )
             rules=$dnsRules; final='dns-direct'; strategy=$directDnsStrategy; reverse_mapping=$true
@@ -362,6 +376,7 @@ function Prepare-Configuration {
         outbounds=@(
             @{type='direct';tag='direct';bind_interface=$interface},
             @{type='direct';tag='dpi';bind_interface=$interface},
+            @{type='direct';tag='tailnet';bind_interface=$tailInterface;connect_timeout='3s'},
             @{type='socks';tag='vpn';server='127.0.0.1';server_port=20808;version='5'},
             @{type='direct';tag='policy-proof'}
         )
@@ -381,10 +396,14 @@ function Prepare-Configuration {
         }
     }
     Write-JsonFile (Join-Path $runtime 'router-proxy.json') $router
+    # Do not attract global IPv6 onto an IPv4-only underlay. Keep an internal
+    # IPv6 address: sing-tun StrictRoute blocks ALL IPv6 if that family is absent.
+    # An explicit, nonempty internal IPv6 route prevents its automatic ::/0.
+    $tunRoutes=@('0.0.0.0/0',$(if($hasDirectIPv6){'::/0'}else{'fd7a:125::/126'}))
     $router.inbounds += @{
-        type='tun';tag='system-tun';interface_name='SmartRouting';address=@('172.30.125.1/30','fd7a:125::1/126')
+        type='tun';tag='system-tun';interface_name='SmartRouting';address=@('172.30.125.1/30','fd7a:125::1/126');route_address=$tunRoutes
         mtu=1400;auto_route=$true;strict_route=$true;stack='mixed';dns_mode='hijack'
-        route_exclude_address=@('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','100.64.0.0/10','fe80::/10','224.0.0.0/4','ff00::/8')
+        route_exclude_address=@('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','100.64.0.0/10','fd7a:115c:a1e0::/48','fe80::/10','224.0.0.0/4','ff00::/8')
     }
     $router.inbounds[-1].route_exclude_address += ($endpoint.Ip + '/32')
     Write-JsonFile (Join-Path $runtime 'router.json') $router
@@ -403,26 +422,68 @@ function Prepare-Configuration {
     Write-Host "Prepared. Direct adapter: $interface. DNS strategy: $directDnsStrategy. WireSock profile: $smartProfile."
 }
 
+function Test-HelperAdapterCollision([string]$Text) {
+    return $Text -match 'configure tun interface:' -and $Text -match 'create adapter:.*already exists' -and $Text -match 'open existing adapter:.*Element not found'
+}
+function Test-HelperTunReady($Settings) {
+    foreach($tun in @($Settings.inbounds | Where-Object type -eq 'tun')){
+        $adapter=@(Get-NetAdapter -Name $tun.interface_name -IncludeHidden -ErrorAction SilentlyContinue)
+        if($adapter.Count -ne 1 -or $adapter[0].Status -ne 'Up'){return $false}
+        $expected=@($tun.address | Where-Object {$_ -notmatch ':'} | ForEach-Object {($_ -split '/')[0]})
+        if(-not $expected.Count){return $false}
+        $assigned=@(Get-NetIPAddress -InterfaceIndex $adapter[0].ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object AddressState -eq 'Preferred' | ForEach-Object IPAddress)
+        if(@($expected | Where-Object {$_ -notin $assigned}).Count){return $false}
+    }
+    return $true
+}
 function Start-Helper([string]$Exe,[string]$Config) {
     Assert-ConnectionOperation
     if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Helper start cancelled by Stop.'}
     $startupLog = Join-Path $root ('logs\' + [IO.Path]::GetFileNameWithoutExtension($Exe) + '-startup.log')
-    $process = Start-Process -FilePath $Exe -ArgumentList @('run','-c',('"' + $Config + '"'),'--disable-color') `
-        -WorkingDirectory $runtime -WindowStyle Hidden -PassThru -RedirectStandardError $startupLog -RedirectStandardOutput ($startupLog+'.out')
     $settings=Read-JsonFile $Config
+    $tuns=@($settings.inbounds | Where-Object type -eq 'tun')
+    $canRetry=$Exe -eq $routerExe -and $tuns.Count -eq 1 -and $tuns[0].interface_name -eq 'SmartRouting'
     $required=@($settings.inbounds | Where-Object {$_.listen -eq '127.0.0.1' -and $_.listen_port} | ForEach-Object {[int]$_.listen_port})
-    $deadline=[DateTime]::UtcNow.AddSeconds(8)
-    $ready=$false
-    do {
+    foreach($attempt in 1..2){
         Assert-ConnectionOperation
-        if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){$process | Stop-Process -Force;throw 'Helper start cancelled by Stop.'}
-        if($process.HasExited){throw "Helper exited: $Exe. See the logs folder."}
-        $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $process.Id | ForEach-Object LocalPort)
-        $ready=@($required | Where-Object {$_ -notin $listeners}).Count -eq 0
-        if(-not $ready){Start-Sleep -Milliseconds 100}
-    }while(-not $ready -and [DateTime]::UtcNow -lt $deadline)
-    if(-not $ready){$process | Stop-Process -Force;throw 'The helper did not open its owned listeners before the deadline.'}
-    return $process
+        if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Helper start cancelled by Stop.'}
+        foreach($tun in $tuns){
+            $released=[Diagnostics.Stopwatch]::StartNew()
+            while(@(Get-NetAdapter -Name $tun.interface_name -IncludeHidden -ErrorAction SilentlyContinue).Count){
+                Write-ConnectionProgress 'WaitingAdapter'
+                Assert-ConnectionOperation
+                if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Helper start cancelled by Stop.'}
+                if($released.Elapsed.TotalSeconds -ge 8){throw 'The virtual routing adapter is still in use or closing. Wait before reconnecting.'}
+                Start-Sleep -Milliseconds 200
+            }
+        }
+        $process = Start-Process -FilePath $Exe -ArgumentList @('run','-c',('"' + $Config + '"'),'--disable-color') `
+            -WorkingDirectory $runtime -WindowStyle Hidden -PassThru -RedirectStandardError $startupLog -RedirectStandardOutput ($startupLog+'.out')
+        $deadline=[DateTime]::UtcNow.AddSeconds($(if($tuns.Count){20}else{8}))
+        $ready=$false
+        try{
+            do {
+                Assert-ConnectionOperation
+                if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Helper start cancelled by Stop.'}
+                $process.Refresh();if($process.HasExited){break}
+                $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $process.Id | ForEach-Object LocalPort)
+                $ready=@($required | Where-Object {$_ -notin $listeners}).Count -eq 0 -and (Test-HelperTunReady $settings)
+                if(-not $ready){Start-Sleep -Milliseconds 100}
+            }while(-not $ready -and [DateTime]::UtcNow -lt $deadline)
+            $process.Refresh()
+            if($ready -and -not $process.HasExited){
+                if($canRetry){Write-JsonFile (Join-Path $root 'logs\helper-start-last.json') @{schema=1;success=$true;attempts=$attempt;code=$(if($attempt -gt 1){'RecoveredTunAdapterCollision'}else{'Ready'});updatedUtc=[DateTime]::UtcNow.ToString('o')}}
+                return $process
+            }
+            $collision=$canRetry -and $process.HasExited -and (Test-Path -LiteralPath $startupLog) -and (Test-HelperAdapterCollision ([IO.File]::ReadAllText($startupLog)))
+            if($canRetry){Write-JsonFile (Join-Path $root 'logs\helper-start-last.json') @{schema=1;success=$false;attempts=$attempt;code=$(if($collision){'TunAdapterCollision'}elseif($process.HasExited){'Exited'}else{'NotReady'});updatedUtc=[DateTime]::UtcNow.ToString('o')}}
+            if($collision -and $attempt -eq 1){Write-ConnectionProgress 'RetryingRouter';Start-Sleep -Milliseconds 2000;continue}
+            if($process.HasExited){throw "Helper exited before its network interface was ready: $Exe. See the logs folder."}
+            throw 'The helper did not finish network and listener setup before the deadline.'
+        }finally{
+            if(-not $ready -and -not $process.HasExited){$process | Stop-Process -Force;[void]$process.WaitForExit(3000)}
+        }
+    }
 }
 
 if ($Action -eq 'Watch') {
@@ -496,13 +557,18 @@ if ($Action -eq 'Reconnect') {
     if($wireState -notin @('Connected','Disconnected')){throw 'Managed WireSock state is not confirmed; automatic recovery is paused.'}
     if($previous.mode -eq 'Start' -and (Get-NetAdapter -Name 'VPNUS' -ErrorAction SilentlyContinue).Status -eq 'Up'){throw 'VPNUS is active; automatic recovery is paused.'}
     [void](Set-SessionRecovering $ExpectedSessionId 'Automatic reconnect')
+    Write-ConnectionEvidence $root 'ReconnectRequested' $previous
     Stop-OurProcesses -KeepWatch
     if($wireState -eq 'Connected'){Invoke-WireSock @('disconnect') | Out-Null}
 }
 if ($Action -eq 'Stop') {
     Write-ConnectionProgress 'Stopping'
+    $stopSession=$null;try{$stopSession=Read-JsonFile (Join-Path $runtime 'session.json')}catch{}
+    Write-ConnectionEvidence $root 'StopRequested' $stopSession
     Stop-OurProcesses
-    Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;bridgeReady=$false;stoppedUtc=[DateTime]::UtcNow.ToString('o')}
+    $stopped=@{id=$(if($stopSession){$stopSession.id}else{''});running=$false;bridgeReady=$false;bridgeGeneration=[int]$stopSession.bridgeGeneration;stopReason='RequestedStop';stoppedUtc=[DateTime]::UtcNow.ToString('o')}
+    Write-JsonFile (Join-Path $runtime 'session.json') $stopped
+    Write-ConnectionEvidence $root 'Stopped' $stopped
     Disconnect-ManagedWireSock
     Write-Host 'Smart routing stopped. The original WireSock profile is unchanged.'
     exit
@@ -526,7 +592,8 @@ if($Action -in @('Start','ProxyOnly')){Stop-OurProcesses}
 if($Action -in @('Start','ProxyOnly')){Remove-Item -LiteralPath (Join-Path $runtime 'stop.request') -Force -ErrorAction SilentlyContinue}
 try {
 Write-ConnectionProgress 'Preparing'
-Prepare-Configuration
+    Write-ConnectionEvidence $root 'StartRequested'
+    Prepare-Configuration
 if ($Action -eq 'Prepare') { exit }
 if ($Action -eq 'SyncProfile') {
     Sync-WireSockProfile $smartProfile (Join-Path $private ($smartProfile + '.conf')) (Join-Path $private 'profile-backups')
@@ -567,18 +634,33 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
     do {
         Assert-ConnectionOperation
         if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
+        $routerProcess.Refresh();if($routerProcess.HasExited){throw 'The routing engine exited during policy setup. See logs/smart-router-startup.log.'}
         try {$policyState=Read-JsonFile (Join-Path $runtime 'policy-state.json');$policyReady=$policyState.epoch.StartsWith($startedSession.id+':') -and $policyState.phase -in @('Auto','Lists')}catch{}
         if(-not $policyReady){Start-Sleep -Milliseconds 150}
     }while(-not $policyReady -and [DateTime]::UtcNow -lt $policyDeadline)
     if(-not $policyReady){throw 'The routing controller did not become ready.'}
     Write-ConnectionProgress 'Verifying'
-    $health=& (Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe') --session-health | ConvertFrom-Json
-    Assert-ConnectionOperation
-    if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
-    if(-not $health.healthy){throw 'The AWG2 data path did not pass HTTPS verification.'}
+    $healthAttempts=0
+    do{
+        $healthAttempts++
+        $health=& (Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe') --session-health | ConvertFrom-Json
+        Assert-ConnectionOperation
+        if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
+        $current=Read-JsonFile (Join-Path $runtime 'session.json')
+        if($current.id -ne $startedSession.id -or $current.bridgeGeneration -ne $startedSession.bridgeGeneration -or -not $current.running){throw 'Session changed during HTTPS verification.'}
+        if($health.healthy -or $healthAttempts -ge 2 -or $health.code -notin @('ControlHttpsUnavailable','StatusUnavailable','MissingExpectedEgress')){break}
+        Start-Sleep -Milliseconds 500
+    }while($true)
+    $healthCode=[string]$health.code
+    if($healthCode -notmatch '^[A-Za-z][A-Za-z0-9]{0,63}$'){$healthCode='UnknownHealthFailure'}
+    # Cleanup retires session-health.json. Keep only the bounded reason and
+    # session identity for diagnosis; no addresses, keys or raw CLI output.
+    try{Write-JsonFile (Join-Path $root 'logs\connection-health-last.json') @{schema=1;sessionId=$startedSession.id;bridgeGeneration=$startedSession.bridgeGeneration;healthy=[bool]$health.healthy;code=$healthCode;attempts=$healthAttempts;updatedUtc=[DateTime]::UtcNow.ToString('o')}}catch{}
+    if(-not $health.healthy){throw ('The AWG2 data path did not pass HTTPS verification. ['+$healthCode+']')}
     Write-JsonFile (Join-Path $runtime 'session-health.json') @{sessionId=$startedSession.id;bridgeGeneration=$startedSession.bridgeGeneration;healthy=$true;code='Verified';message=$health.message;updatedUtc=[DateTime]::UtcNow.ToString('o')}
     $startedSession.recovering=$false;$startedSession.bridgeReady=$true
     Write-JsonFile (Join-Path $runtime 'session.json') $startedSession
+    Write-ConnectionEvidence $root $(if($Action -eq 'Reconnect'){'ReconnectVerified'}else{'StartVerified'}) $startedSession
     Remove-Item -LiteralPath (Join-Path $root 'logs\connection-lost.txt'),(Join-Path $root 'logs\recovery-error.log') -Force -ErrorAction SilentlyContinue
     $watchScriptPath = '"' + $PSCommandPath + '"'
     if($Action -ne 'Reconnect'){
@@ -597,7 +679,8 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
             $previous | Add-Member -NotePropertyName recoveryReason -NotePropertyValue $startFailure.Exception.Message -Force
             $previous | Add-Member -NotePropertyName bridgeReady -NotePropertyValue $false -Force
             Write-JsonFile (Join-Path $runtime 'session.json') $previous
-        }else{Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;bridgeReady=$false;stoppedUtc=[DateTime]::UtcNow.ToString('o')}}
+        }else{Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;bridgeReady=$false;stopReason='StartFailed';stoppedUtc=[DateTime]::UtcNow.ToString('o')}}
+        Write-ConnectionEvidence $root $(if($Action -eq 'Reconnect'){'ReconnectFailed'}else{'StartFailed'})
         Disconnect-ManagedWireSock
     } catch { [IO.File]::WriteAllText((Join-Path $root 'logs\cleanup-error.log'),$_.Exception.Message) }
     throw $startFailure

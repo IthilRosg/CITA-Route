@@ -1,5 +1,7 @@
 name: Publish stable release
 on:
+  push:
+    tags: ['v[0-9]*']
   workflow_dispatch:
     inputs:
       tag:
@@ -10,29 +12,43 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.3
+          cache: false
       - name: Validate release version
         shell: powershell
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           $product=Get-Content product.json -Raw | ConvertFrom-Json
           if($env:RELEASE_TAG -cne ('v'+$product.version)){throw 'Tag must match product.json'}
           if((Select-Xml -Path Directory.Build.props -XPath '//Version').Node.InnerText -ne $product.version){throw 'Assembly version differs'}
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          if($LASTEXITCODE -ne 0){throw 'A stable release must come from main'}
       - name: Dependencies and tests
         shell: powershell
         run: |
           ./Bootstrap.ps1
+          $env:CITA_WFP_LAB='1'
+          & ./runtime/cita-wfp-tests.exe '-test.run=^TestCitaWfpLifecycle$' '-test.timeout=20s'
+          if($LASTEXITCODE -ne 0){throw 'Native DNS filter lifecycle failed'}
+          Remove-Item Env:CITA_WFP_LAB
           ./Build-All.ps1
           ./Verify-Portable.ps1
           ./Verify-ReleaseUpdate.ps1
           ./Verify-ReleaseUpdate.ps1 -InstallerSource tests/fixtures/Install-Release-0.5.4.ps1
           ./Verify-Prepare.ps1
+          ./Verify-AgentPackage.ps1
+          ./Verify-OptimizationGate.ps1
           ./Verify-ConnectionHandoff.ps1
           ./Verify-InstallationGuard.ps1
           ./Verify-Lifecycle.ps1
@@ -66,7 +82,7 @@ jobs:
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           gh release create $env:RELEASE_TAG dist/CITA-Route-*-win-x64.zip dist/CITA-Route-*-win-x64-setup.exe dist/SHA256SUMS.txt --target $env:GITHUB_SHA --title "CITA Route $env:RELEASE_TAG" --notes-file RELEASE-NOTES.md
           if($LASTEXITCODE -ne 0){throw 'Release publication failed'}
