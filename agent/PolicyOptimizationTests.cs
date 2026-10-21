@@ -97,6 +97,15 @@ internal static class PolicyOptimizationTests
         for(int i=0;i<6;i++)worker.RegisterFailure(key with{Domain="busy"+i+".example.com"},"hint",CancellationToken.None);
         for(int i=0;i<4;i++){worker.DrainFailures(CancellationToken.None);worker.Status("Auto");Assert(Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("pending").GetInt32()<=2,"Refresh and foreground jobs share the same two-job bound.");await worker.CompletePending();}
         Assert(scheduled.Take(5).Contains(key.Domain),"A busy foreground queue must not starve a due refresh.");
+        worker=new(root,session,options,(_,_)=>Task.FromResult(new CalibrationResult(ProbeOutcome.Reachable,refreshed with{Route="direct"},1,2,Array.Empty<CandidateTiming>())));
+        worker.StoreDecision(old);worker.Touch(key,DateTime.UtcNow);worker.DrainFailures(CancellationToken.None);await worker.CompletePending();worker.Status("Auto");
+        var deferred=Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json"));
+        Assert(deferred.GetProperty("decisions")[0].GetProperty("Route").GetString()=="vpn" && deferred.GetProperty("measurements")[0].GetProperty("Disposition").GetString()=="AwaitingStableReturn","A preferred return must retain the old binding and expose its deferred result.");
+        Assert(deferred.GetProperty("measurements")[0].GetProperty("DecisionCheckedUtc").ValueKind==JsonValueKind.Null,"Deferred evidence must never be marked as published.");
+        worker.MaybeStatus("Auto");byte[] statusBefore=File.ReadAllBytes(Path.Combine(root,"runtime/policy-state.json"));
+        for(int i=0;i<100;i++)worker.MaybeStatus("Auto");
+        Assert(File.ReadAllBytes(Path.Combine(root,"runtime/policy-state.json")).SequenceEqual(statusBefore),"Unchanged background status must not rewrite the snapshot on each poll.");
+        worker.MaybeStatus("Error");Assert(Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("phase").GetString()=="Error","A phase change bypasses the status throttle.");
         Console.WriteLine("PASS: duplicate-source hint coalescing, make-before-break decisions, stale-result rejection, confidence expiry without blocking and same-epoch active recovery.");
         Console.WriteLine("PASS: proactive refresh extends TTL only on success; Stop, session changes and manual rules reject late results.");
 

@@ -44,7 +44,9 @@ jobs:
           Remove-Item Env:CITA_WFP_LAB
           ./Build-All.ps1
           ./Verify-Portable.ps1
+          ./Verify-DesktopRuntime.ps1
           ./Verify-ReleaseUpdate.ps1
+          ./Verify-ReleaseUpdate.ps1 -FrameworkDependent
           ./Verify-ReleaseUpdate.ps1 -InstallerSource tests/fixtures/Install-Release-0.5.4.ps1
           ./Verify-Prepare.ps1
           ./Verify-AgentPackage.ps1
@@ -75,8 +77,13 @@ jobs:
           Expand-Archive -LiteralPath $zip.FullName -DestinationPath runtime/package-check
           $package=Get-ChildItem runtime/package-check -Directory | Select-Object -First 1
           ./Verify-Portable.ps1 -PackageDirectory $package.FullName
-          ./Build-Installer.ps1 -PackageDirectory $package.FullName
-          ./Build-Installer.ps1 -PackageDirectory $package.FullName -TestBuild
+          ./Build-Portable.ps1 -FrameworkDependent
+          $thin=Get-ChildItem dist/CITA-Route-*-win-x64-framework.zip | Select-Object -First 1
+          Expand-Archive -LiteralPath $thin.FullName -DestinationPath runtime/framework-check
+          $framework=Get-ChildItem runtime/framework-check -Directory | Select-Object -First 1
+          ./Verify-Portable.ps1 -PackageDirectory $framework.FullName -AllowFrameworkDependent
+          ./Build-Installer.ps1 -PackageDirectory $framework.FullName
+          ./Build-Installer.ps1 -PackageDirectory $framework.FullName -TestBuild
           ./Verify-Installer.ps1 -Setup (Get-ChildItem dist/*-test-setup.exe).FullName
       - name: Create release and upload verified artifacts
         shell: powershell
@@ -84,5 +91,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          gh release create $env:RELEASE_TAG dist/CITA-Route-*-win-x64.zip dist/CITA-Route-*-win-x64-setup.exe dist/SHA256SUMS.txt --target $env:GITHUB_SHA --title "CITA Route $env:RELEASE_TAG" --notes-file RELEASE-NOTES.md
+          gh release create $env:RELEASE_TAG dist/CITA-Route-*-win-x64*.zip dist/CITA-Route-*-win-x64-setup.exe dist/SHA256SUMS.txt --target $env:GITHUB_SHA --title "CITA Route $env:RELEASE_TAG" --notes-file RELEASE-NOTES.md
           if($LASTEXITCODE -ne 0){throw 'Release publication failed'}

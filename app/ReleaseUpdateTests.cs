@@ -21,6 +21,31 @@ internal static class ReleaseUpdateTests
     public static void Run(string root)
     {
         Assert(ReleaseUpdates.Compare(new Version(0,3,0),new Version(0,3,0,0))==0,"Release and assembly versions must compare equally");
+        using(var both=JsonDocument.Parse(JsonSerializer.Serialize(new{draft=false,prerelease=false,tag_name="v9.0.0",assets=new[]{
+            new{name="CITA-Route-9.0.0-win-x64.zip",size=200L,browser_download_url="https://github.com/IthilRosg/CITA-Route/releases/download/v9.0.0/CITA-Route-9.0.0-win-x64.zip"},
+            new{name="CITA-Route-9.0.0-win-x64-framework.zip",size=100L,browser_download_url="https://github.com/IthilRosg/CITA-Route/releases/download/v9.0.0/CITA-Route-9.0.0-win-x64-framework.zip"},
+            new{name="SHA256SUMS.txt",size=100L,browser_download_url="https://github.com/IthilRosg/CITA-Route/releases/download/v9.0.0/SHA256SUMS.txt"}}})))
+        {
+            Assert(ReleaseUpdates.Parse(both.RootElement,new Version(0,6,0),true)!.FileName.EndsWith("-framework.zip"),"A machine runtime allows the smaller archive.");
+            Assert(ReleaseUpdates.Parse(both.RootElement,new Version(0,6,0),false)!.FileName.EndsWith("-win-x64.zip"),"A runtime-free machine retains the self-contained archive.");
+            Assert(ReleaseUpdates.Parse(both.RootElement,new Version(0,6,0),true,"CITA-Route-9.0.0-win-x64.zip")!.Bytes==200,"A staged transaction retains its original flavor even if the runtime becomes available.");
+            bool rejected=false;try{ReleaseUpdates.Parse(both.RootElement,new Version(0,6,0),false,"CITA-Route-9.0.0-win-x64-framework.zip");}catch(InvalidDataException){rejected=true;}
+            Assert(rejected,"Removing the runtime cannot silently change a staged framework transaction.");
+        }
+        string dotnetFixture=Path.Combine(root,"runtime","runtime-detection-"+Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(dotnetFixture);File.WriteAllText(Path.Combine(dotnetFixture,"dotnet.exe"),"fixture");
+            Assert(!DesktopRuntime.At(dotnetFixture),"Host alone is not a Desktop runtime.");
+            foreach(string family in new[]{"Microsoft.NETCore.App","Microsoft.WindowsDesktop.App"})
+            {
+                string path=Path.Combine(dotnetFixture,"shared",family,"8.0.32");Directory.CreateDirectory(path);
+                File.WriteAllText(Path.Combine(path,family=="Microsoft.NETCore.App"?"System.Private.CoreLib.dll":"Microsoft.WindowsDesktop.App.deps.json"),"fixture");
+                if(family=="Microsoft.NETCore.App")Assert(!DesktopRuntime.At(dotnetFixture),"Core alone cannot certify WPF readiness.");
+            }
+            Assert(DesktopRuntime.At(dotnetFixture),"Both stable runtime families are required.");
+        }
+        finally{if(Directory.Exists(dotnetFixture))Directory.Delete(dotnetFixture,true);}
         using(var release=JsonDocument.Parse(Release()))Assert(ReleaseUpdates.Parse(release.RootElement,new Version(0,3,0))?.Version==new Version(0,4,0),"New stable version is offered");
         using(var release=JsonDocument.Parse(Release(pre:true)))Assert(ReleaseUpdates.Parse(release.RootElement,new Version(0,3,0))==null,"Prerelease must not enter stable channel");
         bool refused=false;try{using var release=JsonDocument.Parse(Release("other-owner"));ReleaseUpdates.Parse(release.RootElement,new Version(0,3,0));}catch(InvalidDataException){refused=true;}Assert(refused,"Foreign release asset rejected");

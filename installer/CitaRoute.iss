@@ -73,6 +73,9 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}\client"; Excludes: "force-direct.txt,
 Source: "{#PayloadDir}\force-direct.txt"; DestDir: "{app}\client"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "{#PayloadDir}\force-vpn.txt"; DestDir: "{app}\client"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "InstallationGuard.ps1"; DestDir: "{app}\maintenance"; Flags: ignoreversion
+#ifdef NeedsDesktopRuntime
+Source: "..\DesktopRuntime.ps1"; Flags: dontcopy
+#endif
 
 [Icons]
 Name: "{userdesktop}\{#ProductName}"; Filename: "{app}\client\RoutePilot.exe"; WorkingDir: "{app}\client"; AppUserModelID: "CITA.Route.Client"
@@ -87,6 +90,9 @@ var
   GuardActive: Boolean;
   GuardAttempt: Integer;
   PreviousDirectory: String;
+#ifdef NeedsDesktopRuntime
+  RuntimeDownload: TDownloadWizardPage;
+#endif
 
 procedure InitializeWizard();
 begin
@@ -97,7 +103,68 @@ begin
   WizardForm.WelcomeLabel1.Font.Style := [fsBold];
   WizardForm.PageNameLabel.Font.Name := 'Consolas';
   WizardForm.PageNameLabel.Font.Style := [fsBold];
+#ifdef NeedsDesktopRuntime
+  RuntimeDownload := CreateDownloadPage('ПОДГОТОВКА .NET', 'Загрузка компонента Microsoft для запуска CITA Route', nil);
+  RuntimeDownload.ShowBaseNameInsteadOfUrl := True;
+#endif
 end;
+
+#ifdef NeedsDesktopRuntime
+function CheckRuntime(): Integer;
+var
+  Code: Integer;
+begin
+  ExtractTemporaryFile('DesktopRuntime.ps1');
+  if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ExpandConstant('{tmp}\DesktopRuntime.ps1') + '" -Action Check',
+    '', SW_HIDE, ewWaitUntilTerminated, Code) then Result := Code else Result := -1;
+end;
+
+function PrepareRuntime(var NeedsRestart: Boolean): String;
+var
+  Code, Check: Integer;
+  FileName, Args: String;
+  VerificationDetail: AnsiString;
+begin
+  Result := '';
+  Check := CheckRuntime();
+  if Check = 0 then exit;
+  if Check <> 10 then begin Result := 'Не удалось проверить .NET Desktop Runtime. Установка клиента не начата.'; exit; end;
+  if WizardSilent and (ExpandConstant('{param:INSTALLRUNTIME|0}') <> '1') then begin
+    Result := 'Требуется .NET Desktop Runtime 8 x64. Запусти обычную установку CITA Route: она предложит загрузить компонент Microsoft.';
+    exit;
+  end;
+  if not WizardSilent then begin
+    if MsgBox('Для запуска нужен Microsoft .NET Desktop Runtime 8 (x64). Скачать и установить его сейчас? Компонент устанавливается один раз; Windows запросит права администратора.', mbConfirmation, MB_YESNO) <> IDYES then begin
+      Result := 'Подготовка .NET отменена. Файлы CITA Route не изменены.'; exit;
+    end;
+  end;
+  RuntimeDownload.Clear;
+  RuntimeDownload.Add('{#RuntimeUrl}', 'windowsdesktop-runtime.exe', '');
+  RuntimeDownload.Show;
+  try
+    try RuntimeDownload.Download;
+    except Result := 'Не удалось загрузить .NET: ' + GetExceptionMessage; end;
+  finally RuntimeDownload.Hide; end;
+  if Result <> '' then exit;
+  FileName := ExpandConstant('{tmp}\windowsdesktop-runtime.exe');
+  Args := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ExpandConstant('{tmp}\DesktopRuntime.ps1') +
+    '" -Action Verify -Installer "' + FileName + '" -Sha512 "{#RuntimeSha512}" -ResultPath "' + ExpandConstant('{tmp}\runtime-verification.txt') + '"';
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Args, '', SW_HIDE, ewWaitUntilTerminated, Code) then begin
+    Result := 'Не удалось проверить загруженный компонент .NET.'; exit;
+  end;
+  if Code <> 0 then begin
+    if LoadStringFromFile(ExpandConstant('{tmp}\runtime-verification.txt'), VerificationDetail) then Log('Runtime verification: ' + String(VerificationDetail));
+    Result := 'Проверка контрольной суммы или подписи Microsoft не пройдена. Компонент не запущен.'; exit;
+  end;
+  if not ShellExec('runas', FileName, '/install /passive /norestart', '', SW_SHOWNORMAL, ewWaitUntilTerminated, Code) then begin
+    Result := 'Установка .NET отменена или недоступна. Файлы CITA Route не изменены.'; exit;
+  end;
+  if (Code = 3010) or (Code = 1641) then NeedsRestart := True
+  else if Code <> 0 then begin Result := 'Установка .NET не завершилась. Код: ' + IntToStr(Code); exit; end;
+  if CheckRuntime() <> 0 then Result := 'Компонент .NET ещё недоступен. Перезагрузи Windows, если установщик Microsoft запросил перезапуск, и повтори установку.';
+end;
+#endif
 
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
@@ -164,6 +231,10 @@ begin
     Result := 'Обновление должно использовать прежнюю папку установки. Для переноса сначала удали приложение.';
     exit;
   end;
+#ifdef NeedsDesktopRuntime
+  Result := PrepareRuntime(NeedsRestart);
+  if Result <> '' then exit;
+#endif
   if GuardActive then begin Result := ''; exit; end;
   ExtractTemporaryFile('InstallationGuard.ps1');
   Result := AcquireGuard(ExpandConstant('{tmp}\InstallationGuard.ps1'), False);

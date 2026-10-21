@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([string]$InstallerSource='',[switch]$Legacy)
+param([string]$InstallerSource='',[switch]$Legacy,[switch]$FrameworkDependent)
 $ErrorActionPreference='Stop'
 $project=$PSScriptRoot
 if(-not $InstallerSource){$InstallerSource=Join-Path $project 'Install-Release.ps1'}
@@ -26,12 +26,16 @@ try{
         Copy-Item -LiteralPath (Join-Path $project 'runtime\app-build\RoutePilot.exe') -Destination (Join-Path $package 'RoutePilot.exe') -Force
         Copy-Item -LiteralPath $InstallerSource -Destination (Join-Path $fixture 'Install-Release.ps1') -Force
         Copy-Item -LiteralPath (Join-Path $project 'FileStorage.ps1') -Destination $fixture -Force
+        if($FrameworkDependent){
+            if('DesktopRuntime.ps1' -notin $files){throw 'Framework fixtures require the current updater allowlist.'}
+            Copy-Item -LiteralPath (Join-Path $project 'DesktopRuntime.ps1') -Destination (Join-Path $package 'DesktopRuntime.ps1') -Force
+        }
         [IO.File]::WriteAllText((Join-Path $fixture 'AgentLease.ps1'),'function Assert-NoAgentRun {}; function Invoke-AgentCoordinator {}')
         [IO.File]::WriteAllText((Join-Path $fixture 'force-vpn.txt'),'keep-user-rule.example')
         Write-JsonFile (Join-Path $fixture 'data\connection.json') @{SourceProfile='Keep my WG'}
         Write-JsonFile (Join-Path $fixture 'runtime\session.json') @{running=($scenario -eq 'active-session')}
         $entries=@($files | ForEach-Object {$source=Join-Path $package $_;@{path=$_;bytes=(Get-Item -LiteralPath $source).Length;sha256=(Get-FileHash -LiteralPath $source).Hash}})
-        Write-JsonFile (Join-Path $package 'manifest.json') @{version=$version;architecture='win-x64';selfContained=$true;files=$entries}
+        Write-JsonFile (Join-Path $package 'manifest.json') @{version=$version;architecture='win-x64';selfContained=(-not $FrameworkDependent);desktopRuntimeMajor=8;files=$entries}
         $manifestHash=(Get-FileHash -LiteralPath (Join-Path $package 'manifest.json')).Hash
         $operation=[guid]::NewGuid().ToString('N');$started=[DateTime]::UtcNow
         $fakeGui=[pscustomobject]@{Path=(Join-Path $fixture 'RoutePilot.exe');StartTime=$started;Handoff=(Join-Path $fixture ('runtime\update-handoff-'+$operation+'.json'));AckSeen=$false}

@@ -41,7 +41,7 @@ public sealed class ReleaseUpdates
         using var document=JsonDocument.Parse(await ReadBounded(response,1024*1024,token));
         return Parse(document.RootElement,Current);
     }
-    public static ReleaseUpdate? Parse(JsonElement release,Version current)
+    public static ReleaseUpdate? Parse(JsonElement release,Version current,bool? frameworkReady=null,string? archivedFile=null)
     {
         if(release.GetProperty("draft").GetBoolean() || release.GetProperty("prerelease").GetBoolean())return null;
         string tag=release.GetProperty("tag_name").GetString()??"";
@@ -49,6 +49,15 @@ public sealed class ReleaseUpdates
         if(Compare(version,current)<=0)return null;
         string name="CITA-Route-"+version.ToString(3)+"-win-x64.zip";
         var assets=release.GetProperty("assets").EnumerateArray().ToArray();
+        string thin="CITA-Route-"+version.ToString(3)+"-win-x64-framework.zip";
+        bool ready=frameworkReady??DesktopRuntime.Available();
+        if(archivedFile!=null)
+        {
+            if(archivedFile!=name && archivedFile!=thin)throw new InvalidDataException("Неизвестный вид сохранённого архива.");
+            if(archivedFile==thin && !ready)throw new InvalidDataException("Для сохранённого обновления требуется .NET Desktop 8 x64. Запусти установщик.");
+            name=archivedFile;
+        }
+        else if(ready && assets.Any(a=>a.GetProperty("name").GetString()==thin))name=thin;
         var archives=assets.Where(a=>a.GetProperty("name").GetString()==name).ToArray();
         var sums=assets.Where(a=>a.GetProperty("name").GetString()=="SHA256SUMS.txt").ToArray();
         if(archives.Length!=1 || sums.Length!=1)throw new InvalidDataException("В выпуске нет полного ZIP и SHA256SUMS.txt.");
@@ -106,7 +115,8 @@ public sealed class ReleaseUpdates
         if(!System.Text.RegularExpressions.Regex.IsMatch(prepared.Tag,@"^v\d+\.\d+\.\d+$"))throw new InvalidDataException("Некорректный журнал обновления.");
         using var response=await _http.GetAsync("https://api.github.com/repos/"+Repository+"/releases/tags/"+prepared.Tag,token);TrustedResponse(response);response.EnsureSuccessStatusCode();
         using var document=JsonDocument.Parse(await ReadBounded(response,1024*1024,token));
-        var update=Parse(document.RootElement,new Version(0,0,0))??throw new InvalidDataException("Выпуск больше не доступен в стабильном канале.");
+        string savedArchive=Path.GetFileName(UpdateJournal.StagedPath(root,prepared.Archive));
+        var update=Parse(document.RootElement,new Version(0,0,0),archivedFile:savedArchive)??throw new InvalidDataException("Выпуск больше не доступен в стабильном канале.");
         if(update.Tag!=prepared.Tag || Compare(update.Version,Current)<=0)throw new InvalidDataException("Обновление уже установлено или устарело.");
         string package=UpdateJournal.StagedPath(root,prepared.Package);
         string archive=UpdateJournal.StagedPath(root,prepared.Archive);
@@ -147,7 +157,8 @@ public sealed class ReleaseUpdates
     {
         using var manifest=JsonDocument.Parse(File.ReadAllText(Path.Combine(package,"manifest.json")));
         var data=manifest.RootElement;
-        if(!Version.TryParse(data.GetProperty("version").GetString(),out var actual) || Compare(actual,expected)!=0 || data.GetProperty("architecture").GetString()!="win-x64" || !data.GetProperty("selfContained").GetBoolean())throw new InvalidDataException("Архив относится к другой версии или платформе.");
+        if(!Version.TryParse(data.GetProperty("version").GetString(),out var actual) || Compare(actual,expected)!=0 || data.GetProperty("architecture").GetString()!="win-x64")throw new InvalidDataException("Архив относится к другой версии или платформе.");
+        if(!data.GetProperty("selfContained").GetBoolean() && (!data.TryGetProperty("desktopRuntimeMajor",out var major) || major.GetInt32()!=8 || !DesktopRuntime.Available()))throw new InvalidDataException("Для облегчённого обновления требуется .NET Desktop 8 x64. Запусти установщик.");
         string prefix=Path.GetFullPath(package)+Path.DirectorySeparatorChar;var names=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach(var file in data.GetProperty("files").EnumerateArray())
         {
@@ -158,7 +169,7 @@ public sealed class ReleaseUpdates
             using var input=File.OpenRead(path);
             if(input.Length!=file.GetProperty("bytes").GetInt64() || Convert.ToHexString(SHA256.HashData(input))!=file.GetProperty("sha256").GetString()?.ToUpperInvariant())throw new InvalidDataException("Повреждён файл обновления: "+Path.GetFileName(path));
         }
-        foreach(string name in new[]{"RoutePilot.exe","SmartRouting.ps1","Install-Agent.ps1","Configure-Connection.ps1","product.json"})
+        foreach(string name in new[]{"RoutePilot.exe","SmartRouting.ps1","Install-Agent.ps1","Configure-Connection.ps1","product.json"}.Concat(data.GetProperty("selfContained").GetBoolean()?Array.Empty<string>():new[]{"DesktopRuntime.ps1"}))
             if(!names.Contains(Path.Combine(package,name)))throw new InvalidDataException("Неполная поставка: "+name);
     }
     static async Task<byte[]> ReadBounded(HttpResponseMessage response,int limit,CancellationToken token)

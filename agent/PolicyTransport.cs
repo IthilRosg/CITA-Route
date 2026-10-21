@@ -110,7 +110,7 @@ internal static class PolicyTransport
         catch(Exception ex)when(ex is HttpRequestException or IOException or SocketException or OperationCanceledException or JsonException or FormatException or InvalidOperationException or KeyNotFoundException){return null;}
     }
     internal static async Task<(RouteSelection Selection,long DnsMilliseconds)> SelectResolved(string domain,PolicyPorts ports,CancellationToken stop,bool allowUnstableFallback=false,
-        Func<int,CancellationToken,Task<IPAddress[]?>>? resolve=null,Func<IPAddress,int,CancellationToken,Task<CandidateResult>>? probe=null)
+        Func<int,CancellationToken,Task<IPAddress[]?>>? resolve=null,Func<IPAddress,int,CancellationToken,Task<CandidateResult>>? probe=null,string? observeRoute=null)
     {
         if(PolicySafety.Domain(domain)!=domain)throw new ArgumentException("Invalid public policy domain.");
         using var dnsStop=CancellationTokenSource.CreateLinkedTokenSource(stop);
@@ -137,7 +137,7 @@ internal static class PolicyTransport
                 var answer=await (port==ports.Vpn?vpn:direct).WaitAsync(token);
                 if(answer.Addresses==null)return new(false,false,"Configured route DNS unavailable",answer.Milliseconds);
                 return await (probe?.Invoke(answer.Addresses[0],port,token)??Probe(domain,answer.Addresses[0],port,token));
-            },ports,stop,allowUnstableFallback);
+            },ports,stop,allowUnstableFallback,observeRoute);
         }
         finally{dnsStop.Cancel();await Task.WhenAll(direct,vpn);}
         var timings=selected.Candidates.Select(c=>c.Outcome==ProbeOutcome.Unavailable&&(c.Route=="vpn"?vpn.Result:direct.Result).Addresses==null?c with{Outcome=ProbeOutcome.DnsUnavailable}:c).ToArray();
@@ -146,7 +146,7 @@ internal static class PolicyTransport
         return(selected with{Outcome=outcome,Candidates=timings},dnsMs);
     }
     internal static bool UnstablePreferred(RouteSelection selection)=>selection.Route!=null&&selection.Candidates.TakeWhile(c=>c.Route!=selection.Route).Any(c=>c.Outcome==ProbeOutcome.Indeterminate);
-    internal static async Task<RouteSelection> Select(Func<int,CancellationToken,Task<CandidateResult>> probe,PolicyPorts ports,CancellationToken stop,bool allowUnstableFallback=false)
+    internal static async Task<RouteSelection> Select(Func<int,CancellationToken,Task<CandidateResult>> probe,PolicyPorts ports,CancellationToken stop,bool allowUnstableFallback=false,string? observeRoute=null)
     {
         using var cancel=CancellationTokenSource.CreateLinkedTokenSource(stop);
         var candidates=new[]{("direct",ports.Direct),("dpi",ports.Dpi),("vpn",ports.Vpn)};
@@ -175,6 +175,12 @@ internal static class PolicyTransport
                 if(result.Outcome==ProbeOutcome.Indeterminate){outcome=result.Outcome;if(!allowUnstableFallback)break;continue;}
                 if(result.Outcome==ProbeOutcome.Reachable){outcome=result.Outcome;selected=result.Route;elapsed=result.Milliseconds;break;}
             }
+            // On a return to a preferred route, finish the current route's
+            // independent checks so the stability gate can distinguish a dead
+            // path from an otherwise working path. New destinations don't wait.
+            int observed=Array.FindIndex(candidates,c=>c.Item1==observeRoute);
+            if(selected!=null && observed>=0 && Array.FindIndex(candidates,c=>c.Item1==selected)<observed)
+            {await tasks[observed];stop.ThrowIfCancellationRequested();}
         }
         finally{cancel.Cancel();await Task.WhenAll(tasks);}
         return new(outcome,selected,elapsed,tasks.Select(t=>t.Result).ToArray());

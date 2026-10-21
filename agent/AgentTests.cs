@@ -62,6 +62,7 @@ public static class AgentTests
         try
         {
             await PolicyWorkerTests.Run(temporary);
+            await PolicyStabilityTests.Run(temporary);
             await PolicyOptimizationTests.Run(temporary);
             await UdpQualityTests.Run(temporary);
             await WireSockStatisticsTests.Run();

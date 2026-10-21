@@ -18,7 +18,7 @@ $desired=[version]$Version
 if($OperationId -and -not $ManifestSha256){throw 'Missing verified manifest identity.'}
 if($ManifestSha256 -and ($ManifestSha256 -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileHash -LiteralPath (Join-Path $packagePath 'manifest.json')).Hash -ne $ManifestSha256)){throw 'Release manifest changed after verification.'}
 $manifest=Read-JsonFile (Join-Path $packagePath 'manifest.json')
-if([version]$manifest.version -ne $desired -or $manifest.architecture -ne 'win-x64' -or -not $manifest.selfContained){throw 'Release manifest does not match the requested update.'}
+if([version]$manifest.version -ne $desired -or $manifest.architecture -ne 'win-x64'){throw 'Release manifest does not match the requested update.'}
 $names=@{}
 foreach($file in $manifest.files){
     $source=[IO.Path]::GetFullPath((Join-Path $packagePath $file.path))
@@ -26,8 +26,15 @@ foreach($file in $manifest.files){
     $names[$source]=$file.sha256
     if((Get-Item -LiteralPath $source).Length -ne $file.bytes -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $file.sha256){throw 'Update payload has changed.'}
 }
-$files=@('RoutePilot.exe','SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','Verify-Routing.ps1','Install-Release.ps1','product.json','README.md','THIRD-PARTY.md','LICENSE','runtime\smart-router.exe','runtime\vpn-bridge.exe','runtime\agent-build\RoutePilot.Agent.exe','runtime\rules\russia_inside.srs','runtime\rules\discord.srs','rules\telegram-cidr.txt')
+$files=@('RoutePilot.exe','SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','Verify-Routing.ps1','Install-Release.ps1','DesktopRuntime.ps1','product.json','README.md','THIRD-PARTY.md','LICENSE','runtime\smart-router.exe','runtime\vpn-bridge.exe','runtime\agent-build\RoutePilot.Agent.exe','runtime\rules\russia_inside.srs','runtime\rules\discord.srs','rules\telegram-cidr.txt')
 foreach($name in $files){if(-not $names.ContainsKey((Join-Path $packagePath $name))){throw ('Required update file missing: '+$name)}}
+if(-not $manifest.selfContained){
+    # Old clients copy only their historical allowlist. Read the already hashed
+    # helper from this verified package, so the first update from 0.5.x can
+    # bootstrap the new helper on the next update without losing compatibility.
+    . (Join-Path $packagePath 'DesktopRuntime.ps1')
+    if($manifest.desktopRuntimeMajor -ne 8 -or -not(Test-MachineDesktopRuntime)){throw 'The update requires machine-wide .NET Desktop Runtime 8 x64. Use the installer to prepare it.'}
+}
 if([version](Get-Item -LiteralPath (Join-Path $packagePath 'RoutePilot.exe')).VersionInfo.FileVersion -ne [version]($Version+'.0')){throw 'Release executable version differs.'}
 Assert-NoAgentRun
 function Assert-Disconnected {
