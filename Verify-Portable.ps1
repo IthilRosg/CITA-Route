@@ -43,6 +43,11 @@ try{
             Assert ($path.StartsWith($package.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) 'Manifest path escaped package.'
             Assert ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq $file.sha256) ('Package hash mismatch: '+$file.path)
         }
+        $receipt=(Read-JsonFile (Join-Path $package 'product.json')).distribution
+        Assert ($receipt.schema -eq 1 -and $receipt.selfContained -is [bool] -and $receipt.selfContained -eq $manifest.selfContained) 'Distribution receipt missing or disagrees with package format.'
+        Assert ($receipt.agentSha256 -eq (Get-FileHash -LiteralPath (Join-Path $package 'runtime\agent-build\RoutePilot.Agent.exe')).Hash) 'Distribution receipt does not match the actual agent.'
+        . (Join-Path $package 'AgentPackage.ps1')
+        Assert-AgentRuntimeReady $package
         $bad=@(Get-ChildItem -LiteralPath $package -Recurse -File | Where-Object {$_.Extension -in @('.conf','.log') -or $_.Name -in @('policy-heartbeat.json','bridge-safety.json','resource-state.json','udp-quality.json','session.json','controller-token.txt','connection.json','traffic.json','policy-cache.json','agent-config.json','router.json','bridge.json')})
         Assert ($bad.Count -eq 0) 'Personal runtime files found in package.'
         Assert (-not (Test-Path -LiteralPath (Join-Path $package 'private'))) 'Private folder found in package.'
