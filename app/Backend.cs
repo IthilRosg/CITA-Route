@@ -151,6 +151,9 @@ public sealed class Backend : IDisposable
     public static string FriendlyError(string message)
     {
         if(message.Contains("Update preparation is in progress"))return "CITA Route готовит обновление. Подключение будет доступно после установки.";
+        if(message.Contains("virtual routing adapter is still in use"))return "Виртуальный адаптер занят или ещё отключается. Подожди и повтори подключение.";
+        if(message.Contains("Helper exited before its network interface") || message.Contains("helper did not finish network"))return "Сетевой компонент не смог завершить запуск. Подробности — в журнале.";
+        if(message.Contains("routing engine exited during policy setup"))return "Маршрутизатор остановился до применения правил. Подробности — в журнале.";
         if(message.Contains("Previous VPN restore needs attention"))return "Подключение не завершено; прежний VPN не удалось вернуть автоматически. Открой журнал и проверь прежнее подключение.";
         if(message.Contains("VPNUS reconnected") || message.Contains("VPNUS connection has no supported") || message.Contains("VPNUS service identity"))return "Не удалось безопасно остановить VPNUS автоматически. Проверь его клиент и повтори подключение.";
         if(message.Contains("competing WireSock connection did not stop"))return "WireSock не подтвердил отключение прежнего подключения. Проверь его состояние и повтори попытку.";

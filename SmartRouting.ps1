@@ -112,7 +112,9 @@ function Stop-OurProcesses([switch]$KeepWatch) {
         }
         Remove-Item -LiteralPath $watchPath -Force
     }
-    Get-OurProcesses | Stop-Process -Force
+    $helpers=@(Get-OurProcesses)
+    $helpers | Stop-Process -Force
+    foreach($helper in $helpers){if(-not $helper.WaitForExit(5000)){throw 'A routing helper has not finished stopping.'}}
     # Closing Wintun removes the temporary routes and interface DNS settings.
     Start-Sleep -Milliseconds 500
     Clear-DnsClientCache -ErrorAction SilentlyContinue
@@ -403,26 +405,68 @@ function Prepare-Configuration {
     Write-Host "Prepared. Direct adapter: $interface. DNS strategy: $directDnsStrategy. WireSock profile: $smartProfile."
 }
 
+function Test-HelperAdapterCollision([string]$Text) {
+    return $Text -match 'configure tun interface:' -and $Text -match 'create adapter:.*already exists' -and $Text -match 'open existing adapter:.*Element not found'
+}
+function Test-HelperTunReady($Settings) {
+    foreach($tun in @($Settings.inbounds | Where-Object type -eq 'tun')){
+        $adapter=@(Get-NetAdapter -Name $tun.interface_name -IncludeHidden -ErrorAction SilentlyContinue)
+        if($adapter.Count -ne 1 -or $adapter[0].Status -ne 'Up'){return $false}
+        $expected=@($tun.address | Where-Object {$_ -notmatch ':'} | ForEach-Object {($_ -split '/')[0]})
+        if(-not $expected.Count){return $false}
+        $assigned=@(Get-NetIPAddress -InterfaceIndex $adapter[0].ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object AddressState -eq 'Preferred' | ForEach-Object IPAddress)
+        if(@($expected | Where-Object {$_ -notin $assigned}).Count){return $false}
+    }
+    return $true
+}
 function Start-Helper([string]$Exe,[string]$Config) {
     Assert-ConnectionOperation
     if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Helper start cancelled by Stop.'}
     $startupLog = Join-Path $root ('logs\' + [IO.Path]::GetFileNameWithoutExtension($Exe) + '-startup.log')
-    $process = Start-Process -FilePath $Exe -ArgumentList @('run','-c',('"' + $Config + '"'),'--disable-color') `
-        -WorkingDirectory $runtime -WindowStyle Hidden -PassThru -RedirectStandardError $startupLog -RedirectStandardOutput ($startupLog+'.out')
     $settings=Read-JsonFile $Config
+    $tuns=@($settings.inbounds | Where-Object type -eq 'tun')
+    $canRetry=$Exe -eq $routerExe -and $tuns.Count -eq 1 -and $tuns[0].interface_name -eq 'SmartRouting'
     $required=@($settings.inbounds | Where-Object {$_.listen -eq '127.0.0.1' -and $_.listen_port} | ForEach-Object {[int]$_.listen_port})
-    $deadline=[DateTime]::UtcNow.AddSeconds(8)
-    $ready=$false
-    do {
+    foreach($attempt in 1..2){
         Assert-ConnectionOperation
-        if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){$process | Stop-Process -Force;throw 'Helper start cancelled by Stop.'}
-        if($process.HasExited){throw "Helper exited: $Exe. See the logs folder."}
-        $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $process.Id | ForEach-Object LocalPort)
-        $ready=@($required | Where-Object {$_ -notin $listeners}).Count -eq 0
-        if(-not $ready){Start-Sleep -Milliseconds 100}
-    }while(-not $ready -and [DateTime]::UtcNow -lt $deadline)
-    if(-not $ready){$process | Stop-Process -Force;throw 'The helper did not open its owned listeners before the deadline.'}
-    return $process
+        if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Helper start cancelled by Stop.'}
+        foreach($tun in $tuns){
+            $released=[Diagnostics.Stopwatch]::StartNew()
+            while(@(Get-NetAdapter -Name $tun.interface_name -IncludeHidden -ErrorAction SilentlyContinue).Count){
+                Write-ConnectionProgress 'WaitingAdapter'
+                Assert-ConnectionOperation
+                if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Helper start cancelled by Stop.'}
+                if($released.Elapsed.TotalSeconds -ge 8){throw 'The virtual routing adapter is still in use or closing. Wait before reconnecting.'}
+                Start-Sleep -Milliseconds 200
+            }
+        }
+        $process = Start-Process -FilePath $Exe -ArgumentList @('run','-c',('"' + $Config + '"'),'--disable-color') `
+            -WorkingDirectory $runtime -WindowStyle Hidden -PassThru -RedirectStandardError $startupLog -RedirectStandardOutput ($startupLog+'.out')
+        $deadline=[DateTime]::UtcNow.AddSeconds($(if($tuns.Count){20}else{8}))
+        $ready=$false
+        try{
+            do {
+                Assert-ConnectionOperation
+                if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Helper start cancelled by Stop.'}
+                $process.Refresh();if($process.HasExited){break}
+                $listeners=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $process.Id | ForEach-Object LocalPort)
+                $ready=@($required | Where-Object {$_ -notin $listeners}).Count -eq 0 -and (Test-HelperTunReady $settings)
+                if(-not $ready){Start-Sleep -Milliseconds 100}
+            }while(-not $ready -and [DateTime]::UtcNow -lt $deadline)
+            $process.Refresh()
+            if($ready -and -not $process.HasExited){
+                if($canRetry){Write-JsonFile (Join-Path $root 'logs\helper-start-last.json') @{schema=1;success=$true;attempts=$attempt;code=$(if($attempt -gt 1){'RecoveredTunAdapterCollision'}else{'Ready'});updatedUtc=[DateTime]::UtcNow.ToString('o')}}
+                return $process
+            }
+            $collision=$canRetry -and $process.HasExited -and (Test-Path -LiteralPath $startupLog) -and (Test-HelperAdapterCollision ([IO.File]::ReadAllText($startupLog)))
+            if($canRetry){Write-JsonFile (Join-Path $root 'logs\helper-start-last.json') @{schema=1;success=$false;attempts=$attempt;code=$(if($collision){'TunAdapterCollision'}elseif($process.HasExited){'Exited'}else{'NotReady'});updatedUtc=[DateTime]::UtcNow.ToString('o')}}
+            if($collision -and $attempt -eq 1){Write-ConnectionProgress 'RetryingRouter';Start-Sleep -Milliseconds 2000;continue}
+            if($process.HasExited){throw "Helper exited before its network interface was ready: $Exe. See the logs folder."}
+            throw 'The helper did not finish network and listener setup before the deadline.'
+        }finally{
+            if(-not $ready -and -not $process.HasExited){$process | Stop-Process -Force;[void]$process.WaitForExit(3000)}
+        }
+    }
 }
 
 if ($Action -eq 'Watch') {
@@ -567,6 +611,7 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
     do {
         Assert-ConnectionOperation
         if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){throw 'Connection cancelled by Stop.'}
+        $routerProcess.Refresh();if($routerProcess.HasExited){throw 'The routing engine exited during policy setup. See logs/smart-router-startup.log.'}
         try {$policyState=Read-JsonFile (Join-Path $runtime 'policy-state.json');$policyReady=$policyState.epoch.StartsWith($startedSession.id+':') -and $policyState.phase -in @('Auto','Lists')}catch{}
         if(-not $policyReady){Start-Sleep -Milliseconds 150}
     }while(-not $policyReady -and [DateTime]::UtcNow -lt $policyDeadline)

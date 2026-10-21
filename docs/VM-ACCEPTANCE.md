@@ -86,6 +86,27 @@ four-second deadline and these boundaries. This removes marker churn as a
 source of delayed confirmation; it does not establish the underlying cause of
 every earlier timeout or replace the live acceptance checks.
 
+A repeat five-connection profile test then exposed a concrete lower-level
+failure: Windows/Wintun reported adapter creation as already existing while
+opening that adapter returned element not found. Local engine listeners had
+opened before TUN initialization finished; the engine subsequently exited and
+the policy deadline masked that failure. Wait for terminated helper processes,
+require the configured TUN's preferred IPv4 address as well as owned listeners,
+and check the engine during policy startup. For this exact exited-router error,
+allow one bounded engine-only retry after a settling interval. Wait for an
+existing named interface to disappear; never delete or reset network devices.
+Unknown/access-denied failures and Stop cannot authorize that retry. Lifecycle
+fixtures cover early listeners, delayed TUN readiness, the exact collision,
+second failure and cancellation. Live repetition is recorded separately.
+
+The subsequent A/B/A/B/A run passed all five fresh sessions and protected HTTPS
+checks. Two actual adapter collisions recovered through the bounded retry,
+taking 29.780 and 30.135 seconds. The three first-attempt connections took
+11.436, 11.153 and 12.444 seconds. Stop succeeded each time, active-session
+profile replacement was refused without mutation, source files remained
+unchanged, and the temporary B profile was removed. These are successful
+recoveries of a real Windows error, not five error-free first attempts.
+
 Boot commands use primary-process completion without capturing inherited
 background pipes. A Windows PowerShell fixture retains a live owned child while
 requiring primary completion, exact exit status and cancellation. Background

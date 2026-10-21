@@ -24,6 +24,8 @@ public sealed class ConnectionProgress
         "Connecting"=>"Подключаем выбранный профиль WireSock…",
         "StartingBridge"=>"Запускаем канал VPN…",
         "StartingRouter"=>"Запускаем маршрутизацию…",
+        "WaitingAdapter"=>"Ждём освобождения виртуального адаптера…",
+        "RetryingRouter"=>"Повторно создаём виртуальный адаптер…",
         "ApplyingPolicy"=>"Применяем правила маршрутов…",
         "Verifying"=>"Проверяем соединение через VPN…",
         "Stopping"=>"Отключаем маршрут…",
