@@ -31,6 +31,7 @@ internal sealed class PolicyMeasurement
     public DateTime? DecisionCheckedUtc{get;init;}
     public DateTime? AppliedUtc{get;set;}
     public long? AppliedVersion{get;set;}
+    public string Disposition{get;init;}="Accepted";
 }
 
 public static class PolicySafety
@@ -85,6 +86,11 @@ public sealed class PolicyWorker
     CancellationToken _runStop;
     long _offset;string _partial="";int _switches;
     readonly string _fingerprint;
+    readonly PolicyStability _stability=new();
+    PolicyNetworkMonitor? _networkMonitor;
+    long _nextStatusTick;
+    string _statusPhase="";
+    DateTime _lastClockUtc=DateTime.UtcNow;
     string _clearRequest="";
     readonly HashSet<string> _listed=new(StringComparer.OrdinalIgnoreCase);
     string _listVersion="";
@@ -94,7 +100,7 @@ public sealed class PolicyWorker
     string Runtime(string name)=>Path.Combine(_root,"runtime",name);
     string Fingerprint()
     {
-        return PolicyNetwork.Signature(_root);
+        return _networkMonitor?.Read(true)??PolicyNetwork.Signature(_root);
     }
     internal bool Current()
     {
@@ -111,6 +117,7 @@ public sealed class PolicyWorker
         var session=Storage.Read<PolicySession>(Path.Combine(root,"runtime","session.json"));
         var options=Storage.Read<PolicyOptions>(Path.Combine(root,"data","routing-policy.json"));
         var worker=new PolicyWorker(root,session,options);
+        worker._networkMonitor=new(()=>PolicyNetwork.Signature(root));
         worker._progress=new(root,session.Id);
         worker._progress.Mark("Starting",true);
         var identity=ProcessIdentity.From(System.Diagnostics.Process.GetProcessById(session.RouterPid));
@@ -129,10 +136,11 @@ public sealed class PolicyWorker
             {
                 var current=Storage.Read<PolicySession>(Path.Combine(root,"runtime","session.json"));
                 if(current.Id!=session.Id || !current.Running || File.Exists(worker.Runtime("stop.request")))break;
-                if(worker._fingerprint!=worker.Fingerprint())
+                if(worker._fingerprint!=worker._networkMonitor.Read())
                 {
                     terminalPhase="NetworkChanged";cancel.Cancel();worker.Event("Сеть изменилась. Адаптация остановлена до переподключения.");return;
                 }
+                worker.ObserveClock(DateTime.UtcNow);
                 worker.RefreshListed();
                 string clear=worker.Runtime("clear-policy.request");
                 if(File.Exists(clear))
@@ -153,9 +161,9 @@ public sealed class PolicyWorker
                     {worker._nextPublish=DateTime.UtcNow.AddSeconds(5);worker.Event("Правила не подтверждены движком; прежние пути сохранены. "+ex.GetType().Name);}
                 }
                 if(options.Mode=="Auto")worker.DrainFailures(cancel.Token);
-                worker.Status(worker._dirty?"Applying":options.Mode=="Auto"?"Auto":"Lists");
+                worker.MaybeStatus(worker._dirty?"Applying":options.Mode=="Auto"?"Auto":"Lists");
                 worker._progress.Mark("Running");
-                await Task.Delay(500);
+                await WaitForWork(worker._pending.Values,cancel.Token);
             }
         }
         catch(Exception ex)
@@ -170,6 +178,7 @@ public sealed class PolicyWorker
             if(worker._publisher!=null)await worker._publisher.DisposeAsync();
             foreach(var pendingStop in worker._pendingStops.Values)pendingStop.Dispose();
             worker._api.Dispose();
+            worker._networkMonitor?.Dispose();
         }
     }
     internal static async Task InitializePublication(Func<CancellationToken,Task> publish,Func<bool> current,CancellationToken stop,TimeSpan? budget=null)
@@ -219,6 +228,7 @@ public sealed class PolicyWorker
     {
         _generation++;foreach(var pendingStop in _pendingStops.Values)pendingStop.Cancel();
         _decisions.Clear();_failures.Clear();_seenFailures.Clear();_lastUse.Clear();_nextProbe.Clear();_queuedAt.Clear();_bindingStates.Clear();
+        _stability.Clear();
         lock(_events)_events.Clear();_dirty=true;
     }
     readonly Dictionary<PolicyKey,string> _bindingStates=new();
@@ -227,6 +237,19 @@ public sealed class PolicyWorker
     {
         _lastUse[key]=now;
         while(_lastUse.Count>1024)_lastUse.Remove(_lastUse.MinBy(p=>p.Value).Key);
+    }
+    internal bool ObserveClock(DateTime now)
+    {
+        bool discontinuity=now<_lastClockUtc.AddSeconds(-2) || now-_lastClockUtc>TimeSpan.FromSeconds(20);
+        _lastClockUtc=now;
+        if(!discontinuity)return false;
+        // Keep the active bindings, but never apply a calibration accumulated
+        // before a pause or wall-clock change as fresh post-resume evidence.
+        _generation++;foreach(var stop in _pendingStops.Values)stop.Cancel();
+        _stability.Clear();_nextProbe.Clear();_failures.Clear();_queuedAt.Clear();
+        foreach(var key in _lastUse.Where(p=>p.Value>now).Select(p=>p.Key).ToArray())_lastUse[key]=now;
+        Event("Пауза или изменение времени: незавершённые проверки сброшены; активные пути сохранены.");
+        return true;
     }
     internal async Task CompletePending()
     {
@@ -241,13 +264,24 @@ public sealed class PolicyWorker
                 if(generation!=_generation || !Current() || Manual(pair.Key.Domain))continue;
                 _nextProbe[pair.Key]=DateTime.UtcNow.AddSeconds(result.Outcome==ProbeOutcome.TlsAuthenticationError?120:30);
                 while(_nextProbe.Count>512)_nextProbe.Remove(_nextProbe.MinBy(p=>p.Value).Key);
+                bool accepted=false;
                 if(result.Decision is { } decision && PolicySafety.Live(decision,_epoch,DateTime.UtcNow))
                 {
-                    if(!_decisions.TryGetValue(pair.Key,out var previous) || previous.Route!=decision.Route)_switches++;
-                    StoreDecision(decision);_dirty=true;Event(decision.Key.Domain+" → "+decision.Route+": "+decision.Reason);
+                    _decisions.TryGetValue(pair.Key,out var previous);
+                    accepted=_stability.Accept(previous,decision,result.Candidates,DateTime.UtcNow);
+                    if(accepted)
+                    {
+                        if(previous==null || previous.Route!=decision.Route)_switches++;
+                        StoreDecision(decision);_dirty=true;Event(decision.Key.Domain+" → "+decision.Route+": "+decision.Reason);
+                    }
+                    else
+                    {
+                        _nextProbe[pair.Key]=DateTime.UtcNow+PolicyStability.ConfirmationDelay;
+                        Event(decision.Key.Domain+": проверяется устойчивость "+decision.Route+"; текущий путь сохранён.");
+                    }
                 }
-                else Event(pair.Key.Domain+": "+result.Outcome+"; неподтверждённая замена не применена.");
-                _measurements.Insert(0,new(){Key=pair.Key,Trigger=metadata.Trigger,FirstSignalUtc=metadata.Queued,StartedUtc=metadata.Started,FinishedUtc=DateTime.UtcNow,QueueMilliseconds=Math.Max(0,(metadata.Started-metadata.Queued).TotalMilliseconds),Outcome=result.Outcome,Route=result.Decision?.Route,DnsMilliseconds=result.DnsMilliseconds,TotalMilliseconds=result.TotalMilliseconds,Candidates=result.Candidates,DecisionCheckedUtc=result.Decision?.CheckedUtc});
+                else {_stability.Remove(pair.Key);Event(pair.Key.Domain+": "+result.Outcome+"; неподтверждённая замена не применена.");}
+                _measurements.Insert(0,new(){Key=pair.Key,Trigger=metadata.Trigger,FirstSignalUtc=metadata.Queued,StartedUtc=metadata.Started,FinishedUtc=DateTime.UtcNow,QueueMilliseconds=Math.Max(0,(metadata.Started-metadata.Queued).TotalMilliseconds),Outcome=result.Outcome,Route=result.Decision?.Route,DnsMilliseconds=result.DnsMilliseconds,TotalMilliseconds=result.TotalMilliseconds,Candidates=result.Candidates,DecisionCheckedUtc=accepted?result.Decision?.CheckedUtc:null,Disposition=accepted?"Accepted":result.Decision!=null?"AwaitingStableReturn":"Unconfirmed"});
                 if(_measurements.Count>100)_measurements.RemoveAt(_measurements.Count-1);
                 Storage.Write(Path.Combine(_root,"data","policy-metrics.json"),new{epoch=_epoch,updatedUtc=DateTime.UtcNow,measurements=_measurements});
             }
@@ -258,7 +292,7 @@ public sealed class PolicyWorker
     internal string Binding(PolicyDecision decision,DateTime now)
     {
         if(PolicySafety.Live(decision,_epoch,now))return decision.Route;
-        if(decision.Key.Epoch!=_epoch || decision.CheckedUtc>now || decision.Route=="direct")return "";
+        if(decision.Key.Epoch!=_epoch || decision.Route=="direct")return "";
         // Confidence TTL and active routing direction are separate. A failed
         // refresh must neither block a working site nor silently send it direct.
         // Retain this direction ONLY inside the exact network/session epoch;
@@ -269,11 +303,12 @@ public sealed class PolicyWorker
     {
         foreach(var pair in _decisions.ToArray())
         {
+            if(_stability.Pending(pair.Key) && Manual(pair.Key.Domain))_stability.Remove(pair.Key);
             // A newly saved manual rule is applied by a separate engine watcher.
             // Keep its shadowed automatic binding until the manual rule takes
             // priority; removing it early could create a direct-route window.
             string binding=Binding(pair.Value,DateTime.UtcNow);
-            if(binding==""){_decisions.Remove(pair.Key);_bindingStates.Remove(pair.Key);_dirty=true;continue;}
+            if(binding==""){_decisions.Remove(pair.Key);_bindingStates.Remove(pair.Key);_stability.Remove(pair.Key);_dirty=true;continue;}
             if(!_bindingStates.TryGetValue(pair.Key,out string? previous) || previous!=binding){_bindingStates[pair.Key]=binding;_dirty=true;}
         }
         foreach(var key in _lastUse.Where(p=>DateTime.UtcNow-p.Value>TimeSpan.FromHours(1)).Select(p=>p.Key).ToArray())_lastUse.Remove(key);
@@ -438,7 +473,7 @@ public sealed class PolicyWorker
         var refresh=_decisions.Values.Where(d=>!Manual(d.Key.Domain) && !_pending.ContainsKey(d.Key) &&
             _lastUse.TryGetValue(d.Key,out var used) && now-used<TimeSpan.FromMinutes(5) &&
             (!_nextProbe.TryGetValue(d.Key,out var next) || next<=now) &&
-            d.ExpiresUtc-now<TimeSpan.FromSeconds(120+(System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(SHA256.HashData(Encoding.UTF8.GetBytes(d.Key.Domain)))%60)))
+            (_stability.Pending(d.Key) || d.CheckedUtc>now || d.ExpiresUtc-now<TimeSpan.FromSeconds(120+(System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(SHA256.HashData(Encoding.UTF8.GetBytes(d.Key.Domain)))%60))))
             .OrderBy(d=>d.ExpiresUtc).ToList();
         while(_pending.Count<2)
         {
@@ -463,7 +498,8 @@ public sealed class PolicyWorker
         long dnsMs=0;
         try
         {
-            var resolved=await PolicyTransport.SelectResolved(key.Domain,_ports,budget.Token,failureTriggered);dnsMs=resolved.DnsMilliseconds;
+            _decisions.TryGetValue(key,out var current);
+            var resolved=await PolicyTransport.SelectResolved(key.Domain,_ports,budget.Token,failureTriggered,observeRoute:current?.Route);dnsMs=resolved.DnsMilliseconds;
             var chosen=resolved.Selection;
             if(chosen.Route==null)return new(chosen.Outcome,null,dnsMs,timer.ElapsedMilliseconds,chosen.Candidates);
             var now=DateTime.UtcNow;
@@ -501,6 +537,7 @@ public sealed class PolicyWorker
         {
             var evicted=_decisions.MinBy(p=>p.Value.CheckedUtc).Key;
             _decisions.Remove(evicted);_bindingStates.Remove(evicted);
+            _stability.Remove(evicted);
         }
         _decisions[decision.Key]=decision;
     }
@@ -532,7 +569,7 @@ public sealed class PolicyWorker
             var snapshot=Storage.Read<PolicyActiveSnapshot>(path);
             if(snapshot.Epoch!=_epoch || snapshot.Mode!=_options.Mode || snapshot.AllowListedDpi!=_options.AllowListedDpi || snapshot.ClearRequest!=_clearRequest || snapshot.Decisions.Length>DecisionLimit)return;
             foreach(var decision in snapshot.Decisions)
-                if(!_decisions.ContainsKey(decision.Key) && decision.Key.Epoch==_epoch && decision.Key.Strategy=="tls-record-ipv4-v2" && decision.Route is "vpn" or "dpi" && PolicySafety.Valid(decision.Key) && decision.CheckedUtc<=DateTime.UtcNow && decision.ExpiresUtc>decision.CheckedUtc && decision.ExpiresUtc-decision.CheckedUtc<=TimeSpan.FromMinutes(16))StoreDecision(decision);
+                if(!_decisions.ContainsKey(decision.Key) && decision.Key.Epoch==_epoch && decision.Key.Strategy=="tls-record-ipv4-v2" && decision.Route is "vpn" or "dpi" && PolicySafety.Valid(decision.Key) && decision.ExpiresUtc>decision.CheckedUtc && decision.ExpiresUtc-decision.CheckedUtc<=TimeSpan.FromMinutes(16))StoreDecision(decision);
         }
         catch(Exception ex)when(ex is IOException or JsonException or InvalidOperationException or NullReferenceException){Event("Направления активной сессии не загружены.");}
     }
@@ -567,6 +604,18 @@ public sealed class PolicyWorker
         Storage.Write(Runtime("policy-publication.json"),new{epoch=_epoch,phase=_publisher.Phase,version=_publisher.Version,appliedUtc=applied,milliseconds=_publisher.Milliseconds});
     }
     internal void Event(string message){lock(_events){_events.Insert(0,message);if(_events.Count>20)_events.RemoveAt(_events.Count-1);}}
+    internal static async Task WaitForWork(IEnumerable<Task> pending,CancellationToken stop,TimeSpan? idle=null)
+    {
+        using var timer=CancellationTokenSource.CreateLinkedTokenSource(stop);
+        try{await Task.WhenAny(pending.Append(Task.Delay(idle??TimeSpan.FromMilliseconds(500),timer.Token)));stop.ThrowIfCancellationRequested();}
+        finally{timer.Cancel();}
+    }
+    internal void MaybeStatus(string phase)
+    {
+        long now=Environment.TickCount64;
+        if(phase==_statusPhase && now<_nextStatusTick)return;
+        Status(phase);_statusPhase=phase;_nextStatusTick=now+2000;
+    }
     internal void Status(string phase)
     {
         string[] events;lock(_events)events=_events.ToArray();

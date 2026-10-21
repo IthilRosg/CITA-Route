@@ -1,4 +1,4 @@
-param([string]$PackageDirectory='')
+param([string]$PackageDirectory='',[switch]$AllowFrameworkDependent)
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 . (Join-Path $root 'FileStorage.ps1')
@@ -34,7 +34,10 @@ try{
         $package=[IO.Path]::GetFullPath($PackageDirectory)
         Assert (Test-Path -LiteralPath (Join-Path $package 'manifest.json')) 'Package manifest missing.'
         $manifest=Read-JsonFile (Join-Path $package 'manifest.json')
-        Assert $manifest.selfContained '.NET must be included for a new computer.'
+        if(-not $manifest.selfContained){
+            . (Join-Path $root 'DesktopRuntime.ps1')
+            Assert ($AllowFrameworkDependent -and $manifest.desktopRuntimeMajor -eq 8 -and (Test-MachineDesktopRuntime)) 'Framework package requires machine-wide .NET Desktop 8 x64.'
+        }
         foreach($file in $manifest.files){
             $path=[IO.Path]::GetFullPath((Join-Path $package $file.path))
             Assert ($path.StartsWith($package.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) 'Manifest path escaped package.'

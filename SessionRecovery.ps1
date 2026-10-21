@@ -37,6 +37,12 @@ function Set-SessionRecovering([string]$ExpectedId,[string]$Reason) {
     return $true
 }
 function Get-RecoveryDelay([int]$Attempts) { return [int](@(2,5,15,30,60)[[Math]::Min([Math]::Max(0,$Attempts),4)]) }
+function Test-WatchObservationGap([datetime]$Previous,[datetime]$Now) {return $Now -lt $Previous -or ($Now-$Previous).TotalSeconds -gt 20}
+function Test-RecoveryNetworkAvailable {
+    # Match preparation's actual requirements before spending its retry budget.
+    try{return @(Get-NetIPConfiguration -ErrorAction Stop | Where-Object {$_.NetAdapter.HardwareInterface -and $_.NetAdapter.Status -eq 'Up' -and $_.IPv4DefaultGateway}).Count -gt 0}
+    catch{return $false}
+}
 
 function Test-RecoverySession([string]$ExpectedId) {
     if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){return $false}
@@ -145,6 +151,9 @@ function Stop-SessionHealthProbe($Probe) {
 
 function Complete-SessionHealthProbe($Probe,$Session) {
     if($Probe.sessionId -ne $Session.id -or $Probe.bridgeGeneration -ne $Session.bridgeGeneration -or -not $Session.running -or -not $Session.bridgeReady){Stop-SessionHealthProbe $Probe;return @{discarded=$true}}
+    # An exited child may have finished BEFORE sleep. Never timestamp its old
+    # result as a fresh post-resume proof, even when its PID/generation survived.
+    if(Test-WatchObservationGap $Probe.startedUtc ([DateTime]::UtcNow)){Stop-SessionHealthProbe $Probe;return @{discarded=$true}}
     if(-not $Probe.process.HasExited -and ([DateTime]::UtcNow-$Probe.startedUtc).TotalSeconds -lt 20){return $null}
     try {
         $healthy=$false;$code='Unverified'
@@ -187,12 +196,21 @@ function Watch-Session([string]$WatchScript) {
     $disconnected=0;$networkMismatch=0;$nextHealth=[DateTime]::UtcNow.AddSeconds(10)
     $nextBridgeCheck=[DateTime]::MinValue;$listenerFailures=0;$listenerEpoch='';$listenerState='Unknown'
     $lastFeedAttempt=[DateTime]::UtcNow;$feedUpdater=$null;$transition=$null
+    $lastObservation=[DateTime]::UtcNow;$nextNetworkCheck=[DateTime]::MinValue;$networkAvailable=$false
     try {
         while($true){
             Start-Sleep -Seconds 2
             if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){break}
             try{$session=Read-JsonFile (Join-Path $runtime 'session.json')}catch{continue}
             if(-not $session.running){break}
+            $observedNow=[DateTime]::UtcNow
+            if(Test-WatchObservationGap $lastObservation $observedNow){
+                Stop-SessionHealthProbe $probe;$probe=$null;$nextHealth=$observedNow
+                $networkMismatch=0;$disconnected=0;$listenerFailures=0;$policyStaleSamples=0;$healthySince=$null;$transition=$null
+                $nextBridgeCheck=[DateTime]::MinValue;$nextNetworkCheck=[DateTime]::MinValue
+                Write-ConnectionEvidence $root 'WatchObservationReset' $session
+            }
+            $lastObservation=$observedNow
             if($session.id -ne $watchedSession.id){
                 if($session.recoveryParentId -ne $watchedSession.id){break}
                 $watchedSession=$session;$budget=@{sessionId=$session.id;Reconnect=0;RepairVpn=0;Bridge=0;Policy=0}
@@ -240,6 +258,10 @@ function Watch-Session([string]$WatchScript) {
             }
             if(-not $connected -or (Test-SessionVpnHold $session)){Invoke-EmergencyBridgePause $session}
             if(Test-SessionVpnHold $session){$action='Observe'}
+            if(-not(Test-SessionVpnHold $session) -and $observation.state -notin @('Unknown','Foreign') -and ($action -ne 'Observe' -or $networkMismatch -ge 2 -or $observation.state -eq 'Disconnected' -or ($observation.state -eq 'Transitioning' -and $observation.managed))){
+                if([DateTime]::UtcNow -ge $nextNetworkCheck){$networkAvailable=Test-RecoveryNetworkAvailable;$nextNetworkCheck=[DateTime]::UtcNow.AddSeconds(5)}
+                if(-not $networkAvailable){Stop-SessionHealthProbe $probe;$probe=$null;$healthySince=$null;Write-WatchState $session.id 'WaitingForNetwork' 'Waiting for a physical IPv4 network; retry budget retained' $observation.state;continue}
+            }
             if($action -ne 'Observe'){
                 Stop-SessionHealthProbe $probe;$probe=$null;$healthySince=$null
                 if($budget[$action] -lt 3 -and [DateTime]::UtcNow -ge $nextAttempt){

@@ -11,7 +11,11 @@ using System.Net.Sockets;
 
 namespace RoutePilot.Agent;
 
-public sealed record EgressHealth(bool Verified,string Code,string Message);
+public sealed record EgressHealth(bool Verified,string Code,string Message)
+{
+    // Kept internal: health IPC and diagnostic exports must not expose the exit.
+    internal string? VerifiedExit{get;init;}
+}
 
 public static class NetworkProbe
 {
@@ -24,8 +28,8 @@ public static class NetworkProbe
         try
         {
             string config=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"RoutePilot","Agent","agent-config.json");
-            using var settings=System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(config,cancellation));
-            return await VerifyConfiguredEgressDetailed(settings.RootElement,image=>ReadWireSockStatus(image,cancellation),async()=>(await Trace("socks5://127.0.0.1:20808",cancellation:cancellation)).Ip,cancellation);
+            string reference=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"RoutePilot","egress-reference.json");
+            return await EgressReference.Verify(config,reference,image=>ReadWireSockStatus(image,cancellation),async()=>(await Trace("socks5://127.0.0.1:20808",cancellation:cancellation)).Ip,cancellation);
         }
         catch(OperationCanceledException)when(cancellation.IsCancellationRequested){throw;}
         catch(Exception){return new(false,"InvalidConfiguration","Проверь настройку выбранного подключения.");}
@@ -34,7 +38,7 @@ public static class NetworkProbe
     {
         var result=await VerifyConfiguredEgressDetailed(values,readStatus,trace);return(result.Verified,result.Message);
     }
-    internal static async Task<EgressHealth> VerifyConfiguredEgressDetailed(System.Text.Json.JsonElement values,Func<string,Task<string>> readStatus,Func<Task<IPAddress>> trace,CancellationToken cancellation=default)
+    internal static async Task<EgressHealth> VerifyConfiguredEgressDetailed(System.Text.Json.JsonElement values,Func<string,Task<string>> readStatus,Func<Task<IPAddress>> trace,CancellationToken cancellation=default,string? pinnedEgress=null)
     {
             string expected;
             string? cli=null;
@@ -45,7 +49,7 @@ public static class NetworkProbe
                 string status;
                 try{status=await readStatus(cli!);}catch(OperationCanceledException)when(cancellation.IsCancellationRequested){throw;}catch(Exception){return new(false,"StatusUnavailable","Не удалось прочитать состояние WireSock. Проверка будет повторена.");}
                 if(!ManagedProfileConnected(status))return new(false,"ProfileNotConnected","Выбранный профиль CITA Route в WireSock не подключён.");
-                if(string.IsNullOrEmpty(expected))expected=ReportedEgress(status)??"";
+                if(string.IsNullOrEmpty(expected))expected=pinnedEgress??ReportedEgress(status)??"";
                 if(expected.Length==0)return new(false,"MissingExpectedEgress","WireSock не сообщил внешний IPv4. Укажи IP выхода VPN в настройках подключения.");
             }
             else expected=values.GetProperty("EndpointIp").GetString()!; // Existing protected installations.
@@ -56,13 +60,13 @@ public static class NetworkProbe
                 string status;
                 try{status=await readStatus(cli);}catch(OperationCanceledException)when(cancellation.IsCancellationRequested){throw;}catch(Exception){return new(false,"StatusUnavailable","Состояние WireSock после проверки не подтверждено.");}
                 if(!ManagedProfileConnected(status))return new(false,"ProfileChanged","Профиль WireSock сменился во время проверки.");
-                if(string.IsNullOrEmpty(values.GetProperty("ExpectedEgressIp").GetString()) && ReportedEgress(status)!=expected)
+                if(pinnedEgress==null && string.IsNullOrEmpty(values.GetProperty("ExpectedEgressIp").GetString()) && ReportedEgress(status)!=expected)
                     return new(false,"ProfileChanged","Выход WireSock изменился во время проверки; повторяем проверку.");
             }
             // A VPN can use a separate NAT exit. Compare with the selected client's
             // reported exit (or an explicit protected assertion), never its UDP endpoint.
             return vpn.ToString()==expected
-                ?new(true,"Verified","HTTPS/IPv4 через выбранный выход WireSock подтверждён.")
+                ?new EgressHealth(true,"Verified","HTTPS/IPv4 через выбранный выход WireSock подтверждён."){VerifiedExit=vpn.ToString()}
                 :new(false,"EgressMismatch","IP выхода отличается от выбранного профиля. Проверь настройки подключения.");
     }
     public static bool ManagedProfileConnected(string status)

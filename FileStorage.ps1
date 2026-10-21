@@ -33,7 +33,7 @@ function Write-ConnectionProgress([string]$Phase) {
 }
 
 function Write-ConnectionEvidence([string]$Root,[string]$Event,$Session=$null) {
-    if($Event -notin @('StartRequested','StartVerified','StartFailed','StopRequested','Stopped','ReconnectRequested','ReconnectVerified','ReconnectFailed','BridgePaused','BridgeStarted','BridgeListenerMissing')){return}
+    if($Event -notin @('StartRequested','StartVerified','StartFailed','StopRequested','Stopped','ReconnectRequested','ReconnectVerified','ReconnectFailed','BridgePaused','BridgeStarted','BridgeListenerMissing','WatchObservationReset')){return}
     try {
         $directory=Join-Path $Root 'logs';$path=Join-Path $directory 'lifecycle-events.jsonl'
         if(-not(Test-Path -LiteralPath $directory)){return}

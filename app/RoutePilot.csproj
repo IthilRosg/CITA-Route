@@ -15,6 +15,7 @@
     <DebugType>embedded</DebugType>
   </PropertyGroup>
   <ItemGroup><Compile Include="..\agent\NetworkProbe.cs" Link="NetworkProbe.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="..\agent\EgressReference.cs" Link="EgressReference.cs" /></ItemGroup>
   <ItemGroup><Compile Include="..\agent\UdpQualityModels.cs" Link="UdpQualityModels.cs" /></ItemGroup>
   <ItemGroup><Compile Include="..\agent\WireSockStatistics.cs" Link="WireSockStatistics.cs" /></ItemGroup>
   <ItemGroup><Compile Include="..\agent\ResourceState.cs" Link="ResourceState.cs" /></ItemGroup>
