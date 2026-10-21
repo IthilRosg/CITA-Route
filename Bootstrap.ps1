@@ -39,8 +39,8 @@ $licenses=@(
     @('https://raw.githubusercontent.com/SagerNet/sing-box/v1.14.3/LICENSE','sing-box-LICENSE.txt','650D5E3B99A446FB38E820FA87A49562E0C79EAB868FFF58618AC487A58E554C'),
     @('https://raw.githubusercontent.com/gcc-mirror/gcc/master/COPYING3','GPL-3.0.txt','8CEB4B9EE5ADEDDE47B31E975C1D90C73AD27B6B165A1DCD80C7C545EB65B903'),
     @('https://codeload.github.com/SagerNet/sing-box/zip/refs/tags/v1.14.3','sing-box-1.14.3-source.zip','5BF11EEB2F5B93377166AF1ECDCF24DD2C4BE3C92BCB43C09D95EDD01EB85949'),
-    @('https://raw.githubusercontent.com/dotnet/runtime/v8.0.30/LICENSE.TXT','dotnet-LICENSE.txt','CFC21F5E8BD655AE997EEC916138B707B1D290B83272C02A95C9F821B8C87310'),
-    @('https://raw.githubusercontent.com/dotnet/runtime/v8.0.30/THIRD-PARTY-NOTICES.TXT','dotnet-THIRD-PARTY-NOTICES.txt','97C1A7B3DA6A4C6AD516448719F45114B41A4D4C5AA300A944476E2E4F5DA438'))
+    @('https://raw.githubusercontent.com/dotnet/runtime/v10.0.13/LICENSE.TXT','dotnet-LICENSE.txt','CFC21F5E8BD655AE997EEC916138B707B1D290B83272C02A95C9F821B8C87310'),
+    @('https://raw.githubusercontent.com/dotnet/runtime/v10.0.13/THIRD-PARTY-NOTICES.TXT','dotnet-THIRD-PARTY-NOTICES.txt','66F1D4E44973185519BB4AA8A9718EB22FC7AF2CC532E3AE9CFC4C127EE7FC54'))
 foreach($entry in $licenses){Download $entry[0] (Join-Path $root ('distribution-licenses\'+$entry[1])) $entry[2]}
 & (Join-Path $root 'Build-RouterEngine.ps1') -PublishRuntime
 foreach($name in @('force-direct','force-vpn')){

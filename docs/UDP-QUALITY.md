@@ -12,7 +12,7 @@ reflector. No public third-party UDP service is contacted by default.
 
 ## Controlled server
 
-The optional server is `tools/udp-reflector`, targeting .NET 8 on Linux/Windows.
+The optional server is `tools/udp-reflector`, targeting .NET 10 on Linux/Windows.
 Publish it from the repository on a trusted build machine, for example:
 
 ```sh

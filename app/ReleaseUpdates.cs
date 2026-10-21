@@ -54,7 +54,7 @@ public sealed class ReleaseUpdates
         if(archivedFile!=null)
         {
             if(archivedFile!=name && archivedFile!=thin)throw new InvalidDataException("Неизвестный вид сохранённого архива.");
-            if(archivedFile==thin && !ready)throw new InvalidDataException("Для сохранённого обновления требуется .NET Desktop 8 x64. Запусти установщик.");
+            if(archivedFile==thin && !ready)throw new InvalidDataException("Для сохранённого обновления требуется .NET Desktop 10.0.13 x64. Запусти установщик.");
             name=archivedFile;
         }
         else if(ready && assets.Any(a=>a.GetProperty("name").GetString()==thin))name=thin;
@@ -158,7 +158,9 @@ public sealed class ReleaseUpdates
         using var manifest=JsonDocument.Parse(File.ReadAllText(Path.Combine(package,"manifest.json")));
         var data=manifest.RootElement;
         if(!Version.TryParse(data.GetProperty("version").GetString(),out var actual) || Compare(actual,expected)!=0 || data.GetProperty("architecture").GetString()!="win-x64")throw new InvalidDataException("Архив относится к другой версии или платформе.");
-        if(!data.GetProperty("selfContained").GetBoolean() && (!data.TryGetProperty("desktopRuntimeMajor",out var major) || major.GetInt32()!=8 || !DesktopRuntime.Available()))throw new InvalidDataException("Для облегчённого обновления требуется .NET Desktop 8 x64. Запусти установщик.");
+        if(!data.GetProperty("selfContained").GetBoolean() && (!data.TryGetProperty("desktopRuntimeMajor",out var major) || !major.TryGetInt32(out int runtimeMajor) || runtimeMajor!=10 ||
+            !data.TryGetProperty("desktopRuntimeMinimum",out var minimum) || minimum.ValueKind!=JsonValueKind.String || !Version.TryParse(minimum.GetString(),out var required) || !DesktopRuntime.Available(required)))
+            throw new InvalidDataException("Для облегчённого обновления требуется системный .NET Desktop 10 x64 указанной версии. Запусти установщик.");
         string prefix=Path.GetFullPath(package)+Path.DirectorySeparatorChar;var names=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach(var file in data.GetProperty("files").EnumerateArray())
         {

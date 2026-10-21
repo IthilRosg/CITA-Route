@@ -18,6 +18,12 @@ $logPath = Join-Path $PSScriptRoot 'logs\agent-install.log'
 . (Join-Path $PSScriptRoot 'ConnectionEnvironment.ps1')
 $setupReservation=$null
 try {
+    # Resolve prerequisites before acquiring a lease, stopping the existing
+    # service or replacing protected files. A user SDK cannot run SYSTEM.
+    . (Join-Path $PSScriptRoot 'DesktopRuntime.ps1')
+    $packageManifest=Join-Path $PSScriptRoot 'manifest.json'
+    $runtimeReady=if(Test-Path -LiteralPath $packageManifest){Test-PackageDesktopRuntime (Read-JsonFile $packageManifest)}else{Test-MachineDesktopRuntime}
+    if(-not $runtimeReady){throw 'Machine-wide .NET Desktop Runtime 10.0.13 x64 is required before updating the protected agent. Use the CITA Route installer.'}
     $setupPath=Join-Path $PSScriptRoot 'runtime\setup.lock'
     if($SetupOwner -gt 0){$setupReservation=Receive-SetupReservation $setupPath $SetupOwner $SetupHandle}
     else{$setupReservation=[IO.File]::Open($setupPath,'OpenOrCreate','ReadWrite','None')}

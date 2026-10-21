@@ -8,9 +8,9 @@ $artwork=Join-Path $root 'runtime\installer-artwork'
 & (Join-Path $root 'installer\Create-Branding.ps1') -OutputDirectory $artwork
 $package=[IO.Path]::GetFullPath($PackageDirectory).TrimEnd('\')
 $manifest=[IO.File]::ReadAllText((Join-Path $package 'manifest.json')) | ConvertFrom-Json
-if($manifest.version -ne $version -or $manifest.architecture -ne 'win-x64' -or (-not $manifest.selfContained -and $manifest.desktopRuntimeMajor -ne 8)){throw 'Installer requires the matching Windows package and a supported runtime declaration.'}
+if($manifest.version -ne $version -or $manifest.architecture -ne 'win-x64' -or (-not $manifest.selfContained -and ($manifest.desktopRuntimeMajor -ne 10 -or $manifest.desktopRuntimeMinimum -ne '10.0.13'))){throw 'Installer requires the matching Windows package and a supported runtime declaration.'}
 $runtime=Get-Content -LiteralPath (Join-Path $root 'installer\desktop-runtime.json') -Raw | ConvertFrom-Json
-if($runtime.version -notmatch '^8\.0\.\d+$' -or $runtime.sha512 -notmatch '^[a-fA-F0-9]{128}$' -or $runtime.url -cne ('https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/'+$runtime.version+'/windowsdesktop-runtime-'+$runtime.version+'-win-x64.exe')){throw 'Unexpected runtime prerequisite metadata.'}
+if($runtime.version -notmatch '^10\.0\.\d+$' -or $runtime.sha512 -notmatch '^[a-fA-F0-9]{128}$' -or $runtime.url -cne ('https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/'+$runtime.version+'/windowsdesktop-runtime-'+$runtime.version+'-win-x64.exe')){throw 'Unexpected runtime prerequisite metadata.'}
 if(-not $Compiler){
     $tool=Join-Path $root 'runtime\installer-tool'
     $Compiler=Join-Path $tool 'ISCC.exe'

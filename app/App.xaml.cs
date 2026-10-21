@@ -47,11 +47,11 @@ public partial class App : Application
         var window = new MainWindow(root,render);
         if(render)window.ApplyView(e.Args.Contains("--compact"),false);
         MainWindow = window;
-        if(!render&&e.Args.Contains("--startup"))window.Loaded+=(_,_)=>window.Hide();
-        window.Show();
         if (!render)
             _activationWait = ThreadPool.RegisterWaitForSingleObject(_activation!,(_,_)=>
                 Dispatcher.BeginInvoke(new Action(window.ShowWindow)),null,Timeout.Infinite,false);
+        if(!render&&e.Args.Contains("--startup"))await window.InitializeBackgroundAsync();
+        else window.Show();
         if (render)
         {
             if(e.Args.Contains("--benchmark-ui")){await window.BenchmarkPresentation();window.ExitApplication();return;}

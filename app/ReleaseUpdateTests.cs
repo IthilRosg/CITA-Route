@@ -38,12 +38,20 @@ internal static class ReleaseUpdateTests
             Directory.CreateDirectory(dotnetFixture);File.WriteAllText(Path.Combine(dotnetFixture,"dotnet.exe"),"fixture");
             Assert(!DesktopRuntime.At(dotnetFixture),"Host alone is not a Desktop runtime.");
             foreach(string family in new[]{"Microsoft.NETCore.App","Microsoft.WindowsDesktop.App"})
+            foreach(string version in new[]{"8.0.32","10.0.12","10.0.13-preview.1","11.0.0"})
             {
-                string path=Path.Combine(dotnetFixture,"shared",family,"8.0.32");Directory.CreateDirectory(path);
+                string path=Path.Combine(dotnetFixture,"shared",family,version);Directory.CreateDirectory(path);
+                File.WriteAllText(Path.Combine(path,family=="Microsoft.NETCore.App"?"System.Private.CoreLib.dll":"Microsoft.WindowsDesktop.App.deps.json"),"fixture");
+            }
+            Assert(!DesktopRuntime.At(dotnetFixture),"An older patch, preview, older or newer major is not an adequate .NET 10 runtime.");
+            foreach(string family in new[]{"Microsoft.NETCore.App","Microsoft.WindowsDesktop.App"})
+            {
+                string path=Path.Combine(dotnetFixture,"shared",family,"10.0.13");Directory.CreateDirectory(path);
                 File.WriteAllText(Path.Combine(path,family=="Microsoft.NETCore.App"?"System.Private.CoreLib.dll":"Microsoft.WindowsDesktop.App.deps.json"),"fixture");
                 if(family=="Microsoft.NETCore.App")Assert(!DesktopRuntime.At(dotnetFixture),"Core alone cannot certify WPF readiness.");
             }
             Assert(DesktopRuntime.At(dotnetFixture),"Both stable runtime families are required.");
+            Assert(!DesktopRuntime.At(dotnetFixture,new Version(10,0,14)),"A prepared package's higher minimum patch must be respected.");
         }
         finally{if(Directory.Exists(dotnetFixture))Directory.Delete(dotnetFixture,true);}
         using(var release=JsonDocument.Parse(Release()))Assert(ReleaseUpdates.Parse(release.RootElement,new Version(0,3,0))?.Version==new Version(0,4,0),"New stable version is offered");

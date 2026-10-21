@@ -20,7 +20,11 @@ public partial class MainWindow
         Assert(!ConnectionBindingMatches(local,applied,selection,_root,@"C:\ProgramData\RoutePilot"),"Another portable installation must apply its own protected connection.");applied.AppRoot=_root;
         applied.ExpectedEgressIp="1.1.1.1";
         Assert(!ConnectionBindingMatches(local,applied,selection,_root,@"C:\ProgramData\RoutePilot"),"A different protected egress setting requires setup.");
+        // Exercise real WPF layout without flashing test windows on the user's
+        // desktop, adding taskbar entries or stealing focus from another app.
+        ShowActivated=false;ShowInTaskbar=false;Opacity=0;
         ApplyView(true,false);Show();UpdateLayout();
+        Assert(!ShowActivated&&!ShowInTaskbar&&Opacity==0,"UI self-tests must remain invisible and must not request activation.");
         Assert(Width<=460 && Height<=520 && CompactHost.IsVisible && !AdvancedHost.IsVisible,"Compact mode must use a physically small window.");
         _inventory=new(){CliPath="fixture.exe",Profiles=new[]{"first","second"}};
         ProfileInput.ItemsSource=_inventory.Profiles;ProfileInput.SelectedItem="second";

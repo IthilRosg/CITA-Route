@@ -36,7 +36,7 @@ try{
         $manifest=Read-JsonFile (Join-Path $package 'manifest.json')
         if(-not $manifest.selfContained){
             . (Join-Path $root 'DesktopRuntime.ps1')
-            Assert ($AllowFrameworkDependent -and $manifest.desktopRuntimeMajor -eq 8 -and (Test-MachineDesktopRuntime)) 'Framework package requires machine-wide .NET Desktop 8 x64.'
+            Assert ($AllowFrameworkDependent -and (Test-PackageDesktopRuntime $manifest)) 'Framework package requires the declared machine-wide .NET Desktop 10 x64 patch.'
         }
         foreach($file in $manifest.files){
             $path=[IO.Path]::GetFullPath((Join-Path $package $file.path))

@@ -22,7 +22,7 @@ The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspire
 
 ## Install
 
-Windows 10/11 x64 and separately installed WireSock Secure Connect are required. Setup checks machine-wide .NET Desktop Runtime 8 x64 and offers to download/install the signed Microsoft prerequisite when missing. The full ZIP includes .NET; the smaller `-framework.zip` requires the machine runtime. Existing updaters keep using the full ZIP; 0.6.0+ prefers the smaller archive when the prerequisite is available.
+Windows 10/11 x64 and separately installed WireSock Secure Connect are required. Setup checks machine-wide .NET Desktop Runtime 10.0.13 x64 and offers to download/install the signed Microsoft prerequisite when missing. The full ZIP includes .NET; the smaller `-framework.zip` requires the machine runtime. Existing updaters keep using the full ZIP; 0.6.0+ prefers the smaller archive when the prerequisite is available.
 
 1. Download **CITA-Route-VERSION-win-x64-setup.exe** from Releases, run it, choose a writable destination folder and click **Install**. Open **CITA Route** from the Desktop or Start shortcut (or launch at the end of Setup). For a portable installation, extract the complete ZIP and run **RoutePilot.exe**.
 2. Click **Connect**. The client finds WireSock and offers a profile picker only when needed; you can also import `.conf` there.
@@ -61,7 +61,7 @@ The [resource monitor](docs/RESOURCE-GUARD.md) runs in the existing protected re
 
 ## Build and test
 
-Install the .NET 8 SDK and Go 1.26.3 on Windows, then use Windows PowerShell:
+Install the .NET 10 SDK and Go 1.26.3 on Windows, then use Windows PowerShell:
 
 ```powershell
 ./Bootstrap.ps1

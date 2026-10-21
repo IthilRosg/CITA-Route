@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$Package,[Parameter(Mandatory=$true)][string]$Version,
       [int]$GuiPid=0,[string]$GuiStartedUtc='', [switch]$ValidateOnly,
       [string]$OperationId='', [string]$ManifestSha256='')
@@ -33,7 +33,7 @@ if(-not $manifest.selfContained){
     # helper from this verified package, so the first update from 0.5.x can
     # bootstrap the new helper on the next update without losing compatibility.
     . (Join-Path $packagePath 'DesktopRuntime.ps1')
-    if($manifest.desktopRuntimeMajor -ne 8 -or -not(Test-MachineDesktopRuntime)){throw 'The update requires machine-wide .NET Desktop Runtime 8 x64. Use the installer to prepare it.'}
+    if(-not(Test-PackageDesktopRuntime $manifest)){throw 'The update requires a supported machine-wide .NET Desktop Runtime 10 x64 at the declared minimum patch. Use the installer to prepare it.'}
 }
 if([version](Get-Item -LiteralPath (Join-Path $packagePath 'RoutePilot.exe')).VersionInfo.FileVersion -ne [version]($Version+'.0')){throw 'Release executable version differs.'}
 Assert-NoAgentRun
