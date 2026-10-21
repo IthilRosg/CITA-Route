@@ -1,11 +1,11 @@
-CITA Route 0.5.7 — installation and Windows startup.
+CITA Route 0.5.8 — routing recovery, Tailscale compatibility and useful diagnostics.
 
-- Choose the destination folder during a clean installation. Updates keep the existing directory to avoid splitting the connection and settings across two copies.
-- Use the CITA dark console theme, red branding and terminal headings in Setup and Uninstall.
-- Optionally open the compact client in the tray after Windows sign-in. Setup offers an unchecked startup task; settings can enable or disable it later.
-- Add opt-in routing before sign-in through the existing automatic SYSTEM service. A Windows confirmation installs the current protected agent and saves a fixed, hashed snapshot of routing code and rules. Network readiness, profile identity, current session/generation and HTTPS readiness are checked.
-- Show startup progress in the normal UI and stop its route through the protected service. Manual Stop prevents another startup attempt in the same Windows boot. Updates stop the owned route; uninstall disables an inactive startup setting. Changed client versions or protected connection settings require refreshing the snapshot.
+- Keep unsupported public IPv6 out of the TUN on IPv4-only networks, while retaining internal IPv6 and strict DNS protection. Preserve both Tailscale overlay prefixes and its daemon/control transport.
+- Add CITA routing core with a narrow MagicDNS exception: only Quad100 DNS over an active Tailscale interface. New interfaces are detected without persisting firewall rules or changing Tailscale preferences. Proxy requests for tailnet names use Tailscale DNS before FakeIP and adaptive routing.
+- Detect an owned VPN process whose local listener has disappeared. After repeated observations and fresh ownership/session checks, repair that bridge while retaining the main router. Foreign listeners, uncertain status, Stop and safety holds remain protected; retries stay bounded.
+- Add **⋮ → Собрать диагностику…** and the same button in the journal. Export current session/generation, health freshness, recent recovery events, resource/network summaries and bounded log tails without disconnecting. The service retains bounded history across reconnects and a closed UI. VPN configuration and controller files are excluded.
+- Improve TUN startup readiness and one bounded retry for the observed virtual-adapter collision. Preserve pending routing publications, use the correct DNS path for route tests, and retain settings through reinstall.
 
-Validation includes a real SYSTEM/session-0 service with a synthetic filesystem-only transport, plus installer, update, rollback and disconnect regressions. The service fixture does not prove real WireSock transport before sign-in, a physical reboot, captive portal/Wi-Fi authentication or seamless migration of established connections. Real-driver boundary research remains separate in draft PR #9.
+Validation covers offline/loopback regressions, native Windows DNS filter boundaries, a real owned-process/listener repair in the Windows test VM, packaging, updates and installation. Real Tailscale peer/SSH/MagicDNS acceptance and the long mixed-use run are assigned to the second PC after this release; they are not claimed as passed here. Exit-node and subnet-router combinations need separate acceptance. Existing connections can still break when their underlying transport changes.
 
-Windows 10/11 x64 and separately installed WireSock Secure Connect are required. Setup and ZIP include .NET. Release executables are not yet code signed.
+Windows 10/11 x64 and separately installed WireSock Secure Connect are required. Both downloads still include .NET. A smaller installer with on-demand .NET is a later milestone. Release executables are not yet code signed.

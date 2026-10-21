@@ -26,6 +26,26 @@ public static class SystemRouter
         rules.Insert(sniff,System.Text.Json.JsonSerializer.SerializeToNode(new{process_name=processes,action="route",outbound="direct"}));
     }
     static bool PhysicalIpv6(System.Net.NetworkInformation.NetworkInterface nic)=>HasIpv6Gateway(nic.GetIPProperties().GatewayAddresses.Select(g=>g.Address));
+    internal static void PreserveTailscaleDns(System.Text.Json.Nodes.JsonNode data)
+    {
+        string name=System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces().FirstOrDefault(n=>
+            System.Text.RegularExpressions.Regex.IsMatch(n.Description,@"^Tailscale(?: Tunnel(?: #\d+)?)?$",System.Text.RegularExpressions.RegexOptions.IgnoreCase))?.Name??"Tailscale";
+        var outbounds=data["outbounds"]!.AsArray();
+        foreach(var previous in outbounds.Where(x=>x?["tag"]?.GetValue<string>()=="tailnet").ToArray())outbounds.Remove(previous);
+        outbounds.Add(System.Text.Json.JsonSerializer.SerializeToNode(new{type="direct",tag="tailnet",bind_interface=name,connect_timeout="3s"}));
+        var servers=data["dns"]!["servers"]!.AsArray();
+        foreach(var previous in servers.Where(x=>x?["tag"]?.GetValue<string>()=="dns-tailnet").ToArray())servers.Remove(previous);
+        servers.Add(System.Text.Json.JsonSerializer.SerializeToNode(new{type="udp",tag="dns-tailnet",server="100.100.100.100",server_port=53,detour="tailnet"}));
+        var dnsRules=data["dns"]!["rules"]!.AsArray();
+        foreach(var previous in dnsRules.Where(x=>x?["server"]?.GetValue<string>()=="dns-tailnet").ToArray())dnsRules.Remove(previous);
+        dnsRules.Insert(0,System.Text.Json.JsonSerializer.SerializeToNode(new{domain_suffix=new[]{"ts.net"},action="route",server="dns-tailnet"}));
+        var rules=data["route"]!["rules"]!.AsArray();
+        foreach(var previous in rules.Where(x=>x?["server"]?.GetValue<string>()=="dns-tailnet"||x?["outbound"]?.GetValue<string>()=="tailnet").ToArray())rules.Remove(previous);
+        int sniff=Enumerable.Range(0,rules.Count).FirstOrDefault(i=>rules[i]?["action"]?.GetValue<string>()=="sniff",rules.Count);
+        int afterDns=Enumerable.Range(sniff,rules.Count-sniff).FirstOrDefault(i=>rules[i]?["action"]?.GetValue<string>()=="hijack-dns",sniff);
+        rules.Insert(afterDns+1,System.Text.Json.JsonSerializer.SerializeToNode(new{domain_suffix=new[]{"ts.net"},action="resolve",server="dns-tailnet",strategy="prefer_ipv4"}));
+        rules.Insert(afterDns+2,System.Text.Json.JsonSerializer.SerializeToNode(new{ip_cidr=new[]{"100.64.0.0/10","fd7a:115c:a1e0::/48"},action="route",outbound="tailnet"}));
+    }
     // Fixed diagnostic topology. No caller-supplied executable, command or config is accepted.
     public static string Prepare(AgentConfig config,RunState state)
     {
@@ -64,7 +84,7 @@ public static class SystemRouter
             local.Add(new{type="local",tag=pair.Item1,format=pair.Item2.EndsWith("srs")?"binary":"source",path});
         }
         string output=Path.Combine(config.DataDirectory,"router-"+state.Id+".json");
-        Storage.Write(output,new
+        var generated=System.Text.Json.JsonSerializer.SerializeToNode(new
         {
             log=new{level="info",timestamp=true,output=Path.Combine(config.DataDirectory,"system-router-"+state.Id+".log")},
             dns=new{servers=new object[]{
@@ -84,7 +104,8 @@ public static class SystemRouter
                     route_exclude_address=new[]{"10.0.0.0/8","172.16.0.0/12","192.168.0.0/16","100.64.0.0/10","fd7a:115c:a1e0::/48","fe80::/10","224.0.0.0/4","ff00::/8",config.EndpointIp+"/32"}}},
             outbounds=new object[]{new{type="direct",tag="direct",bind_interface=nic},new{type="direct",tag="dpi",bind_interface=nic},new{type="socks",tag="vpn",server="127.0.0.1",server_port=20818,version="5"}},
             route=new{rules,rule_set=local,final="direct",default_domain_resolver="dns-direct",auto_detect_interface=true}
-        });
+        })!;
+        PreserveTailscaleDns(generated);Storage.Write(output,generated);
         return output;
     }
     static string PrepareTemplate(AgentConfig config,RunState state,string template)
@@ -106,6 +127,7 @@ public static class SystemRouter
             if(type=="direct" && tag is "direct" or "dpi")outbound["bind_interface"]=nic;
             else if(type=="socks" && tag=="vpn" && outbound["server"]!.GetValue<string>()=="127.0.0.1")outbound["server_port"]=20818;
             else if(type=="direct" && tag=="policy-proof"){}
+            else if(type=="direct" && tag=="tailnet"){}
             else throw new InvalidDataException("Unexpected production outbound.");
         }
         foreach(var set in data["route"]!["rule_set"]!.AsArray())
@@ -125,6 +147,7 @@ public static class SystemRouter
         routeRules.Insert(3,System.Text.Json.JsonSerializer.SerializeToNode(new{domain_suffix=new[]{"ipify.org"},action="route",outbound="direct"}));
         data["experimental"]!.AsObject().Remove("cache_file");
         data["experimental"]!["clash_api"]!["external_controller"]="127.0.0.1:20820";
+        PreserveTailscaleDns(data);
         string path=Path.Combine(config.DataDirectory,"router-"+state.Id+".json");Storage.Write(path,data);return path;
     }
 }

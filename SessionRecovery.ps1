@@ -185,6 +185,7 @@ function Watch-Session([string]$WatchScript) {
     $nextAttempt=[DateTime]::UtcNow;$nextBridge=[DateTime]::UtcNow;$nextPolicy=[DateTime]::UtcNow
     $healthySince=$null;$repair=$null;$repairTimer=$null;$repairAction='';$probe=$null;$healthFailures=0;$policyStaleSamples=0
     $disconnected=0;$networkMismatch=0;$nextHealth=[DateTime]::UtcNow.AddSeconds(10)
+    $nextBridgeCheck=[DateTime]::MinValue;$listenerFailures=0;$listenerEpoch='';$listenerState='Unknown'
     $lastFeedAttempt=[DateTime]::UtcNow;$feedUpdater=$null;$transition=$null
     try {
         while($true){
@@ -256,7 +257,15 @@ function Watch-Session([string]$WatchScript) {
             # Pause on Unknown/Foreign as well as Disconnected: this bridge has no
             # independently enforced VPN-only egress when WireSock is unavailable.
             $bridgeAlive=@(Get-SessionBridge $session).Count -gt 0
+            $currentBridgeEpoch=$session.id+':'+$session.bridgeGeneration
+            if($listenerEpoch -ne $currentBridgeEpoch){$listenerEpoch=$currentBridgeEpoch;$listenerFailures=0;$listenerState='Unknown';$nextBridgeCheck=[DateTime]::MinValue}
+            if($connected -and $bridgeAlive -and $session.bridgeReady -and -not(Test-SessionVpnHold $session) -and [DateTime]::UtcNow -ge $nextBridgeCheck){
+                $listenerState=Get-BridgeListenerObservation $session
+                if($listenerState -eq 'Missing'){$listenerFailures++}else{$listenerFailures=0}
+                $nextBridgeCheck=[DateTime]::UtcNow.AddSeconds(5)
+            }
             $needsBridge=if($connected -and -not(Test-SessionVpnHold $session)){-not $bridgeAlive -or -not $session.bridgeReady}else{$bridgeAlive -or $session.bridgeReady}
+            if($connected -and ($listenerFailures -ge 2 -or $listenerState -eq 'Foreign')){$needsBridge=$true}
             if($needsBridge -and (-not $connected -or ($budget.Bridge -lt 3 -and [DateTime]::UtcNow -ge $nextBridge))){
                 try {
                     $attempted=Update-WireSockBridge $connected $session.id -ReportAttempt
@@ -307,10 +316,13 @@ function Watch-Session([string]$WatchScript) {
             $phase='Watching';$reason=''
             if(Test-SessionVpnHold $session){$phase='NeedsAttention';$reason='VPN exit mismatch or safety state unavailable; disconnect and check selected profile'}
             elseif($observation.state -eq 'Foreign'){$phase='NeedsAttention';$reason='Another WireSock profile is active'}
+            elseif($listenerState -eq 'Foreign'){$phase='NeedsAttention';$reason='The local VPN bridge port belongs to another process'}
             elseif(-not $connected){$phase='Suspect';$reason='Managed VPN connection is not confirmed'}
             elseif(-not(Test-PolicyProcess) -and (Get-PolicyObservation).state -eq 'Unknown'){$phase='NeedsAttention';$reason='Policy identity or progress unavailable'}
             elseif((-not $session.bridgeReady -and $budget.Bridge -ge 3) -or (-not(Test-PolicyProcess) -and $budget.Policy -ge 3)){$phase='NeedsAttention';$reason='Component retry limit reached'}
             elseif(-not $session.bridgeReady -or -not(Test-PolicyProcess)){$phase='Degraded';$reason='A component is unavailable'}
+            elseif($listenerFailures -gt 0){$phase='Degraded';$reason='The owned VPN bridge listener is not ready'}
+            elseif($listenerState -eq 'Unknown'){$phase='Suspect';$reason='The local VPN bridge listener could not be verified'}
             elseif($healthFailures -ge 2){$phase='Degraded';$reason='Repeated control HTTPS failure; direct router retained'}
             elseif($signature -eq 'unavailable'){$phase='Suspect';$reason='Network identity unavailable'}
             if($phase -eq 'Watching'){

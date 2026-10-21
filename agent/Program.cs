@@ -13,6 +13,8 @@ public static class Program
         try
         {
             if(args.Length==1 && args[0]=="--self-test"){await AgentTests.Run();return 0;}
+            if(args.Length==3 && args[0]=="--export-diagnostics")
+            {Cita.Diagnostics.SessionEvidence.Export(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]));Console.WriteLine("Diagnostic archive saved. No network operation was requested.");return 0;}
             if(args.Length==1 && args[0]=="--resource-snapshot")
             {
                 using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(12));

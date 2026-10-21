@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [ValidateSet('Prepare','ProxyOnly','Start','Stop','Status','Watch','UpdateRules','SyncProfile','Reconnect','RepairVpn')]
     [string]$Action = 'Start',
@@ -203,6 +203,9 @@ function Prepare-Configuration {
         }
     }
     $interface = $physical.InterfaceAlias
+    $tailInterface='Tailscale'
+    $tailAdapter=@(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | Where-Object InterfaceDescription -match '^Tailscale(?: Tunnel(?: #\d+)?)?$' | Select-Object -First 1)
+    if($tailAdapter.Count){$tailInterface=[string]$tailAdapter[0].Name}
     $hasDirectIPv6 = [bool]$physical.IPv6DefaultGateway
     $directDnsStrategy = if ($hasDirectIPv6) { 'prefer_ipv4' } else { 'ipv4_only' }
     $originalPath = Join-Path $private 'awg2.original.conf'
@@ -288,6 +291,10 @@ function Prepare-Configuration {
     }
     $routeRules += @{inbound=@('direct-probe');action='route';outbound='direct'}
     $routeRules += @{inbound=@('dpi-probe');network='tcp';action='route';outbound='dpi';tls_record_fragment=$true}
+    # Explicit proxy names and overlay addresses must not enter FakeIP,
+    # physical-interface binding or adaptive DPI/VPN classification.
+    $routeRules += @{domain_suffix=@('ts.net');action='resolve';server='dns-tailnet';strategy='prefer_ipv4'}
+    $routeRules += @{ip_cidr=@('100.64.0.0/10','fd7a:115c:a1e0::/48');action='route';outbound='tailnet'}
     $routeRules += @{rule_set=@('personal-direct');action='route';outbound='direct'}
     $routeRules += @{rule_set=@('personal-vpn');action='route';outbound='vpn'}
     $routeRules += @{domain_suffix=@('openai.com','chatgpt.com','oaistatic.com','oaiusercontent.com','sora.com');action='route';outbound='vpn'}
@@ -307,6 +314,7 @@ function Prepare-Configuration {
     $ackRules += @{inbound=@('policy-ack');action='reject'}
     $routeRules = $ackRules + $routeRules
     $dnsRules = @(
+        @{domain_suffix=@('ts.net');action='route';server='dns-tailnet'},
         @{rule_set=@('personal-direct');action='route';server='dns-direct'},
         @{rule_set=@('personal-vpn');query_type=@('A','AAAA');action='route';server='fakeip'},
         @{rule_set=@('personal-vpn');action='route';server='dns-vpn'}
@@ -356,6 +364,7 @@ function Prepare-Configuration {
             servers=@(
                 @{type='https';tag='dns-direct';server='1.1.1.1';detour='direct'},
                 @{type='https';tag='dns-vpn';server='1.1.1.1';detour='vpn'},
+                @{type='udp';tag='dns-tailnet';server='100.100.100.100';server_port=53;detour='tailnet'},
                 @{type='fakeip';tag='fakeip';inet4_range='198.18.0.0/15';inet6_range='fc00::/18'}
             )
             rules=$dnsRules; final='dns-direct'; strategy=$directDnsStrategy; reverse_mapping=$true
@@ -367,6 +376,7 @@ function Prepare-Configuration {
         outbounds=@(
             @{type='direct';tag='direct';bind_interface=$interface},
             @{type='direct';tag='dpi';bind_interface=$interface},
+            @{type='direct';tag='tailnet';bind_interface=$tailInterface;connect_timeout='3s'},
             @{type='socks';tag='vpn';server='127.0.0.1';server_port=20808;version='5'},
             @{type='direct';tag='policy-proof'}
         )
@@ -547,13 +557,18 @@ if ($Action -eq 'Reconnect') {
     if($wireState -notin @('Connected','Disconnected')){throw 'Managed WireSock state is not confirmed; automatic recovery is paused.'}
     if($previous.mode -eq 'Start' -and (Get-NetAdapter -Name 'VPNUS' -ErrorAction SilentlyContinue).Status -eq 'Up'){throw 'VPNUS is active; automatic recovery is paused.'}
     [void](Set-SessionRecovering $ExpectedSessionId 'Automatic reconnect')
+    Write-ConnectionEvidence $root 'ReconnectRequested' $previous
     Stop-OurProcesses -KeepWatch
     if($wireState -eq 'Connected'){Invoke-WireSock @('disconnect') | Out-Null}
 }
 if ($Action -eq 'Stop') {
     Write-ConnectionProgress 'Stopping'
+    $stopSession=$null;try{$stopSession=Read-JsonFile (Join-Path $runtime 'session.json')}catch{}
+    Write-ConnectionEvidence $root 'StopRequested' $stopSession
     Stop-OurProcesses
-    Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;bridgeReady=$false;stoppedUtc=[DateTime]::UtcNow.ToString('o')}
+    $stopped=@{id=$(if($stopSession){$stopSession.id}else{''});running=$false;bridgeReady=$false;bridgeGeneration=[int]$stopSession.bridgeGeneration;stopReason='RequestedStop';stoppedUtc=[DateTime]::UtcNow.ToString('o')}
+    Write-JsonFile (Join-Path $runtime 'session.json') $stopped
+    Write-ConnectionEvidence $root 'Stopped' $stopped
     Disconnect-ManagedWireSock
     Write-Host 'Smart routing stopped. The original WireSock profile is unchanged.'
     exit
@@ -577,7 +592,8 @@ if($Action -in @('Start','ProxyOnly')){Stop-OurProcesses}
 if($Action -in @('Start','ProxyOnly')){Remove-Item -LiteralPath (Join-Path $runtime 'stop.request') -Force -ErrorAction SilentlyContinue}
 try {
 Write-ConnectionProgress 'Preparing'
-Prepare-Configuration
+    Write-ConnectionEvidence $root 'StartRequested'
+    Prepare-Configuration
 if ($Action -eq 'Prepare') { exit }
 if ($Action -eq 'SyncProfile') {
     Sync-WireSockProfile $smartProfile (Join-Path $private ($smartProfile + '.conf')) (Join-Path $private 'profile-backups')
@@ -644,6 +660,7 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
     Write-JsonFile (Join-Path $runtime 'session-health.json') @{sessionId=$startedSession.id;bridgeGeneration=$startedSession.bridgeGeneration;healthy=$true;code='Verified';message=$health.message;updatedUtc=[DateTime]::UtcNow.ToString('o')}
     $startedSession.recovering=$false;$startedSession.bridgeReady=$true
     Write-JsonFile (Join-Path $runtime 'session.json') $startedSession
+    Write-ConnectionEvidence $root $(if($Action -eq 'Reconnect'){'ReconnectVerified'}else{'StartVerified'}) $startedSession
     Remove-Item -LiteralPath (Join-Path $root 'logs\connection-lost.txt'),(Join-Path $root 'logs\recovery-error.log') -Force -ErrorAction SilentlyContinue
     $watchScriptPath = '"' + $PSCommandPath + '"'
     if($Action -ne 'Reconnect'){
@@ -662,7 +679,8 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
             $previous | Add-Member -NotePropertyName recoveryReason -NotePropertyValue $startFailure.Exception.Message -Force
             $previous | Add-Member -NotePropertyName bridgeReady -NotePropertyValue $false -Force
             Write-JsonFile (Join-Path $runtime 'session.json') $previous
-        }else{Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;bridgeReady=$false;stoppedUtc=[DateTime]::UtcNow.ToString('o')}}
+        }else{Write-JsonFile (Join-Path $runtime 'session.json') @{running=$false;bridgeReady=$false;stopReason='StartFailed';stoppedUtc=[DateTime]::UtcNow.ToString('o')}}
+        Write-ConnectionEvidence $root $(if($Action -eq 'Reconnect'){'ReconnectFailed'}else{'StartFailed'})
         Disconnect-ManagedWireSock
     } catch { [IO.File]::WriteAllText((Join-Path $root 'logs\cleanup-error.log'),$_.Exception.Message) }
     throw $startFailure

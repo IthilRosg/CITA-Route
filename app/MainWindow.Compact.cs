@@ -69,6 +69,7 @@ public partial class MainWindow
         Add("Состояние ресурсов Windows",ShowResourceDetails);
         menu.Items.Add(new Separator());
         Add("Открыть журнал",()=>{ApplyView(false);PreviewPage(3);});
+        Add("Собрать диагностику…",async()=>await ExportDiagnostics());
         Add("Отключить и выйти",async()=>{if(!_busy&&await PerformActionAsync("Stop"))ExitApplication();});
         menu.PlacementTarget=sender as UIElement;menu.IsOpen=true;
     }

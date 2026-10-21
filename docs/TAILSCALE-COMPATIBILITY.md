@@ -35,6 +35,31 @@ applications retain their existing manual and adaptive routing rules.
 
 ## Validation
 
+### DNS boundary in 0.5.8
+
+The router is now a separately branded **CITA routing core**, built from the
+checksum-pinned upstream sources. Its additional permits are inside the same
+dynamic WFP session and sublayer as the original DNS block. They match only
+Quad100 port 53 and a currently active Tailscale adapter LUID, for IPv4 and IPv6.
+Ordinary DNS protection and unrelated firewall action rights remain intact.
+Adapter changes are observed every two seconds; the loop stops before the WFP
+session closes. Dynamic filters also disappear when that process exits.
+
+Normal and diagnostic configurations send `*.ts.net` to Quad100 through a
+dedicated Tailscale-bound outbound, before FakeIP. Overlay destination rules
+precede adaptive decisions and the public IPv6 rejection. That outbound has no
+physical-interface fallback. Preparation uses the detected adapter alias, or
+the normal `Tailscale` alias when it is not yet present. Renaming the adapter
+while running requires preparing the connection again. Native Windows short-name
+resolution still depends on Tailscale's own search-suffix/NRPT configuration;
+CITA does not replace those settings or use an OS-resolver feedback loop.
+
+The isolated Windows guest accepted and removed the actual native filters for
+both families, including their interface, destination and port conditions.
+It also verified the actual watcher loop repairing an owned process without a
+listener exactly once while preserving the router process. These are native
+boundary fixtures, not a real tailnet or authenticated SSH session.
+
 - Windows PowerShell 5 generates Auto and Lists configurations both with and
   without a physical IPv6 gateway; the actual bundled engine checks all of them.
 - Agent tests cover old-template migration in both directions, internal IPv6
@@ -55,11 +80,10 @@ peer/SSH acceptance test. The guest test did not join the user's tailnet.
    by IPv4, then repeat after reconnecting CITA. Online status alone is insufficient.
 2. Separately check IPv6 overlay traffic, direct versus relayed Tailscale
    transport, and physical IPv6 present/absent. Observe the real daemon paths.
-3. Check MagicDNS FQDNs and short names. Global Windows DNS hijacking can block
-   another interface's DNS, and `*.ts.net` currently lacks its own DNS/FakeIP
-   policy. The topology fix does not claim to solve these separate DNS cases.
-   Any follow-up must avoid an OS-resolver loop, handle late Tailscale startup,
-   preserve ordinary DNS protection, and cover pre-login startup/templates.
+3. Check real MagicDNS FQDNs and short names, reconnect and late daemon startup.
+   The new DNS/WFP boundary has native and configuration checks, while the real
+   tailnet acceptance is assigned to the second PC after release. Include any
+   configured global DNS override; it changes which resolver sees public names.
 4. Test Tailscale exit-node and subnet-router modes separately. They introduce
    additional routes and must not be declared supported from this test alone.
 5. Keep intentional user Stop separate from transport failure. A partial

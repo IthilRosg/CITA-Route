@@ -61,7 +61,7 @@ The [resource monitor](docs/RESOURCE-GUARD.md) runs in the existing protected re
 
 ## Build and test
 
-Install the .NET 8 SDK on Windows, then use Windows PowerShell:
+Install the .NET 8 SDK and Go 1.26.3 on Windows, then use Windows PowerShell:
 
 ```powershell
 ./Bootstrap.ps1
@@ -73,7 +73,7 @@ Install the .NET 8 SDK on Windows, then use Windows PowerShell:
 ./Build-Installer.ps1 -PackageDirectory dist/CITA-Route-VERSION-win-x64-STAGE
 ```
 
-`Bootstrap.ps1` downloads a pinned sing-box release and verifies its archive and executable SHA-256. Public routing data is fetched separately. If necessary, pass `-DownloadProxy socks5h://127.0.0.1:PORT` for the dependency downloads.
+`Bootstrap.ps1` verifies the original VPN bridge and builds the separately branded CITA routing core from pinned source with the narrow Tailscale DNS patch. See [the engine build recipe](engine-patches/README.md). Public routing data is fetched separately. If necessary, pass `-DownloadProxy socks5h://127.0.0.1:PORT` for the dependency downloads.
 
 The resulting `dist/CITA-Route-VERSION-win-x64.zip` includes the runtime, public data, source and third-party license material. `Build-Installer.ps1` consumes a matching verified package and creates `dist/CITA-Route-VERSION-win-x64-setup.exe`. It bootstraps the pinned official Inno Setup compiler in portable mode inside `runtime`, checking SHA-256 and Authenticode before executing its download. `-Compiler` accepts an explicit trusted compiler; `-DownloadProxy` configures downloads. `dist/SHA256SUMS.txt` includes both public downloads; the stable updater continues using the ZIP. Local data, private configs, logs and binaries are ignored by Git.
 
@@ -85,9 +85,11 @@ The component recovery work on this branch keeps the direct router alive during 
 
 `RoutePilot.exe --benchmark-ui` compares compact and advanced WPF presentation on 200 synthetic rows without backend polling or network activity. Results in `logs/ui-resource-fixture.json` are a presentation benchmark, not total VPN resource use. Preview renderers also avoid live polling and preference writes.
 
+See [diagnostic collection](docs/DIAGNOSTICS.md) for the one-click ZIP export and bounded session history, and [Tailscale compatibility](docs/TAILSCALE-COMPATIBILITY.md) for its supported boundaries.
+
 ## Maintenance
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). GitHub Actions checks pull requests and main. The manually dispatched release workflow validates the tag/version, runs tests, builds and verifies the ZIP, then publishes the ZIP and checksums. To bump a version, update `product.json` and `Directory.Build.props` together.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). GitHub Actions checks pull requests and main. The release workflow accepts version tags and manual dispatch, requires a commit on main, validates the tag/version, runs tests, builds and verifies the ZIP and installer, then publishes both with checksums. To bump a version, update `product.json` and `Directory.Build.props` together.
 
 ## License
 

@@ -39,6 +39,9 @@ try {
         if(-not @($tun.address|Where-Object {$_ -match ':'}).Count -or -not $tun.strict_route){throw 'Internal IPv6 and StrictRoute must remain present to avoid a global IPv6 block or loss of DNS protection.'}
         if(-not $ipv6 -and ((@($tun.route_address|Where-Object {$_ -match ':'}) -join ',') -ne 'fd7a:125::/126')){throw 'An IPv4-only underlay may route only the TUN internal IPv6 subnet.'}
         if($tun.route_exclude_address -notcontains '100.64.0.0/10' -or $tun.route_exclude_address -notcontains 'fd7a:115c:a1e0::/48'){throw 'Both Tailscale overlay families must stay excluded.'}
+        if($config.dns.rules[0].server -ne 'dns-tailnet' -or $config.dns.rules[0].domain_suffix -notcontains 'ts.net'){throw 'MagicDNS must precede FakeIP and ordinary DNS rules.'}
+        $tailnet=@($config.outbounds|Where-Object tag -eq 'tailnet')
+        if($tailnet.Count -ne 1 -or -not $tailnet[0].bind_interface -or $tailnet[0].bind_interface -eq 'Fixture WiFi'){throw 'Tailnet DNS cannot use the physical adapter or an unbound WAN fallback.'}
         $tailIndex=-1;$sniffIndex=-1
         for($i=0;$i -lt $config.route.rules.Count;$i++){
             if($config.route.rules[$i].process_name -contains 'tailscaled.exe'){$tailIndex=$i}

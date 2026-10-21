@@ -22,7 +22,7 @@ try{
     Expand-Archive -LiteralPath $archive -DestinationPath $extract
     $binary=@(Get-ChildItem -LiteralPath $extract -Recurse -Filter sing-box.exe -File)
     if($binary.Count -ne 1 -or (Get-FileHash -LiteralPath $binary[0].FullName).Hash -ne '5C19BB3F8C12D4E85B3D47FE63123A7624B314B58DD7A8E32F51004F1C4D2FAF'){throw 'Engine binary differs from the pinned release.'}
-    foreach($name in @('smart-router.exe','vpn-bridge.exe')){
+    foreach($name in @('vpn-bridge.exe')){
         $target=Join-Path $root ('runtime\'+$name)
         if(-not(Test-Path -LiteralPath $target) -or (Get-FileHash -LiteralPath $target).Hash -ne (Get-FileHash -LiteralPath $binary[0].FullName).Hash){Copy-Item -LiteralPath $binary[0].FullName -Destination $target -Force}
     }
@@ -42,6 +42,7 @@ $licenses=@(
     @('https://raw.githubusercontent.com/dotnet/runtime/v8.0.30/LICENSE.TXT','dotnet-LICENSE.txt','CFC21F5E8BD655AE997EEC916138B707B1D290B83272C02A95C9F821B8C87310'),
     @('https://raw.githubusercontent.com/dotnet/runtime/v8.0.30/THIRD-PARTY-NOTICES.TXT','dotnet-THIRD-PARTY-NOTICES.txt','97C1A7B3DA6A4C6AD516448719F45114B41A4D4C5AA300A944476E2E4F5DA438'))
 foreach($entry in $licenses){Download $entry[0] (Join-Path $root ('distribution-licenses\'+$entry[1])) $entry[2]}
+& (Join-Path $root 'Build-RouterEngine.ps1') -PublishRuntime
 foreach($name in @('force-direct','force-vpn')){
     $target=Join-Path $root ($name+'.txt');if(-not(Test-Path -LiteralPath $target)){Copy-Item -LiteralPath (Join-Path $root ($name+'.example.txt')) -Destination $target}
 }

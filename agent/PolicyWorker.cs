@@ -372,8 +372,18 @@ public sealed class PolicyWorker
                 // Keep the same append handle used by the router; an atomic rename would
                 // leave it writing into an unlinked file. Limit diagnostic domain logging.
                 using var trim=new FileStream(path,FileMode.Open,FileAccess.ReadWrite,FileShare.ReadWrite|FileShare.Delete);
-                byte[] tail=new byte[1024*1024];trim.Position=Math.Max(0,trim.Length-tail.Length);int count=trim.Read(tail);
-                trim.SetLength(0);trim.Position=0;trim.Write(tail,0,count);trim.Flush();_offset=0;_partial="";
+                byte[] tail=new byte[2*1024*1024];trim.Position=Math.Max(0,trim.Length-tail.Length);int count=trim.Read(tail);
+                int keep=Math.Min(count,1024*1024),older=count-keep;
+                // Retain the preceding bounded segment as well as the active tail.
+                // The active file stays open under the router's append handle.
+                if(older>0)
+                {
+                    string previous=Path.Combine(Path.GetDirectoryName(path)!,"router.previous.log"),temporary=previous+"."+Guid.NewGuid().ToString("N")+".tmp";
+                    try{File.WriteAllBytes(temporary,tail[..older]);File.Move(temporary,previous,true);}
+                    catch(Exception ex)when(ex is IOException or UnauthorizedAccessException){}
+                    finally{try{if(File.Exists(temporary))File.Delete(temporary);}catch(IOException){}catch(UnauthorizedAccessException){}}
+                }
+                trim.SetLength(0);trim.Position=0;trim.Write(tail,older,keep);trim.Flush();_offset=0;_partial="";
             }
             catch(IOException){}
         }

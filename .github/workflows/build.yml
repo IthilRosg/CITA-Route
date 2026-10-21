@@ -23,12 +23,22 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.3
+          cache: false
       - name: Fetch verified engine and public rule data
         shell: powershell
         run: ./Bootstrap.ps1
       - name: Build and run agent tests
         shell: powershell
         run: ./Build-All.ps1
+      - name: Verify native DNS filter boundaries on isolated runner
+        shell: powershell
+        run: |
+          $env:CITA_WFP_LAB='1'
+          & ./runtime/cita-wfp-tests.exe -test.run '^TestCitaWfpLifecycle$' -test.timeout 20s
+          if($LASTEXITCODE -ne 0){throw 'Native DNS filter lifecycle failed'}
       - name: Offline and loopback checks
         shell: powershell
         run: |

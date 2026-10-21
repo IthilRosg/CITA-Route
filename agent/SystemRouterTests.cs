@@ -31,6 +31,12 @@ internal static class SystemRouterTests
         Assert(rules[1]!["process_name"]!.AsArray().Any(n=>n!.GetValue<string>()=="tailscaled.exe") && rules[1]!["outbound"]!.GetValue<string>()=="direct","The Tailscale daemon transport must precede sniffing and adaptive decisions.");
         SystemRouter.PreserveTailscaleTransport(rules);
         Assert(rules.Count==4,"Installed compatible templates must not accumulate process rules.");
+        var dnsConfig=JsonNode.Parse("{\"outbounds\":[{\"type\":\"direct\",\"tag\":\"direct\",\"bind_interface\":\"Physical fixture\"}],\"dns\":{\"servers\":[],\"rules\":[{\"query_type\":[\"A\",\"AAAA\"],\"action\":\"route\",\"server\":\"fakeip\"}]},\"route\":{\"rules\":[{\"inbound\":[\"policy-ack\"],\"action\":\"reject\"},{\"action\":\"sniff\"},{\"protocol\":\"dns\",\"action\":\"hijack-dns\"},{\"ip_version\":6,\"action\":\"reject\"}]}}")!;
+        SystemRouter.PreserveTailscaleDns(dnsConfig);SystemRouter.PreserveTailscaleDns(dnsConfig);
+        Assert(dnsConfig["outbounds"]!.AsArray().Count==2&&dnsConfig["outbounds"]![1]!["bind_interface"]!.GetValue<string>()!="Physical fixture","Tailnet DNS must not inherit physical-interface binding or accumulate duplicate outbounds.");
+        Assert(dnsConfig["dns"]!["rules"]![0]!["server"]!.GetValue<string>()=="dns-tailnet","MagicDNS names must precede catch-all FakeIP.");
+        Assert(dnsConfig["route"]!["rules"]![0]!["action"]!.GetValue<string>()=="reject","DNS compatibility must preserve policy-proof rejection.");
+        Assert(dnsConfig["route"]!["rules"]![3]!["server"]!.GetValue<string>()=="dns-tailnet"&&dnsConfig["route"]!["rules"]![4]!["outbound"]!.GetValue<string>()=="tailnet","Both overlay families must precede IPv6 rejection and adaptive classification.");
         Console.WriteLine("PASS: IPv4-only/dual-stack TUN topology, old-template migration, Tailscale overlay exclusions and early transport rules.");
     }
 }
