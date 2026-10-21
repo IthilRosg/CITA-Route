@@ -64,9 +64,14 @@ internal static class PolicyOptimizationTests
         await worker.CompletePending();worker.Status("Auto");
         Assert(Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("decisions").GetArrayLength()==0,"Clear must reject an old task even when that task ignores cancellation.");
         Assert(worker.Binding(old with{ExpiresUtc=now.AddSeconds(-1)},now)=="vpn" && worker.Binding(old with{ExpiresUtc=now.AddMinutes(-3)},now)=="vpn","Expired confidence must retain the active protected direction instead of blocking or silently directing the site.");
+        Assert(worker.Binding(old with{CheckedUtc=now.AddMinutes(1),ExpiresUtc=now.AddMinutes(16)},now)=="vpn","Clock rollback cannot silently turn a same-epoch active VPN binding into direct.");
         Storage.Write(Path.Combine(root,"runtime/policy-active.json"),new PolicyActiveSnapshot(epoch,options.Mode,options.AllowListedDpi,"",new[]{old with{CheckedUtc=now.AddMinutes(-20),ExpiresUtc=now.AddMinutes(-5)}}));
         var recovered=new PolicyWorker(root,session,options);recovered.LoadActiveBindings();recovered.Status("Auto");
         Assert(Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("decisions").GetArrayLength()==1,"A worker restart inside the SAME epoch must retain its expired protected direction without extending confidence.");
+        Storage.Write(Path.Combine(root,"runtime/policy-active.json"),new PolicyActiveSnapshot(epoch,options.Mode,options.AllowListedDpi,"",new[]{old with{CheckedUtc=now.AddMinutes(1),ExpiresUtc=now.AddMinutes(16)}}));
+        var afterClock=new PolicyWorker(root,session,options);afterClock.LoadActiveBindings();afterClock.Status("Auto");
+        var clockState=Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json"));
+        Assert(clockState.GetProperty("decisions").GetArrayLength()==1 && clockState.GetProperty("stale").GetInt32()==1,"A same-epoch restart after clock rollback retains direction as stale, never as confirmed confidence.");
         var nextSession=new PolicySession{Id=Guid.NewGuid().ToString("N"),Running=true};
         var isolatedEpoch=new PolicyWorker(root,nextSession,options);isolatedEpoch.LoadActiveBindings();isolatedEpoch.Status("Auto");
         Assert(Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("decisions").GetArrayLength()==0,"An active-session snapshot must never cross session/network epochs.");
@@ -97,6 +102,12 @@ internal static class PolicyOptimizationTests
         for(int i=0;i<6;i++)worker.RegisterFailure(key with{Domain="busy"+i+".example.com"},"hint",CancellationToken.None);
         for(int i=0;i<4;i++){worker.DrainFailures(CancellationToken.None);worker.Status("Auto");Assert(Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("pending").GetInt32()<=2,"Refresh and foreground jobs share the same two-job bound.");await worker.CompletePending();}
         Assert(scheduled.Take(5).Contains(key.Domain),"A busy foreground queue must not starve a due refresh.");
+        pending=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        worker=new(root,session,options,(_,_)=>pending.Task);worker.StoreDecision(old);worker.Touch(key,DateTime.UtcNow);worker.DrainFailures(CancellationToken.None);
+        Assert(worker.ObserveClock(DateTime.UtcNow.AddSeconds(30)),"A long policy observation gap must invalidate pending evidence.");
+        pending.SetResult(new(ProbeOutcome.Reachable,refreshed,1,2,Array.Empty<CandidateTiming>()));await worker.CompletePending();worker.Status("Auto");
+        Assert(Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("decisions")[0].GetProperty("CheckedUtc").GetDateTime()==old.CheckedUtc,"A pre-pause result must not renew post-resume confidence.");
+        Assert(worker.ObserveClock(DateTime.UtcNow),"A backwards wall clock also invalidates pending evidence.");
         worker=new(root,session,options,(_,_)=>Task.FromResult(new CalibrationResult(ProbeOutcome.Reachable,refreshed with{Route="direct"},1,2,Array.Empty<CandidateTiming>())));
         worker.StoreDecision(old);worker.Touch(key,DateTime.UtcNow);worker.DrainFailures(CancellationToken.None);await worker.CompletePending();worker.Status("Auto");
         var deferred=Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json"));

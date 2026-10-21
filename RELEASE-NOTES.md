@@ -2,6 +2,7 @@ CITA Route 0.6.0 — stable routes and smaller installation.
 
 - Confirm a return from VPN/DPI to a preferred path with a second calibration at least 15 seconds later. A confirmed failure of the current path allows prompt replacement. Manual/VPN-only rules and TLS validation retain priority; automatic rule publication does not close existing connections.
 - Wake the controller when calibration completes. Reduce idle network-profile enumeration and state writes; Windows network events invalidate the polling cache. Always re-read network evidence before applying results and at publication barriers.
+- Discard pending adaptive evidence after a controller pause or clock rollback. Keep the same-session VPN/DPI direction as stale until revalidated; changing Windows time cannot silently remove it and send the site direct.
 - Setup checks machine-wide .NET Desktop Runtime 8 x64 instead of bundling it. When missing, offer the official Microsoft download with progress, a pinned SHA-512 and a valid Microsoft publisher signature. Existing runtimes are reused and shared runtimes survive client uninstall.
 - Provide a smaller framework-dependent ZIP for new updaters with the machine runtime. Preserve the self-contained ZIP for old clients and runtime-free machines. A staged update retains its original archive flavor, integrity checks and rollback.
 

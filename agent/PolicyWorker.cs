@@ -90,6 +90,7 @@ public sealed class PolicyWorker
     PolicyNetworkMonitor? _networkMonitor;
     long _nextStatusTick;
     string _statusPhase="";
+    DateTime _lastClockUtc=DateTime.UtcNow;
     string _clearRequest="";
     readonly HashSet<string> _listed=new(StringComparer.OrdinalIgnoreCase);
     string _listVersion="";
@@ -139,6 +140,7 @@ public sealed class PolicyWorker
                 {
                     terminalPhase="NetworkChanged";cancel.Cancel();worker.Event("Сеть изменилась. Адаптация остановлена до переподключения.");return;
                 }
+                worker.ObserveClock(DateTime.UtcNow);
                 worker.RefreshListed();
                 string clear=worker.Runtime("clear-policy.request");
                 if(File.Exists(clear))
@@ -236,6 +238,19 @@ public sealed class PolicyWorker
         _lastUse[key]=now;
         while(_lastUse.Count>1024)_lastUse.Remove(_lastUse.MinBy(p=>p.Value).Key);
     }
+    internal bool ObserveClock(DateTime now)
+    {
+        bool discontinuity=now<_lastClockUtc.AddSeconds(-2) || now-_lastClockUtc>TimeSpan.FromSeconds(20);
+        _lastClockUtc=now;
+        if(!discontinuity)return false;
+        // Keep the active bindings, but never apply a calibration accumulated
+        // before a pause or wall-clock change as fresh post-resume evidence.
+        _generation++;foreach(var stop in _pendingStops.Values)stop.Cancel();
+        _stability.Clear();_nextProbe.Clear();_failures.Clear();_queuedAt.Clear();
+        foreach(var key in _lastUse.Where(p=>p.Value>now).Select(p=>p.Key).ToArray())_lastUse[key]=now;
+        Event("Пауза или изменение времени: незавершённые проверки сброшены; активные пути сохранены.");
+        return true;
+    }
     internal async Task CompletePending()
     {
         foreach(var pair in _pending.Where(p=>p.Value.IsCompleted).ToArray())
@@ -277,7 +292,7 @@ public sealed class PolicyWorker
     internal string Binding(PolicyDecision decision,DateTime now)
     {
         if(PolicySafety.Live(decision,_epoch,now))return decision.Route;
-        if(decision.Key.Epoch!=_epoch || decision.CheckedUtc>now || decision.Route=="direct")return "";
+        if(decision.Key.Epoch!=_epoch || decision.Route=="direct")return "";
         // Confidence TTL and active routing direction are separate. A failed
         // refresh must neither block a working site nor silently send it direct.
         // Retain this direction ONLY inside the exact network/session epoch;
@@ -288,7 +303,7 @@ public sealed class PolicyWorker
     {
         foreach(var pair in _decisions.ToArray())
         {
-            if(Manual(pair.Key.Domain))_stability.Remove(pair.Key);
+            if(_stability.Pending(pair.Key) && Manual(pair.Key.Domain))_stability.Remove(pair.Key);
             // A newly saved manual rule is applied by a separate engine watcher.
             // Keep its shadowed automatic binding until the manual rule takes
             // priority; removing it early could create a direct-route window.
@@ -458,7 +473,7 @@ public sealed class PolicyWorker
         var refresh=_decisions.Values.Where(d=>!Manual(d.Key.Domain) && !_pending.ContainsKey(d.Key) &&
             _lastUse.TryGetValue(d.Key,out var used) && now-used<TimeSpan.FromMinutes(5) &&
             (!_nextProbe.TryGetValue(d.Key,out var next) || next<=now) &&
-            (_stability.Pending(d.Key) || d.ExpiresUtc-now<TimeSpan.FromSeconds(120+(System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(SHA256.HashData(Encoding.UTF8.GetBytes(d.Key.Domain)))%60))))
+            (_stability.Pending(d.Key) || d.CheckedUtc>now || d.ExpiresUtc-now<TimeSpan.FromSeconds(120+(System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(SHA256.HashData(Encoding.UTF8.GetBytes(d.Key.Domain)))%60))))
             .OrderBy(d=>d.ExpiresUtc).ToList();
         while(_pending.Count<2)
         {
@@ -554,7 +569,7 @@ public sealed class PolicyWorker
             var snapshot=Storage.Read<PolicyActiveSnapshot>(path);
             if(snapshot.Epoch!=_epoch || snapshot.Mode!=_options.Mode || snapshot.AllowListedDpi!=_options.AllowListedDpi || snapshot.ClearRequest!=_clearRequest || snapshot.Decisions.Length>DecisionLimit)return;
             foreach(var decision in snapshot.Decisions)
-                if(!_decisions.ContainsKey(decision.Key) && decision.Key.Epoch==_epoch && decision.Key.Strategy=="tls-record-ipv4-v2" && decision.Route is "vpn" or "dpi" && PolicySafety.Valid(decision.Key) && decision.CheckedUtc<=DateTime.UtcNow && decision.ExpiresUtc>decision.CheckedUtc && decision.ExpiresUtc-decision.CheckedUtc<=TimeSpan.FromMinutes(16))StoreDecision(decision);
+                if(!_decisions.ContainsKey(decision.Key) && decision.Key.Epoch==_epoch && decision.Key.Strategy=="tls-record-ipv4-v2" && decision.Route is "vpn" or "dpi" && PolicySafety.Valid(decision.Key) && decision.ExpiresUtc>decision.CheckedUtc && decision.ExpiresUtc-decision.CheckedUtc<=TimeSpan.FromMinutes(16))StoreDecision(decision);
         }
         catch(Exception ex)when(ex is IOException or JsonException or InvalidOperationException or NullReferenceException){Event("Направления активной сессии не загружены.");}
     }
