@@ -1,13 +1,14 @@
 [CmdletBinding()]
 param([switch]$FrameworkDependent)
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'Build-Dotnet.ps1')
 $root=$PSScriptRoot
 $version=([IO.File]::ReadAllText((Join-Path $root 'product.json')) | ConvertFrom-Json).version
 $dist=Join-Path $root 'dist'
 $flavor=if($FrameworkDependent){'-framework'}else{''}
 $stage=Join-Path $dist ('CITA-Route-'+$version+'-win-x64'+$flavor+'-'+[guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Path $stage,(Join-Path $stage 'runtime\agent-build'),(Join-Path $stage 'runtime\app-build'),(Join-Path $stage 'runtime\rules'),(Join-Path $stage 'rules'),(Join-Path $stage 'source\agent'),(Join-Path $stage 'source\app\Assets'),(Join-Path $stage 'licenses') -Force | Out-Null
-$dotnet=Join-Path $env:ProgramFiles 'dotnet\dotnet.exe'
+$dotnet=Get-BuildDotnet
 $env:DOTNET_CLI_HOME=Join-Path $root 'runtime\.dotnet'
 $env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1';$env:DOTNET_CLI_TELEMETRY_OPTOUT='1';$env:MSBuildEnableWorkloadResolver='false'
 foreach($project in @('agent','app')){
@@ -50,7 +51,7 @@ $forbidden=@(Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object {$_
 if($forbidden.Count){throw 'Private files detected in distribution staging.'}
 $files=@(Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {@{path=$_.FullName.Substring($stage.Length+1);bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}})
 . (Join-Path $root 'FileStorage.ps1')
-Write-JsonFile (Join-Path $stage 'manifest.json') @{version=$version;architecture='win-x64';selfContained=(-not $FrameworkDependent);desktopRuntimeMajor=8;files=$files;createdUtc=[DateTime]::UtcNow.ToString('o')}
+Write-JsonFile (Join-Path $stage 'manifest.json') @{version=$version;architecture='win-x64';selfContained=(-not $FrameworkDependent);desktopRuntimeMajor=10;desktopRuntimeMinimum='10.0.13';files=$files;createdUtc=[DateTime]::UtcNow.ToString('o')}
 $zip=Join-Path $dist ('CITA-Route-'+$version+'-win-x64'+$flavor+'.zip')
 Compress-Archive -LiteralPath $stage -DestinationPath $zip -Force
 $hash=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()

@@ -1,7 +1,15 @@
 # Lightweight distribution plan
 
-Status: design and size experiment, not an implemented release format.
-The production installer and updater still consume self-contained packages.
+Status: implemented in the 0.6.0 candidate, awaiting its final release gates.
+App, protected agent, lab tools and CI target .NET 10 LTS. Both machine-wide
+Windows x64 shared frameworks must be at least 10.0.13; package metadata declares
+the minimum. Reparse points, old patches, previews and other majors are refused.
+Setup offers the official signed runtime inline. Both self-contained and thin
+ZIPs are produced; old updaters retain the self-contained asset. Protected-agent
+replacement checks runtime readiness before stopping the existing service.
+
+The measurements below describe the original 0.5.7 size experiment, not the
+final 0.6.0 artifacts. See RELEASE-0.6.0.md for current acceptance requirements.
 
 ## Measured starting point
 

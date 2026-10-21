@@ -58,10 +58,10 @@ internal static class UdpEngineTests
             var stillDirect=await UdpQualityProbe.Run(direct,reflector.Endpoint,key,deadline.Token,40,500);
             UdpQualityTests.Assert(stillDirect.Received==8,"Direct UDP must continue when the fixture VPN bridge is down.");
             // Exercise the shipped server implementation too, not only the drop fixture.
-            string reflectorDll=Path.Combine(root,"tools","udp-reflector","bin","Release","net8.0","Cita.UdpReflector.dll");
+            string reflectorDll=Path.Combine(root,"tools","udp-reflector","bin","Release","net10.0","Cita.UdpReflector.dll");
             if(!File.Exists(reflectorDll))throw new IOException("Build tools/udp-reflector in Release before UDP integration.");
             string keyFile=Path.Combine(folder,"reflector-key.txt");File.WriteAllText(keyFile,Convert.ToHexString(key));int serverPort=Port();
-            var serverInfo=new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"dotnet","dotnet.exe"))
+            var serverInfo=new ProcessStartInfo(Path.Combine(Environment.GetEnvironmentVariable("DOTNET_ROOT_X64")??Environment.GetEnvironmentVariable("DOTNET_ROOT")??Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"dotnet"),"dotnet.exe"))
                 {UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
             foreach(string argument in new[]{reflectorDll,keyFile,"127.0.0.1",serverPort.ToString()})serverInfo.ArgumentList.Add(argument);
             using(var server=Process.Start(serverInfo)!)

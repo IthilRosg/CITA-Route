@@ -1,6 +1,6 @@
 # Contributing to CITA Route
 
-Use Windows and .NET 8 SDK. Start with `Bootstrap.ps1`, then `Build-All.ps1`.
+Use Windows and .NET 10 SDK. Start with `Bootstrap.ps1`, then `Build-All.ps1`.
 The application and protected Windows agent share their version through
 `Directory.Build.props`; distribution metadata is in `product.json`.
 

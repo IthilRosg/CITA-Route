@@ -1,4 +1,4 @@
-﻿#ifndef PayloadDir
+#ifndef PayloadDir
   #error PayloadDir is required
 #endif
 #ifndef ProductVersion
@@ -131,11 +131,11 @@ begin
   if Check = 0 then exit;
   if Check <> 10 then begin Result := 'Не удалось проверить .NET Desktop Runtime. Установка клиента не начата.'; exit; end;
   if WizardSilent and (ExpandConstant('{param:INSTALLRUNTIME|0}') <> '1') then begin
-    Result := 'Требуется .NET Desktop Runtime 8 x64. Запусти обычную установку CITA Route: она предложит загрузить компонент Microsoft.';
+    Result := 'Требуется .NET Desktop Runtime 10.0.13 x64. Запусти обычную установку CITA Route: она предложит загрузить компонент Microsoft.';
     exit;
   end;
   if not WizardSilent then begin
-    if MsgBox('Для запуска нужен Microsoft .NET Desktop Runtime 8 (x64). Скачать и установить его сейчас? Компонент устанавливается один раз; Windows запросит права администратора.', mbConfirmation, MB_YESNO) <> IDYES then begin
+    if MsgBox('Для запуска нужен Microsoft .NET Desktop Runtime 10.0.13 (x64). Скачать и установить его сейчас? Компонент устанавливается один раз; Windows запросит права администратора.', mbConfirmation, MB_YESNO) <> IDYES then begin
       Result := 'Подготовка .NET отменена. Файлы CITA Route не изменены.'; exit;
     end;
   end;

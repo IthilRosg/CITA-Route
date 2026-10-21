@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param([string]$InstallerSource='',[switch]$Legacy,[switch]$FrameworkDependent)
 $ErrorActionPreference='Stop'
 $project=$PSScriptRoot
@@ -35,7 +35,7 @@ try{
         Write-JsonFile (Join-Path $fixture 'data\connection.json') @{SourceProfile='Keep my WG'}
         Write-JsonFile (Join-Path $fixture 'runtime\session.json') @{running=($scenario -eq 'active-session')}
         $entries=@($files | ForEach-Object {$source=Join-Path $package $_;@{path=$_;bytes=(Get-Item -LiteralPath $source).Length;sha256=(Get-FileHash -LiteralPath $source).Hash}})
-        Write-JsonFile (Join-Path $package 'manifest.json') @{version=$version;architecture='win-x64';selfContained=(-not $FrameworkDependent);desktopRuntimeMajor=8;files=$entries}
+        Write-JsonFile (Join-Path $package 'manifest.json') @{version=$version;architecture='win-x64';selfContained=(-not $FrameworkDependent);desktopRuntimeMajor=10;desktopRuntimeMinimum='10.0.13';files=$entries}
         $manifestHash=(Get-FileHash -LiteralPath (Join-Path $package 'manifest.json')).Hash
         $operation=[guid]::NewGuid().ToString('N');$started=[DateTime]::UtcNow
         $fakeGui=[pscustomobject]@{Path=(Join-Path $fixture 'RoutePilot.exe');StartTime=$started;Handoff=(Join-Path $fixture ('runtime\update-handoff-'+$operation+'.json'));AckSeen=$false}

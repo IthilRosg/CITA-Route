@@ -93,11 +93,22 @@ public partial class MainWindow : Window
         _timer.Interval=TimeSpan.FromSeconds(_preferences.RefreshSeconds);
         _timer.Tick+=async(_,_)=>{UpdateTelemetryInterval();await RefreshAsync();};
         _timer.Tick+=async(_,_)=>{if((DateTime.UtcNow-_lastUpdateCheck).TotalHours>=6)await CheckUpdatesAsync();};
-        Loaded+=async(_,_)=>{if(render)return;await DiscoverConnectionsAsync();UpdateTelemetryInterval();_timer.Start();await RefreshAsync();await RefreshStartupAfterUpdateAsync();_=CheckUpdatesAsync();};
+        Loaded+=async(_,_)=>await InitializeBackgroundAsync();
         Closing+=OnClosing;
         NavOverview.IsChecked=true;
         LocationChanged+=(_,_)=>CapturePlacement();SizeChanged+=(_,_)=>CapturePlacement();
         IsVisibleChanged+=(_,_)=>{UpdateTelemetryInterval();SyncConnectionButtons();};StateChanged+=(_,_)=>{UpdateTelemetryInterval();SyncConnectionButtons();};
+    }
+    bool _backgroundInitialized;
+    public async Task InitializeBackgroundAsync()
+    {
+        if(_render||_backgroundInitialized||_exiting)return;
+        _backgroundInitialized=true;
+        await DiscoverConnectionsAsync();
+        if(_exiting)return;
+        UpdateTelemetryInterval();_timer.Start();await RefreshAsync();
+        if(_exiting)return;
+        await RefreshStartupAfterUpdateAsync();_=CheckUpdatesAsync();
     }
     private void CreateTray()
     {
