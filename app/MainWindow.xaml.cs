@@ -75,6 +75,8 @@ public partial class MainWindow : Window
         _routingPolicy=AppPaths.Read(Path.Combine(root,"data","routing-policy.json"),()=>new RoutingPolicyPreferences());
         _history=AppPaths.Read(Path.Combine(root,"data","traffic.json"),()=>new TrafficHistory());
         InitializeComponent();
+        BuildVersionLabel.Text="CITA / X64 / "+ReleaseUpdates.Current.ToString(3);
+        AboutVersionLabel.Text="Версия "+ReleaseUpdates.Current.ToString(3)+" · Windows desktop";
         _preferences.RefreshSeconds=Math.Clamp(_preferences.RefreshSeconds,1,3);
         CloseToTrayBox.IsChecked=_preferences.CloseToTray;RefreshIntervalInput.SelectedIndex=_preferences.RefreshSeconds-1;
         InitializeUpdates();
