@@ -1,4 +1,4 @@
-# Windows VM validation, 2026-10-20
+# Windows VM validation, 2026-10-20–21
 
 Stand: Windows 10 Enterprise LTSB 2016, build 14393, VMware, WireSock Secure
 Connect 3.6.1.1. The stand has its own test peer; the host's live VPN and installed
@@ -75,6 +75,17 @@ generation and proof checks. The loopback integration starts the real engine
 after the first canary deadline and requires a later actual acknowledgement;
 30 subsequent route transitions preserve the existing VPN TCP flow.
 
+A later profile-switch run still exhausted acknowledgement of the initial
+direct rule generation. An independent restart and the next complete A/B/A
+cycle passed. Repeated publication formerly rewrote a new marker at each
+deadline even if its rules had not changed, invalidating proof of the pending
+version. Preserve the exact unchanged pending file and marker across bounded
+retries. Different rules, replacement or deletion require a new generation;
+no acknowledgement still means no success. A fixture exercises the actual
+four-second deadline and these boundaries. This removes marker churn as a
+source of delayed confirmation; it does not establish the underlying cause of
+every earlier timeout or replace the live acceptance checks.
+
 Boot commands use primary-process completion without capturing inherited
 background pipes. A Windows PowerShell fixture retains a live owned child while
 requiring primary completion, exact exit status and cancellation. Background
@@ -131,6 +142,43 @@ pausing continues to prevent unconfirmed direct egress. Confirmed managed
 disconnection, router failure and changed networks retain their repair paths.
 The regression matrix covers these combined cases. This avoids invalid retry
 attempts; it does not promise to revive a socket already closed by the stack.
+
+A continuously observed, positively identified managed transition can be reset
+after 45 seconds. A watcher gap over 20 seconds, backwards clock or new session
+restarts that window; stale history, an unidentified profile and an already
+recovered connection cannot authorize a reset. Repair pauses the owned bridge
+and rechecks the state before disconnecting only that pending managed profile.
+Normal disconnected-state recovery then owns reconnect/rebinding. Regression
+fixtures cover those ownership and timing boundaries. In the subsequent live
+pause, fresh HTTPS recovered about 28 seconds after resume without rejected
+full-reconnect attempts. WireSock settled before 45 seconds, so the timeout
+branch itself is covered by fixtures rather than this live pause.
+
+## Operational DNS and automatic fallback
+
+Live ordinary-session testing found that resolving through a race of direct
+and VPN DNS could give the direct probe a VPN-region address. A successful
+IP-pinned probe then did not prove that the actual direct DNS path worked.
+Resolve direct/DPI through the configured direct DNS transport and VPN through
+its own transport; share only the direct/DPI lookup. Require public IPv4
+answers and validate the original TLS hostname on each candidate's own answer.
+Cancel and drain unused DNS work when a route is selected or Stop is requested.
+
+For an actual failed-flow hint, a lower-priority path confirmed by two TLS
+probes can temporarily replace an intermittent preferred path. Background
+refresh remains conservative. Certificate refusal still blocks replacement;
+manual rules and session/network ownership retain priority. Intermittent or
+DNS-unavailable preferred paths shorten confidence to 60 seconds, with an early
+recheck, rather than treating the result as a stable 15-minute choice.
+
+A fresh test application completed ordinary direct HTTPS to example.com after
+the change. A separate VM-only firewall fixture refused outbound TCP/443 for
+the owned router image while preserving the protected VPN bridge. The first
+request failed, a matching automatic VPN rule was applied in 12.150 seconds,
+and the next new request returned HTTP 200 through VPN with 60-second
+confidence. The fixture armed automatic cleanup before the rule and confirmed
+both the rule and cleanup task were removed. It did not replay an application
+request or prove that a pre-existing TCP connection survived a route change.
 
 The VM's own idle sleep interrupted tests. Resetting its sleep idle timer during
 diagnostic invocations avoids changing the permanent power plan. Guest checksum

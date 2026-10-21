@@ -442,23 +442,24 @@ public sealed class PolicyWorker
             _jobMetadata[key]=(queued==default?now:queued,now,background?"refresh":"connection-hint");
             _pendingGeneration[key]=_generation;
             // Keep the active binding while a replacement is being measured.
-            _pending[key]=_calibration?.Invoke(key,linked.Token)??Calibrate(key,linked.Token);
+            _pending[key]=_calibration?.Invoke(key,linked.Token)??Calibrate(key,linked.Token,!background);
         }
         foreach(var key in _failures.Where(p=>now-p.Value.At>=TimeSpan.FromMinutes(2)).Select(p=>p.Key).ToArray()){_failures.Remove(key);_queuedAt.Remove(key);}
     }
-    async Task<CalibrationResult> Calibrate(PolicyKey key,CancellationToken stop)
+    async Task<CalibrationResult> Calibrate(PolicyKey key,CancellationToken stop,bool failureTriggered=false)
     {
         var timer=System.Diagnostics.Stopwatch.StartNew();
         using var budget=CancellationTokenSource.CreateLinkedTokenSource(stop);budget.CancelAfter(TimeSpan.FromSeconds(11));
         long dnsMs=0;
         try
         {
-            var addresses=await PolicyTransport.Resolve(key.Domain,_ports,budget.Token);dnsMs=timer.ElapsedMilliseconds;
-            if(addresses==null)return new(ProbeOutcome.DnsUnavailable,null,dnsMs,timer.ElapsedMilliseconds,Array.Empty<CandidateTiming>());
-            var chosen=await PolicyTransport.Select((port,token)=>PolicyTransport.Probe(key.Domain,addresses[0],port,token),_ports,budget.Token);
+            var resolved=await PolicyTransport.SelectResolved(key.Domain,_ports,budget.Token,failureTriggered);dnsMs=resolved.DnsMilliseconds;
+            var chosen=resolved.Selection;
             if(chosen.Route==null)return new(chosen.Outcome,null,dnsMs,timer.ElapsedMilliseconds,chosen.Candidates);
             var now=DateTime.UtcNow;
-            var decision=new PolicyDecision(key,chosen.Route,chosen.Route=="direct"?"Две прямые TLS-пробы успешны.":"Две TLS-пробы выбранного пути успешны; более приоритетные пути проверены.",now,now.AddMinutes(15),chosen.Milliseconds);
+            bool temporary=PolicyTransport.UnstablePreferred(chosen)||chosen.Candidates.TakeWhile(c=>c.Route!=chosen.Route).Any(c=>c.Outcome==ProbeOutcome.DnsUnavailable);
+            var reason=chosen.Route=="direct"?"Две прямые TLS-пробы успешны.":temporary?"Подтверждён временный путь; прямой доступ или его DNS требуют перепроверки.":"Две TLS-пробы выбранного пути успешны; более приоритетные пути проверены.";
+            var decision=new PolicyDecision(key,chosen.Route,reason,now,now.AddSeconds(temporary?60:900),chosen.Milliseconds);
             return new(ProbeOutcome.Reachable,decision,dnsMs,timer.ElapsedMilliseconds,chosen.Candidates);
         }
         catch(OperationCanceledException){return new(ProbeOutcome.Cancelled,null,dnsMs,timer.ElapsedMilliseconds,Array.Empty<CandidateTiming>());}

@@ -118,7 +118,16 @@ try {
     Write-JsonFile (Join-Path $runtime 'session.json') @{id='similar-profile-session';running=$true;routerPid=10;bridgeReady=$false}
     [void](Stop-LostRouterSession 'similar-profile-session')
     Assert-Recovery ($script:disconnectCalls -eq $beforeCrashDisconnect + 1) 'Crash cleanup disconnected a similarly named foreign profile.'
-    Write-Output 'PASS: disconnect postcondition, genuine failure detection, localized status, bridge pause/resume, failed restart retry, accurate readiness, no duplicate restart, session counters preserved, crash cleanup, old-watcher isolation.'
+    $beforeTransitionReset=$script:disconnectCalls
+    foreach($status in @('Connected to server from profile SmartRouting-AWG2','Establishing connection using profile MAIN','Connecting','Not connected')){
+        $script:mockStatus=$status
+        Disconnect-ManagedWireSock -OnlyTransitioning
+        Assert-Recovery ($script:disconnectCalls -eq $beforeTransitionReset) 'Transitional cleanup disconnected a recovered, foreign or unconfirmed profile.'
+    }
+    $script:mockStatus='Establishing connection using profile SmartRouting-AWG2'
+    Disconnect-ManagedWireSock -OnlyTransitioning
+    Assert-Recovery ($script:disconnectCalls -eq $beforeTransitionReset+1) 'Owned stalled transition was not reset exactly once.'
+    Write-Output 'PASS: disconnect postcondition, genuine failure detection, localized status, bridge pause/resume, failed restart retry, accurate readiness, no duplicate restart, session counters preserved, crash cleanup, old-watcher isolation and owned-transition-only reset.'
 } finally {
     $resolvedTestFolder = [IO.Path]::GetFullPath($root)
     $allowedPrefix = [IO.Path]::GetFullPath($testRuntimeBase).TrimEnd('\') + '\recovery-tests-'
