@@ -76,6 +76,11 @@ try {
     function Get-WireSockObservation {[pscustomobject]@{state=$script:state}}
     function Get-BridgeListenerObservation($Session){return $(if($script:bridgeRunning){'Ready'}else{'Missing'})}
     function Get-SessionNetworkSignature {'network'}
+    function Get-NetIPConfiguration {
+        param($ErrorAction)
+        if($script:fixtureNetworkReady){[pscustomobject]@{NetAdapter=@{HardwareInterface=$true;Status='Up'};IPv4DefaultGateway=@{NextHop='192.0.2.1'}}}
+    }
+    $script:fixtureNetworkReady=$true
     function Connect-WireSock {$script:connects++;$script:state='Connected'}
     function Stop-Process {param([Parameter(ValueFromPipeline=$true)]$InputObject,[switch]$Force) process {Assert ($InputObject.Id -eq 20) 'Main router was stopped.';$script:bridgeRunning=$false;$script:stops++}}
     function Start-Helper($Exe,$Config){Assert ($Exe -eq $bridgeExe) 'Main router was restarted.';$script:bridgeRunning=$true;$script:starts++;[pscustomobject]@{Id=20}}
@@ -151,8 +156,9 @@ try {
         $code=0;if($script:scenario -eq 'Busy'){$code=75}else{Repair-SessionVpn 'session'}
         $process=[pscustomobject]@{HasExited=$true;ExitCode=$code};$process|Add-Member ScriptMethod Dispose {};return $process
     }
-    foreach($scenario in @('Unknown','Disconnected','Foreign','Limit','Stop','Busy','BridgeBusy','HungPolicy','UnknownPolicy','RepairBusy')){
+    foreach($scenario in @('Unknown','Disconnected','Foreign','Limit','Stop','Busy','BridgeBusy','HungPolicy','UnknownPolicy','RepairBusy','NoNetwork')){
         $script:scenario=$scenario;$script:tick=0;$script:bridgeRunning=$true
+        $script:fixtureNetworkReady=$scenario -ne 'NoNetwork'
         $script:policyRecovered=$false;$script:policyRepairs=0;$script:busyPauses=0
         $script:coordinatorBusy=$scenario -eq 'BridgeBusy'
         if($script:coordinatorBusy){$script:bridgeRunning=$false}
@@ -166,6 +172,10 @@ try {
         $expectedConnects=if($scenario -eq 'Disconnected'){1}else{0}
         Assert ($script:launches-$beforeLaunches -eq $expectedLaunches -and $script:connects-$beforeConnects -eq $expectedConnects) ('Watch recovery scope/budget failed: '+$scenario)
         Assert ((Read-JsonFile $path).routerPid -eq 10 -and $script:leases -eq 0) 'Watch replaced the router or leaked coordinator ownership.'
+        if($scenario -eq 'NoNetwork'){
+            Assert ((Read-JsonFile (Join-Path $runtime 'watch-state.json')).phase -eq 'WaitingForNetwork') 'Missing network must remain an explicit waiting state.'
+            Assert (-not(Test-Path -LiteralPath (Join-Path $runtime 'component-recovery.json'))) 'Waiting for a network consumed a component repair attempt.'
+        }
         if($scenario -eq 'Limit'){Assert ((Read-JsonFile (Join-Path $runtime 'watch-state.json')).phase -eq 'NeedsAttention') 'Persisted retry limit was ignored.'}
         if($scenario -eq 'Busy'){Assert ((Read-JsonFile (Join-Path $runtime 'component-recovery.json')).RepairVpn -eq 0) 'Coordinator rejection consumed a real VPN attempt.'}
         if($scenario -eq 'BridgeBusy'){Assert (-not(Test-Path -LiteralPath (Join-Path $runtime 'component-recovery.json'))) 'Coordinator rejection consumed a bridge attempt.'}
