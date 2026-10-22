@@ -8,10 +8,12 @@
   #define ProductName "CITA Route Installer Test"
   #define ProductId "CITA.Route.InstallerFixture"
   #define OutputName "CITA-Route-" + ProductVersion + "-win-x64-test-setup"
+  #define CopyHook "; AfterInstall: FixtureCopyFault"
 #else
   #define ProductName "CITA Route"
   #define ProductId "CITA.Route.Client"
   #define OutputName "CITA-Route-" + ProductVersion + "-win-x64-setup"
+  #define CopyHook ""
 #endif
 
 [Setup]
@@ -68,11 +70,13 @@ russian.SelectDirLabel3=Выбери папку для CITA Route. Профил�
 
 [Files]
 ; Public payload only: generated from the verified portable manifest.
-Source: "{#PayloadDir}\*"; DestDir: "{app}\client"; Excludes: "force-direct.txt,force-vpn.txt"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PayloadDir}\*"; DestDir: "{app}\client"; Excludes: "force-direct.txt,force-vpn.txt"; Flags: ignoreversion recursesubdirs createallsubdirs{#CopyHook}
 ; User rules survive reinstallation; the updater preserves the same files.
 Source: "{#PayloadDir}\force-direct.txt"; DestDir: "{app}\client"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "{#PayloadDir}\force-vpn.txt"; DestDir: "{app}\client"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "InstallationGuard.ps1"; DestDir: "{app}\maintenance"; Flags: ignoreversion
+Source: "InstallationTransaction.ps1"; DestDir: "{app}\maintenance"; Flags: ignoreversion
+Source: "{#PayloadDir}\manifest.json"; DestName: "cita-install-manifest.json"; Flags: dontcopy
 #ifdef NeedsDesktopRuntime
 Source: "..\DesktopRuntime.ps1"; Flags: dontcopy
 #endif
@@ -82,17 +86,46 @@ Name: "{userdesktop}\{#ProductName}"; Filename: "{app}\client\RoutePilot.exe"; W
 Name: "{userprograms}\{#ProductName}"; Filename: "{app}\client\RoutePilot.exe"; WorkingDir: "{app}\client"; AppUserModelID: "CITA.Route.Client"
 
 [Run]
-Filename: "{app}\client\RoutePilot.exe"; WorkingDir: "{app}\client"; Description: "Запустить CITA Route"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{app}\client\RoutePilot.exe"; WorkingDir: "{app}\client"; Description: "Запустить CITA Route"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: InstallationCommitted
 
 [Code]
 var
   GuardReady, GuardRelease: String;
   GuardActive: Boolean;
+  GuardFailure: Boolean;
   GuardAttempt: Integer;
   PreviousDirectory: String;
 #ifdef NeedsDesktopRuntime
   RuntimeDownload: TDownloadWizardPage;
 #endif
+
+function GetCurrentProcessId(): LongWord;
+  external 'GetCurrentProcessId@kernel32.dll stdcall';
+
+#ifdef TestBuild
+procedure FixtureCopyFault();
+var
+  Name: String;
+begin
+  Name := ExpandConstant('{param:FAILAFTERCOPY|}');
+  if (Name <> '') and (CompareText(ExtractFileName(CurrentFileName), Name) = 0) then begin
+    { The guest harness terminates this exact test Setup process after observing
+      this marker. Ordinary exceptions in file callbacks can be ignored by Setup. }
+    SaveStringToFile(ExpandConstant('{app}\client\runtime\fixture-copy-paused.pid'), IntToStr(GetCurrentProcessId()), False);
+    Sleep(60000);
+  end;
+end;
+#endif
+
+function InstallationCommitted(): Boolean;
+begin
+  Result := not GuardFailure;
+end;
+
+function GetCustomSetupExitCode(): Integer;
+begin
+  if GuardFailure then Result := 7 else Result := 0;
+end;
 
 procedure InitializeWizard();
 begin
@@ -176,9 +209,6 @@ begin
   end;
 end;
 
-function GetCurrentProcessId(): LongWord;
-  external 'GetCurrentProcessId@kernel32.dll stdcall';
-
 function AcquireGuard(ScriptPath: String; Removing: Boolean): String;
 var
   Args: String;
@@ -195,11 +225,12 @@ begin
     '" -Root "' + ExpandConstant('{app}\client') + '" -OwnerPid ' + IntToStr(GetCurrentProcessId()) +
     ' -Version "{#ProductVersion}" -ReadyFile "' + GuardReady + '" -ReleaseFile "' + GuardRelease + '"';
   if Removing then Args := Args + ' -Mode Uninstall';
+  if not Removing then Args := Args + ' -IncomingManifest "' + ExpandConstant('{tmp}\cita-install-manifest.json') + '"';
   if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Args, '', SW_HIDE, ewNoWait, Code) then begin
     Result := 'Не удалось проверить установку. ' + SysErrorMessage(Code);
     exit;
   end;
-  for I := 1 to 200 do begin
+  for I := 1 to 600 do begin
     if LoadStringsFromFile(GuardReady, State) and (GetArrayLength(State) > 0) then begin
       if State[0] = 'READY' then GuardActive := True
       else Result := State[0];
@@ -207,21 +238,28 @@ begin
     end;
     Sleep(100);
   end;
-  SaveStringToFile(GuardRelease, 'STOP', False);
+  SaveStringToFile(GuardRelease, 'ROLLBACK', False);
   Result := 'Проверка установки не завершилась. Изменения отменены. Повтори попытку.';
 end;
 
-procedure ReleaseGuard();
+function ReleaseGuard(Commit: Boolean): String;
 var
   I: Integer;
   State: TArrayOfString;
 begin
+  Result := '';
   if not GuardActive then exit;
-  SaveStringToFile(GuardRelease, 'STOP', False);
-  for I := 1 to 100 do begin
-    if LoadStringsFromFile(GuardReady, State) and (GetArrayLength(State) > 0) and (State[0] = 'DONE') then break;
-    Sleep(50);
+  if Commit then SaveStringToFile(GuardRelease, 'COMMIT', False)
+  else SaveStringToFile(GuardRelease, 'ROLLBACK', False);
+  for I := 1 to 600 do begin
+    if LoadStringsFromFile(GuardReady, State) and (GetArrayLength(State) > 0) then begin
+      if State[0] = 'DONE' then begin GuardActive := False; exit; end;
+      if State[0] <> 'READY' then begin Result := State[0]; GuardActive := False; exit; end;
+    end;
+    Sleep(100);
   end;
+  SaveStringToFile(GuardRelease, 'ROLLBACK', False);
+  Result := 'Восстановление установки ещё не подтверждено. Дождись его завершения и повтори установщик.';
   GuardActive := False;
 end;
 
@@ -237,18 +275,30 @@ begin
 #endif
   if GuardActive then begin Result := ''; exit; end;
   ExtractTemporaryFile('InstallationGuard.ps1');
+  ExtractTemporaryFile('InstallationTransaction.ps1');
+  ExtractTemporaryFile('cita-install-manifest.json');
   Result := AcquireGuard(ExpandConstant('{tmp}\InstallationGuard.ps1'), False);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Problem: String;
 begin
   { The installed application can open only after file replacement is complete. }
-  if CurStep = ssPostInstall then ReleaseGuard();
+  if CurStep = ssPostInstall then begin
+    Problem := ReleaseGuard(True);
+    if Problem <> '' then begin
+      GuardFailure := True;
+      WizardForm.FinishedHeadingLabel.Caption := 'Установка не подтверждена';
+      WizardForm.FinishedLabel.Caption := Problem;
+      RaiseException(Problem);
+    end;
+  end;
 end;
 
 procedure DeinitializeSetup();
 begin
-  ReleaseGuard();
+  ReleaseGuard(False);
 end;
 
 function InitializeUninstall(): Boolean;
@@ -268,7 +318,7 @@ end;
 
 procedure DeinitializeUninstall();
 begin
-  ReleaseGuard();
+  ReleaseGuard(False);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

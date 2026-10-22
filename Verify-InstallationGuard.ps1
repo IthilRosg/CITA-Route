@@ -7,10 +7,13 @@ New-Item -ItemType Directory -Path $base -Force | Out-Null
 $guards=New-Object 'System.Collections.Generic.List[object]'
 $testFailure=$null
 $bodyFailed=$false
+$incoming=Join-Path $base 'incoming.json'
+$entries=@(1..22|ForEach-Object {@{path=('public-'+$_+'.txt');bytes=0;sha256=('0'*64)}})
+@{version='0.5.3';architecture='win-x64';files=$entries}|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $incoming -Encoding UTF8
 function Assert($Value,[string]$Message){if(-not $Value){throw $Message}}
 function Begin-Guard([string]$Folder,[int]$Owner=$PID,[string]$Mode='Install'){
     $id=[guid]::NewGuid().ToString('N');$ready=Join-Path $base ($id+'.ready');$release=$ready+'.release'
-    $arguments=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"'+(Join-Path $root 'installer\InstallationGuard.ps1')+'"'),'-Root',('"'+$Folder+'"'),'-OwnerPid',$Owner,'-Version','0.5.3','-Mode',$Mode,'-ReadyFile',('"'+$ready+'"'),'-ReleaseFile',('"'+$release+'"'))
+    $arguments=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"'+(Join-Path $root 'installer\InstallationGuard.ps1')+'"'),'-Root',('"'+$Folder+'"'),'-OwnerPid',$Owner,'-Version','0.5.3','-Mode',$Mode,'-ReadyFile',('"'+$ready+'"'),'-ReleaseFile',('"'+$release+'"'),'-IncomingManifest',('"'+$incoming+'"'))
     $process=Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $arguments -PassThru
     $null=$process.Handle
     $guard=[pscustomobject]@{Process=$process;Ready=$ready;Release=$release;State='';Finished=$false}

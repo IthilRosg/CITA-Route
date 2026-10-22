@@ -19,9 +19,9 @@ public partial class App : Application
         string root;
         try{root=AppPaths.FindRoot();}
         catch(Exception ex){MessageBox.Show(ex.Message,"RoutePilot",MessageBoxButton.OK,MessageBoxImage.Error);Shutdown(1);return;}
-        if(InstallationMaintenance.Active(root))
+        if(InstallationMaintenance.Problem(root) is string maintenanceProblem)
         {
-            MessageBox.Show("Идёт установка или удаление CITA Route. Дождись завершения и открой приложение снова.","CITA Route",MessageBoxButton.OK,MessageBoxImage.Information);Shutdown(1);return;
+            MessageBox.Show(maintenanceProblem,"CITA Route",MessageBoxButton.OK,MessageBoxImage.Information);Shutdown(1);return;
         }
         if (e.Args.Contains("--self-test"))
         {

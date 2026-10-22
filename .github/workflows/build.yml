@@ -39,6 +39,15 @@ jobs:
           $env:CITA_WFP_LAB='1'
           & ./runtime/cita-wfp-tests.exe '-test.run=^TestCitaWfpLifecycle$' '-test.timeout=20s'
           if($LASTEXITCODE -ne 0){throw 'Native DNS filter lifecycle failed'}
+      - name: Verify route-specific DNS fallback and experimental TCP configuration
+        shell: powershell
+        run: |
+          & ./runtime/cita-dns-tests.exe '-test.run=^TestCitaFallback$' '-test.timeout=15s'
+          if($LASTEXITCODE -ne 0){throw 'Native DNS fallback failed'}
+          & ./runtime/agent-build/RoutePilot.Agent.exe --dns-integration $PWD.Path
+          if($LASTEXITCODE -ne 0){throw 'DNS engine integration failed'}
+          & ./runtime/agent-build/RoutePilot.Agent.exe --optimization-integration $PWD.Path fast-tcp
+          if($LASTEXITCODE -ne 0){throw 'Opt-in TCP integration failed'}
       - name: Offline and loopback checks
         shell: powershell
         run: |
@@ -50,6 +59,7 @@ jobs:
           ./Verify-Prepare.ps1
           ./Verify-ConnectionHandoff.ps1
           ./Verify-InstallationGuard.ps1
+          ./Verify-InstallationTransaction.ps1
           ./Verify-Lifecycle.ps1
           ./Verify-Storage.ps1
           ./Verify-ProfileSync.ps1
@@ -81,9 +91,13 @@ jobs:
           if(-not [int]::TryParse($env:SOAK_MINUTES,[ref]$minutes) -or $minutes -lt 1 -or $minutes -gt 15){throw 'Soak duration must be 1-15 minutes.'}
           & ./runtime/agent-build/RoutePilot.Agent.exe --mixed-soak $PWD.Path ($minutes*60)
           if($LASTEXITCODE -ne 0){throw 'Extended mixed recovery soak failed.'}
-      - name: Build optional UDP reflector
+      - name: Build acceptance tools
         shell: powershell
-        run: dotnet build tools/udp-reflector/Cita.UdpReflector.csproj -c Release
+        run: |
+          dotnet build tools/udp-reflector/Cita.UdpReflector.csproj -c Release
+          if($LASTEXITCODE -ne 0){throw 'UDP reflector build failed.'}
+          dotnet build tools/tun-probe/Cita.TunProbe.csproj -c Release
+          if($LASTEXITCODE -ne 0){throw 'Native TUN acceptance client build failed.'}
       - name: Verify real SOCKS UDP and authenticated reflector
         shell: powershell
         run: |

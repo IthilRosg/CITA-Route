@@ -62,6 +62,42 @@ function Uninstall([string]$Log){
     $process=Start-Process -FilePath $uninstaller -WindowStyle Hidden -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/LOG="'+(Join-Path $base $Log)+'"')) -PassThru -Wait
     return $process.ExitCode
 }
+function Test-InterruptedCopy {
+    $marker=Join-Path $client 'runtime\fixture-copy-paused.pid'
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    $smart=Join-Path $client 'SmartRouting.ps1'
+    [IO.File]::AppendAllText($smart,"`r`n# Original public-file sentinel for rollback acceptance.`r`n")
+    $saved=@{}
+    foreach($file in ([IO.File]::ReadAllText((Join-Path $client 'manifest.json'))|ConvertFrom-Json).files){
+        if($file.path -in @('force-direct.txt','force-vpn.txt')){continue}
+        $saved[$file.path]=(Get-FileHash -LiteralPath (Join-Path $client $file.path)).Hash
+    }
+    $process=Start-Process -FilePath $setupPath -WindowStyle Hidden -PassThru -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/FAILAFTERCOPY=SmartRouting.ps1',('/DIR="'+$target+'"'),('/LOG="'+(Join-Path $base 'interrupted-copy.log')+'"'))
+    $null=$process.Handle;$actual=$null
+    try{
+        $watch=[Diagnostics.Stopwatch]::StartNew()
+        while(-not(Test-Path -LiteralPath $marker)){
+            $process.Refresh();if($process.HasExited -or $watch.Elapsed.TotalSeconds -ge 60){throw 'Test installer did not reach its partial-copy barrier.'}
+            Start-Sleep -Milliseconds 100
+        }
+        $actual=Get-Process -Id ([int][IO.File]::ReadAllText($marker)) -ErrorAction Stop
+        Assert ($actual.ProcessName -eq ([IO.Path]::GetFileNameWithoutExtension($setupPath)+'.tmp') -and $actual.StartTime.ToUniversalTime() -ge $process.StartTime.ToUniversalTime().AddSeconds(-2)) 'Interrupted-copy marker must identify the owned test Setup process.'
+        $actual.Kill();Assert ($actual.WaitForExit(5000)) 'Test Setup did not terminate.'
+        $watch.Restart();$journal=Join-Path $client 'runtime\installation-transaction.json'
+        do{
+            $state=[IO.File]::ReadAllText($journal)|ConvertFrom-Json
+            if($state.phase -in @('RolledBack','RecoveryFailed')){break}
+            Start-Sleep -Milliseconds 100
+        }while($watch.Elapsed.TotalSeconds -lt 30)
+        Assert ($state.phase -eq 'RolledBack') 'The independent guard must finish rollback after its installer exits unexpectedly.'
+        Assert ($process.WaitForExit(10000)) 'Test bootstrap process did not exit.'
+        foreach($name in $saved.Keys){Assert ((Get-FileHash -LiteralPath (Join-Path $client $name)).Hash -eq $saved[$name]) ('Interrupted copy changed original public file: '+$name)}
+        Assert ([IO.File]::ReadAllText((Join-Path $client 'force-vpn.txt')) -eq 'keep-user-rule.example') 'Interrupted setup changed user rules.'
+    }finally{
+        if($actual){if(-not $actual.HasExited){$actual.Kill();[void]$actual.WaitForExit(5000)};$actual.Dispose()}
+        if(-not $process.HasExited){$process.Kill();[void]$process.WaitForExit(5000)};$process.Dispose()
+    }
+}
 try{
     Assert ((Install 'install.log') -eq 0) 'Clean installer failed.'
     $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
@@ -92,6 +128,8 @@ try{
     Assert (-not(Get-ItemProperty -LiteralPath $runKey -Name $label -ErrorAction SilentlyContinue)) 'Unchecking startup during reinstall did not remove it.'
     Assert ([IO.File]::ReadAllText((Join-Path $client 'force-vpn.txt')) -eq 'keep-user-rule.example') 'Repeat installation changed user rules.'
     Assert ([IO.File]::ReadAllText((Join-Path $client 'data\preferences.json')) -eq '{"fixture":true}') 'Repeat installation changed preferences.'
+    Test-InterruptedCopy
+    Assert ((Install 'after-rollback.log') -eq 0) 'Installation could not continue after a completed rollback.'
     # Match enabling tray startup in the application after Setup's task was unchecked.
     Set-ItemProperty -LiteralPath $runKey -Name $label -Value ('"'+(Join-Path $client 'RoutePilot.exe')+'" --startup')
     # Simulate an internal update: the old uninstaller must accept a newer product.json.

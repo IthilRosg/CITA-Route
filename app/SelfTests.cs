@@ -31,6 +31,14 @@ public static class SelfTests
             using(var held=new FileStream(Path.Combine(maintenance,"runtime","installation-maintenance.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None))
                 Assert(InstallationMaintenance.Active(maintenance),"Startup must refuse to open files during installation/uninstallation.");
             Assert(!InstallationMaintenance.Active(maintenance),"An old unlocked lock file cannot block startup.");
+            string installJournal=Path.Combine(maintenance,"runtime","installation-transaction.json");
+            foreach(string phase in new[]{"Armed","Restoring","RecoveryFailed","Committed","RolledBack"})
+            {
+                AppPaths.Write(installJournal,new{schema=1,root=maintenance,phase});
+                Assert(InstallationMaintenance.Active(maintenance)==(phase is not ("Committed" or "RolledBack")),"Only completed installation transactions may open the client after its guard exits.");
+            }
+            File.WriteAllText(installJournal,"{");Assert(InstallationMaintenance.Active(maintenance),"An unreadable recovery journal cannot certify a complete installation.");
+            File.WriteAllText(installJournal,"{\"schema\":9223372036854775807}");Assert(InstallationMaintenance.Active(maintenance),"An overflowing journal version must show recovery instead of crashing startup.");
             var session=new EngineSession{Id="held",Running=true,BridgeReady=true,BridgeGeneration=2};
             string safety=Path.Combine(maintenance,"runtime","bridge-safety.json");
             AppPaths.Write(safety,new{schema=1,sessionId="old",hold=true,code="EgressMismatch"});

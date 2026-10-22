@@ -21,6 +21,11 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)
 $setupProbe=$null
 try {
 . (Join-Path $root 'FileStorage.ps1')
+$installationJournal=Join-Path $runtime 'installation-transaction.json'
+if($Action -notin @('Stop','Status','Watch') -and (Test-Path -LiteralPath $installationJournal)){
+    $installationState=Read-JsonFile $installationJournal
+    if($installationState.schema -ne 1 -or $installationState.root -ine $root -or $installationState.phase -notin @('Committed','RolledBack')){throw 'The previous installation is incomplete. Run Setup again to restore it before connecting.'}
+}
 if($Action -in @('Start','ProxyOnly')){
     $updateGate=$null
     try{$updateGate=[IO.File]::Open((Join-Path $runtime 'update-preparation.lock'),'OpenOrCreate','ReadWrite','None')}

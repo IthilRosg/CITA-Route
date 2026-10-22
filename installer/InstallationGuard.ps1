@@ -4,15 +4,22 @@ param([Parameter(Mandatory=$true)][string]$Root,
       [Parameter(Mandatory=$true)][string]$ReadyFile,
       [Parameter(Mandatory=$true)][string]$ReleaseFile,
       [Parameter(Mandatory=$true)][version]$Version,
-      [ValidateSet('Install','Uninstall')][string]$Mode='Install')
+      [ValidateSet('Install','Uninstall')][string]$Mode='Install',[string]$IncomingManifest='')
 $ErrorActionPreference='Stop'
 $held=New-Object 'System.Collections.Generic.List[System.IDisposable]'
 $owner=$null
+$transactionStarted=$false
 try{
     $owner=Get-Process -Id $OwnerPid -ErrorAction Stop
     $rootPath=[IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $productPath=Join-Path $rootPath 'product.json'
+    $pendingJournal=Join-Path $rootPath 'runtime\installation-transaction.json'
     $userSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $dataOwnerFile=Join-Path $rootPath 'data\installation-owner.json'
+    $pendingRecovery=$false
+    if($Mode -eq 'Install' -and (Test-Path -LiteralPath $pendingJournal)){
+        try{$pending=[IO.File]::ReadAllText($pendingJournal)|ConvertFrom-Json;$pendingRecovery=$pending.schema -eq 1 -and $pending.root -ieq $rootPath -and $pending.userSid -eq $userSid -and $pending.phase -in @('Armed','Restoring','RecoveryFailed')}catch{}
+    }
     function Test-RetainedDataOwner {
         if(Test-Path -LiteralPath $dataOwnerFile){
             try{
@@ -39,12 +46,9 @@ try{
         if((Test-Path -LiteralPath $part) -and ((Get-Item -LiteralPath $part -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Сохранённые данные установки содержат перенаправление.'}
     }
     if(Test-Path -LiteralPath $rootPath){
-        $productPath=Join-Path $rootPath 'product.json'
         if(Test-Path -LiteralPath $productPath){
-            $product=[IO.File]::ReadAllText($productPath) | ConvertFrom-Json
-            if($product.name -ne 'CITA Route'){throw 'В этой папке находится другое приложение.'}
-            if($Mode -eq 'Install' -and [version]$product.version -gt $Version){throw 'Уже установлена более новая версия. Понижение версии отменено.'}
-        }elseif(@(Get-ChildItem -LiteralPath $rootPath -Force | Where-Object Name -ne 'runtime').Count -and -not(Test-RetainedDataOwner)){throw 'Папка не является установкой CITA Route.'}
+            if(-not $pendingRecovery){$product=[IO.File]::ReadAllText($productPath) | ConvertFrom-Json;if($product.name -ne 'CITA Route'){throw 'В этой папке находится другое приложение.'}}
+        }elseif(@(Get-ChildItem -LiteralPath $rootPath -Force | Where-Object Name -ne 'runtime').Count -and -not(Test-RetainedDataOwner) -and -not $pendingRecovery){throw 'Папка не является установкой CITA Route.'}
     }
     $runtime=Join-Path $rootPath 'runtime'
     $startupFile=Join-Path $env:ProgramData 'RoutePilot\startup-state.json'
@@ -60,6 +64,7 @@ try{
         }
     }
     New-Item -ItemType Directory -Path $runtime -Force | Out-Null
+    if((Get-Item -LiteralPath $runtime -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Служебная папка установки содержит перенаправление.'}
     # Match the updater's lock order. Keep the locks until Setup/Uninstall exits,
     # including a crash; a new connection cannot start during file replacement.
     foreach($name in @('connection-operation.lock','setup.lock','upgrade.lock','network-control.lock','installation-maintenance.lock')){
@@ -79,7 +84,20 @@ try{
         finally{$process.Dispose()}
     }
     if($owner.HasExited){throw 'Установщик уже завершён.'}
+    if($Mode -eq 'Install'){
+        . (Join-Path $PSScriptRoot 'InstallationTransaction.ps1')
+        Restore-InstallTransaction $rootPath $userSid
+        if((Test-Path -LiteralPath $productPath) -and ([IO.File]::ReadAllText($productPath)|ConvertFrom-Json).name -ne 'CITA Route'){throw 'В этой папке находится другое приложение.'}
+        if((Test-Path -LiteralPath $productPath) -and [version]([IO.File]::ReadAllText($productPath)|ConvertFrom-Json).version -gt $Version){throw 'Уже установлена более новая версия. Понижение версии отменено.'}
+        if(-not(Test-Path -LiteralPath $productPath)){
+            New-Item -ItemType Directory -Path (Split-Path $dataOwnerFile) -Force|Out-Null
+            [IO.File]::WriteAllText($dataOwnerFile,(@{schema=1;name='CITA Route';root=$rootPath;userSid=$userSid}|ConvertTo-Json),(New-Object Text.UTF8Encoding($false)))
+        }
+        Start-InstallTransaction $rootPath $userSid $IncomingManifest $Version
+        $transactionStarted=$true
+    }
     if($Mode -eq 'Uninstall'){
+        if(Test-Path -LiteralPath $pendingJournal){$pending=[IO.File]::ReadAllText($pendingJournal)|ConvertFrom-Json;if($pending.phase -notin @('Committed','RolledBack')){throw 'Сначала повтори установщик для восстановления прерванной установки.'}}
         # Generated personal metadata is outside Setup's public-file deletion
         # list, so a later installer can recognize this retained data directory.
         New-Item -ItemType Directory -Path (Split-Path $dataOwnerFile) -Force|Out-Null
@@ -87,8 +105,16 @@ try{
     }
     [IO.File]::WriteAllText($ReadyFile,'READY')
     while(-not $owner.HasExited -and -not (Test-Path -LiteralPath $ReleaseFile)){Start-Sleep -Milliseconds 100}
+    if($transactionStarted){
+        if((Test-Path -LiteralPath $ReleaseFile) -and [IO.File]::ReadAllText($ReleaseFile).Trim() -eq 'COMMIT'){
+            Complete-InstallTransaction $rootPath $userSid $IncomingManifest $ReleaseFile
+        }else{Restore-InstallTransaction $rootPath $userSid}
+        $transactionStarted=$false
+    }
 }catch{
-    [IO.File]::WriteAllText($ReadyFile,$_.Exception.Message,(New-Object Text.UTF8Encoding($true)))
+    $problem=$_.Exception.Message
+    if($transactionStarted){try{Restore-InstallTransaction $rootPath $userSid}catch{$problem=$_.Exception.Message}}
+    [IO.File]::WriteAllText($ReadyFile,$problem,(New-Object Text.UTF8Encoding($true)))
     exit 1
 }finally{
     for($index=$held.Count-1;$index -ge 0;$index--){$held[$index].Dispose()}

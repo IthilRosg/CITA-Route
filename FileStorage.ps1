@@ -5,7 +5,8 @@ function Read-JsonFile([string]$Path) {
 }
 
 function Write-JsonFile($Path, $Value) {
-    $temporaryPath = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    # Same directory/volume, without repeating a long operation filename.
+    $temporaryPath = [IO.Path]::Combine([IO.Path]::GetDirectoryName($Path),('.'+[guid]::NewGuid().ToString('N')+'.tmp'))
     try {
         [IO.File]::WriteAllText($temporaryPath, ($Value | ConvertTo-Json -Depth 30), (New-Object Text.UTF8Encoding($false)))
         # Windows PowerShell 5.1 converts $null to an empty path for this overload.

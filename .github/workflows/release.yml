@@ -43,6 +43,12 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Native DNS filter lifecycle failed'}
           Remove-Item Env:CITA_WFP_LAB
           ./Build-All.ps1
+          & ./runtime/cita-dns-tests.exe '-test.run=^TestCitaFallback$' '-test.timeout=15s'
+          if($LASTEXITCODE -ne 0){throw 'Native DNS fallback failed'}
+          & ./runtime/agent-build/RoutePilot.Agent.exe --dns-integration $PWD.Path
+          if($LASTEXITCODE -ne 0){throw 'DNS engine integration failed'}
+          & ./runtime/agent-build/RoutePilot.Agent.exe --optimization-integration $PWD.Path fast-tcp
+          if($LASTEXITCODE -ne 0){throw 'Opt-in TCP integration failed'}
           ./Verify-Portable.ps1
           ./Verify-DesktopRuntime.ps1
           ./Verify-ReleaseUpdate.ps1
@@ -53,6 +59,8 @@ jobs:
           ./Verify-OptimizationGate.ps1
           ./Verify-ConnectionHandoff.ps1
           ./Verify-InstallationGuard.ps1
+          ./Verify-InstallationTransaction.ps1
+          ./Verify-Storage.ps1
           ./Verify-Lifecycle.ps1
           ./Verify-WireSockRecovery.ps1
           ./Verify-ProfileSync.ps1
@@ -67,6 +75,8 @@ jobs:
           ./Verify-Startup.ps1
           dotnet build tools/udp-reflector/Cita.UdpReflector.csproj -c Release
           if($LASTEXITCODE -ne 0){throw 'UDP reflector build failed.'}
+          dotnet build tools/tun-probe/Cita.TunProbe.csproj -c Release
+          if($LASTEXITCODE -ne 0){throw 'Native TUN acceptance client build failed.'}
           & ./runtime/agent-build/RoutePilot.Agent.exe --udp-integration $PWD.Path
           if($LASTEXITCODE -ne 0){throw 'UDP engine integration failed.'}
           ./Build-Portable.ps1
