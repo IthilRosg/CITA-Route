@@ -8,7 +8,7 @@ namespace RoutePilot.Agent;
 // Real engine + nested SOCKS UDP chain; no TUN, OS routes, WireSock or service changes.
 internal static class UdpEngineTests
 {
-    internal static async Task Run(string root)
+    internal static async Task Run(string root,bool fastTcp=false)
     {
         string folder=Path.Combine(root,"runtime","udp-engine-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
         var ports=new HashSet<int>();
@@ -30,6 +30,7 @@ internal static class UdpEngineTests
         Storage.Write(routerConfig,new{log=new{disabled=true},inbounds=new[]{Inbound("direct-probe",direct),Inbound("vpn-probe",viaVpn)},
             outbounds=new object[]{new{type="direct",tag="direct"},new{type="socks",tag="vpn",server="127.0.0.1",server_port=bridge,version="5"}},
             route=new{rules=new object[]{new{inbound=new[]{"direct-probe"},action="route",outbound="direct"},new{inbound=new[]{"vpn-probe"},action="route",outbound="vpn"}},final="direct"}});
+        var configured=System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(routerConfig))!;PolicyTcpBudget.Configure(configured,new(){Mode="Auto",ExperimentalFastTcp=fastTcp});Storage.Write(routerConfig,configured);
         Process Start(string config)
         {
             var info=new ProcessStartInfo(EngineTestAssets.Router(root)){UseShellExecute=false,CreateNoWindow=true};
@@ -81,7 +82,7 @@ internal static class UdpEngineTests
             }
             Storage.Write(Path.Combine(root,"logs","udp-engine-test.json"),new{passed=true,checkedUtc=DateTime.UtcNow,directReplies=results[0].Received,vpnReplies=results[1].Received,
                 probesPerPath=10,expectedLossPercent=20,noDirectFallback=true,directSurvivesBridgeStop=true,productionReflector=true,wrongKeyRejected=true,scope="Loopback SOCKS UDP engine fixture; no live TUN or remote WireSock proof"});
-            Console.WriteLine("PASS: real engine Direct + nested SOCKS UDP, controlled 20% loss, bridge failure without direct fallback, Direct survives VPN bridge stop.");
+            Console.WriteLine("PASS: real engine Direct + nested SOCKS UDP, controlled 20% loss, bridge failure without direct fallback, Direct survives VPN bridge stop; fast TCP="+fastTcp+".");
         }
         finally
         {

@@ -12,7 +12,7 @@ internal static class PolicyEngineTests
 {
     static void Assert(bool condition,string message){if(!condition)throw new IOException(message);}
     static int FreePort(){var listener=new TcpListener(IPAddress.Loopback,0);listener.Start();int port=((IPEndPoint)listener.LocalEndpoint).Port;listener.Stop();return port;}
-    internal static async Task Run(string projectRoot)
+    internal static async Task Run(string projectRoot,bool fastTcp=false)
     {
         string root=Path.Combine(Path.GetFullPath(projectRoot),"runtime","optimization-"+Guid.NewGuid().ToString("N"));
         foreach(string part in new[]{"runtime/rules","private","data","logs"})Directory.CreateDirectory(Path.Combine(root,part));
@@ -64,11 +64,11 @@ internal static class PolicyEngineTests
         File.WriteAllText(Path.Combine(root,"force-direct.txt"),"");File.WriteAllText(Path.Combine(root,"force-vpn.txt"),"");
         Storage.Write(Path.Combine(root,"runtime/bridge.json"),new{outbounds=new[]{new{bind_interface=System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces().First().Name}}});
         Storage.Write(Path.Combine(root,"runtime/policy-ports.json"),ports);
-        Storage.Write(Path.Combine(root,"data/routing-policy.json"),new PolicyOptions{Mode="Auto",AllowListedDpi=true});
+        Storage.Write(Path.Combine(root,"data/routing-policy.json"),new PolicyOptions{Mode="Auto",AllowListedDpi=true,ExperimentalFastTcp=fastTcp});
         Storage.Write(Path.Combine(root,"runtime/session.json"),session);
         string token=Guid.NewGuid().ToString("N");File.WriteAllText(Path.Combine(root,"private/controller-token.txt"),token);
         var cachedKey=new PolicyKey("cache-generation",domain,app,443);
-        Storage.Write(Path.Combine(root,"data/policy-cache.json"),new PolicyCache(PolicyNetwork.Signature(root),"Auto",true,"",new[]{new PolicyDecision(cachedKey,"vpn","fixture",DateTime.UtcNow,DateTime.UtcNow.AddMinutes(15),1)}));
+        Storage.Write(Path.Combine(root,"data/policy-cache.json"),new PolicyCache(PolicyNetwork.Signature(root),"Auto",true,"",new[]{new PolicyDecision(cachedKey,"vpn","fixture",DateTime.UtcNow,DateTime.UtcNow.AddMinutes(15),1)}){ExperimentalFastTcp=fastTcp});
         PolicyWorker.Prepare(root);
 
         var rules=new List<object>();
@@ -91,6 +91,7 @@ internal static class PolicyEngineTests
             outbounds=new[]{"direct","dpi","vpn","fallback","policy-proof"}.Select(tag=>new{type="direct",tag}).ToArray(),
             route=new{rules,rule_set=PolicyPublisher.Routes.Select(route=>new{type="local",format="source",tag="auto-"+route,path=Path.Combine(root,"runtime/rules/auto-"+route+".json")}).ToArray()},
             experimental=new{clash_api=new{external_controller="127.0.0.1:"+ports.Api,secret=token}}});
+        var configured=JsonNode.Parse(File.ReadAllText(config))!;PolicyTcpBudget.Configure(configured,new(){Mode="Auto",ExperimentalFastTcp=fastTcp});Storage.Write(config,configured);
         int addressFamilyCase=0;
         async Task<string> Request(CancellationToken stop,string? forcedHost=null)
         {
@@ -203,7 +204,7 @@ internal static class PolicyEngineTests
                 await Task.Delay(100,budget.Token);if(i==79)throw new IOException("Restart after network-generation change timed out.");
             }
             session.Running=false;Storage.Write(Path.Combine(root,"runtime/session.json"),session);await controller.WaitAsync(TimeSpan.FromSeconds(8));controller=null;
-            Console.WriteLine("PASS: full controller startup, acknowledged readiness, Clear, profile/network generation change and clean shutdown on the isolated engine.");
+            Console.WriteLine("PASS: full controller startup, acknowledged readiness, Clear, profile/network generation change and clean shutdown on the isolated engine; fast TCP="+fastTcp+".");
             success=true;
         }
         finally

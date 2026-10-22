@@ -8,7 +8,7 @@ $env:GOCACHE=Join-Path $project 'downloads\go-buildcache'
 $env:GOTOOLCHAIN='local';$env:CGO_ENABLED='0';$env:GOOS='windows';$env:GOARCH='amd64';$env:GOWORK='off'
 $version=& $go.Source version
 if($LASTEXITCODE -ne 0 -or $version -notmatch 'go1\.26\.3 '){throw 'CITA routing core requires the pinned Go 1.26.3 toolchain.'}
-$inputs=@('Build-RouterEngine.ps1','engine-patches\cita_dns_windows.go','engine-patches\cita_dns_windows_test.go')
+$inputs=@('Build-RouterEngine.ps1','engine-patches\cita_dns_windows.go','engine-patches\cita_dns_windows_test.go','engine-patches\cita_fallback.go','engine-patches\cita_fallback_test.go')
 $recipe=($inputs | ForEach-Object {(Get-FileHash -LiteralPath (Join-Path $project $_)).Hash}) -join ':'
 $receipt=Join-Path $project 'runtime\router-engine-build.json';$target=Join-Path $project 'runtime\router-engine-build\smart-router.exe'
 New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force|Out-Null
@@ -17,7 +17,7 @@ function Publish-Core {
 }
 if((Test-Path -LiteralPath $receipt) -and (Test-Path -LiteralPath $target)){
     $cached=Get-Content -LiteralPath $receipt -Raw|ConvertFrom-Json
-    $cachedSource=Join-Path $project 'distribution-licenses\cita-routing-core-1.14.3-cita.1-source.zip'
+    $cachedSource=Join-Path $project 'distribution-licenses\cita-routing-core-1.14.3-cita.2-source.zip'
     if($cached.recipe -eq $recipe -and $cached.sha256 -eq (Get-FileHash -LiteralPath $target).Hash -and
         (Test-Path -LiteralPath $cachedSource) -and $cached.sourceSha256 -eq (Get-FileHash -LiteralPath $cachedSource).Hash){Publish-Core;Write-Output 'Verified CITA routing core build cache.';return}
 }
@@ -45,6 +45,11 @@ try {
     Replace-Once "`t`t}`n`t}`n`treturn nil`n}`n`nfunc (t *NativeTun) Read(" "`t`t}`n`t`tif t.options.DNSModeOrDefault() == DNSModeHijack {`n`t`t`tif err := t.startCitaDNS(subLayerKey); err != nil { return err }`n`t`t}`n`t}`n`treturn nil`n}`n`nfunc (t *NativeTun) Read("
     Replace-Once "`t`tt.close.Store(1)`n" "`t`tt.close.Store(1)`n`t`tif t.citaDNSStop != nil { close(t.citaDNSStop); <-t.citaDNSDone }`n"
     [IO.File]::WriteAllText($file,$text,[Text.UTF8Encoding]::new($false))
+    foreach($name in @('cita_fallback.go','cita_fallback_test.go')){Copy-Item -LiteralPath (Join-Path $project ('engine-patches\'+$name)) -Destination (Join-Path $core ('dns\transport\'+$name))}
+    $registry=Join-Path $core 'include\registry.go';$registryText=[IO.File]::ReadAllText($registry)
+    $registryAnchor='transport.RegisterHTTPS(registry)'
+    if(([regex]::Matches($registryText,[regex]::Escape($registryAnchor))).Count -ne 1){throw 'Pinned DNS registry context differs.'}
+    [IO.File]::WriteAllText($registry,$registryText.Replace($registryAnchor,$registryAnchor+"`n`ttransport.RegisterCitaFallback(registry)"),[Text.UTF8Encoding]::new($false))
     # Clearly identify the derivative; upstream names remain only in attribution.
     foreach($patch in @(@('cmd\sing-box\cmd.go','"sing-box"','"cita-routing-core"'),@('cmd\sing-box\cmd_version.go','sing-box version ','CITA routing core version '))){
         $path=Join-Path $core $patch[0];$value=[IO.File]::ReadAllText($path)
@@ -60,17 +65,19 @@ try {
     try{& $go.Source test -mod=readonly -run '^TestCitaTailAddress$' .;if($LASTEXITCODE -ne 0){throw 'CITA TUN boundary tests failed.'}}
     finally{Pop-Location}
     $binary=Join-Path $stage 'cita-routing-core.exe'
-    & $go.Source build -mod=readonly -buildvcs=false -trimpath -tags 'with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0' -ldflags '-s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=1.14.3-cita.1 -checklinkname=0' -o $binary ./cmd/sing-box
+    & $go.Source build -mod=readonly -buildvcs=false -trimpath -tags 'with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0' -ldflags '-s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=1.14.3-cita.2 -checklinkname=0' -o $binary ./cmd/sing-box
     if($LASTEXITCODE -ne 0){throw 'CITA routing core build failed.'}
+    & $go.Source test -mod=readonly -c -o (Join-Path $project 'runtime\cita-dns-tests.exe') ./dns/transport
+    if($LASTEXITCODE -ne 0){throw 'CITA DNS guest fixture compilation failed.'}
     Push-Location $tun
     try{& $go.Source test -mod=readonly -c -o (Join-Path $project 'runtime\cita-wfp-tests.exe') .;if($LASTEXITCODE -ne 0){throw 'WFP guest fixture compilation failed.'}}
     finally{Pop-Location}
     Copy-Item -LiteralPath $binary -Destination $target -Force
-    [IO.File]::WriteAllText((Join-Path $core 'CITA-MODIFICATIONS.txt'),"CITA routing core 1.14.3-cita.1. No upstream affiliation. TUN modifications: narrowly scoped Quad100 DNS permits in the existing dynamic WFP session, restricted to active Tailscale adapter LUIDs; refresh every 2 seconds and stop before WFP cleanup. CLI branding changed. Corresponding pinned Go 1.26.3 build: go build -mod=readonly -trimpath -tags with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0 -ldflags '-s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=1.14.3-cita.1 -checklinkname=0' ./cmd/sing-box",[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $core 'CITA-MODIFICATIONS.txt'),"CITA routing core 1.14.3-cita.2. No upstream affiliation. TUN modifications: narrowly scoped Quad100 DNS permits in the existing dynamic WFP session, restricted to active Tailscale adapter LUIDs; refresh every 2 seconds and stop before WFP cleanup. DNS: bounded sequential cita-fallback transport preserving valid negative responses and using separately configured child transports. CLI branding changed. Corresponding pinned Go 1.26.3 build: go build -mod=readonly -trimpath -tags with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0 -ldflags '-s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=1.14.3-cita.2 -checklinkname=0' ./cmd/sing-box",[Text.UTF8Encoding]::new($false))
     # Provide the complete corresponding modified source, including go.mod/sum.
-    $sourceZip=Join-Path $project 'distribution-licenses\cita-routing-core-1.14.3-cita.1-source.zip'
+    $sourceZip=Join-Path $project 'distribution-licenses\cita-routing-core-1.14.3-cita.2-source.zip'
     Compress-Archive -Path $core,$tun -DestinationPath $sourceZip -Force
-    $record=@{schema=1;version='1.14.3-cita.1';recipe=$recipe;sha256=(Get-FileHash -LiteralPath $target).Hash;go='1.26.3';sourceSha256=(Get-FileHash -LiteralPath $sourceZip).Hash}
+    $record=@{schema=1;version='1.14.3-cita.2';recipe=$recipe;sha256=(Get-FileHash -LiteralPath $target).Hash;go='1.26.3';sourceSha256=(Get-FileHash -LiteralPath $sourceZip).Hash}
     [IO.File]::WriteAllText($receipt,($record|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
     Publish-Core
     Write-Output 'CITA routing core built from pinned source; Tailscale DNS exception remains scoped to Quad100 and Tailscale LUIDs.'

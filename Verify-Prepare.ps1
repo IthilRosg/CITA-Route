@@ -28,7 +28,8 @@ try {
     foreach ($ipv6 in @($false,$true)) {
     $script:fixtureIpv6=$ipv6
     foreach ($mode in @('Auto','Lists')) {
-        Write-JsonFile (Join-Path $root 'data\routing-policy.json') @{Mode=$mode;AllowListedDpi=$false}
+    foreach ($fastTcp in @($false,$true)) {
+        Write-JsonFile (Join-Path $root 'data\routing-policy.json') @{Mode=$mode;AllowListedDpi=$false;ExperimentalFastTcp=$fastTcp}
         Prepare-Configuration
         $config=[IO.File]::ReadAllText((Join-Path $runtime 'router.json')) | ConvertFrom-Json
         $expected=if($mode -eq 'Auto'){'info'}else{'warn'}
@@ -49,16 +50,25 @@ try {
         }
         if($tailIndex -lt 0 -or $sniffIndex -lt 0 -or $tailIndex -ge $sniffIndex -or $config.route.rules[$tailIndex].outbound -ne 'direct'){throw 'Tailscale control/DERP transport must avoid sniffing and adaptive rules.'}
         if ($mode -eq 'Auto' -and @($config.outbounds | Where-Object { $_.tag -in @('direct','dpi') -and $_.connect_timeout -eq '3s' }).Count -ne 2) { throw 'Auto probes need bounded connection times.' }
+        $expectedAdaptive=if($mode -eq 'Auto' -and $fastTcp){'direct-auto'}else{'direct'}
+        $fastExits=@($config.outbounds|Where-Object {$_.tag -in @('direct-auto','dpi-auto')})
+        if($fastExits.Count -ne $(if($mode -eq 'Auto' -and $fastTcp){2}else{0})){throw 'Experimental TCP aliases must be opt-in and Auto-only.'}
+        if(@($fastExits|Where-Object {$_.connect_timeout -ne '1s' -or $_.bind_interface -ne 'Fixture WiFi'}).Count){throw 'Fast aliases must preserve physical binding and cap only their TCP dials.'}
+        $dnsProbe=@($config.inbounds|Where-Object tag -eq 'direct-dns-probe')
+        $dnsAllow=@($config.route.rules|Where-Object {$_.inbound -contains 'direct-dns-probe' -and $_.action -eq 'route'})
+        $dnsReject=@($config.route.rules|Where-Object {$_.inbound -contains 'direct-dns-probe' -and $_.action -eq 'reject'})
+        if($dnsProbe.Count -ne 1 -or $dnsProbe[0].listen -ne '127.0.0.1' -or $dnsProbe[0].listen_port -ne 20832 -or $dnsAllow.Count -ne 1 -or $dnsAllow[0].outbound -ne 'direct' -or $dnsAllow[0].port -ne 443 -or $dnsAllow[0].ip_cidr.Count -ne 2 -or $dnsReject.Count -ne 1){throw 'DNS probes must retain the normal resolver TCP budget and a resolver-only destination boundary.'}
         $manualIndex=-1;$adaptiveIndex=-1
         for($index=0;$index -lt $config.route.rules.Count;$index++){
             $rule=$config.route.rules[$index]
             if($rule.rule_set -contains 'personal-direct' -and $rule.action -eq 'route'){$manualIndex=$index}
-            if($rule.action -eq 'route' -and $rule.outbound -eq 'direct' -and ($rule.rule_set -contains 'auto-direct' -or @($rule.rules | ForEach-Object rule_set) -contains 'auto-direct')){$adaptiveIndex=$index}
+            if($rule.action -eq 'route' -and $rule.outbound -eq $expectedAdaptive -and ($rule.rule_set -contains 'auto-direct' -or @($rule.rules | ForEach-Object rule_set) -contains 'auto-direct')){$adaptiveIndex=$index}
         }
         if($manualIndex -lt 0 -or $adaptiveIndex -lt 0 -or $manualIndex -ge $adaptiveIndex){throw 'Manual rules must precede adaptive decisions.'}
     }
     }
-    Write-Output 'PASS: Auto/Lists with and without physical IPv6, real engine validation, Tailscale exclusions/transport priority, manual priority and bounded Auto sockets. No system network changed.'
+    }
+    Write-Output 'PASS: 8 Auto/Lists x IPv6 x fast-TCP configurations, real engine validation, Tailscale/manual priority, physical binding and restricted DNS probes. No system network changed.'
 } finally {
     $expectedPrefix=[IO.Path]::GetFullPath((Join-Path $projectRoot 'runtime\prepare-test-'))
     if (-not [IO.Path]::GetFullPath($fixture).StartsWith($expectedPrefix,[StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe fixture cleanup.' }

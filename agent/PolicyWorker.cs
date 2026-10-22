@@ -10,11 +10,16 @@ namespace RoutePilot.Agent;
 
 public sealed record PolicyKey(string Epoch,string Domain,string Application,int Port,string Protocol="tcp",string Strategy="tls-record-ipv4-v2");
 public sealed record PolicyDecision(PolicyKey Key,string Route,string Reason,DateTime CheckedUtc,DateTime ExpiresUtc,long Milliseconds);
-public sealed class PolicyOptions {public string Mode{get;set;}="Lists";public bool AllowListedDpi{get;set;}}
+public sealed class PolicyOptions {public string Mode{get;set;}="Lists";public bool AllowListedDpi{get;set;}public bool ExperimentalFastTcp{get;set;}}
 public sealed class PolicySession {public string Id{get;set;}="";public bool Running{get;set;}public int RouterPid{get;set;}}
-public sealed record CandidateResult(bool Reachable,bool Definitive,string Detail,long Milliseconds);
-internal sealed record PolicyCache(string Fingerprint,string Mode,bool AllowListedDpi,string ClearRequest,PolicyDecision[] Decisions);
-internal sealed record PolicyActiveSnapshot(string Epoch,string Mode,bool AllowListedDpi,string ClearRequest,PolicyDecision[] Decisions);
+public sealed record CandidateResult(bool Reachable,bool Definitive,string Detail,long Milliseconds)
+{
+    public bool ConnectionEstablished{get;init;}
+}
+internal sealed record PolicyCache(string Fingerprint,string Mode,bool AllowListedDpi,string ClearRequest,PolicyDecision[] Decisions)
+{public bool ExperimentalFastTcp{get;init;}}
+internal sealed record PolicyActiveSnapshot(string Epoch,string Mode,bool AllowListedDpi,string ClearRequest,PolicyDecision[] Decisions)
+{public bool ExperimentalFastTcp{get;init;}}
 internal sealed class PolicyMeasurement
 {
     public PolicyKey Key{get;init;}=null!;
@@ -27,11 +32,22 @@ internal sealed class PolicyMeasurement
     public string? Route{get;init;}
     public long DnsMilliseconds{get;init;}
     public long TotalMilliseconds{get;init;}
+    public long? CandidateReadyMilliseconds{get;init;}
+    public long? SelectionDecisionMilliseconds{get;init;}
+    public long? SelectionCompletionMilliseconds{get;init;}
     public CandidateTiming[] Candidates{get;init;}=Array.Empty<CandidateTiming>();
     public DateTime? DecisionCheckedUtc{get;init;}
     public DateTime? AppliedUtc{get;set;}
     public long? AppliedVersion{get;set;}
+    public double? ApplyWaitMilliseconds{get;private set;}
     public string Disposition{get;init;}="Accepted";
+    readonly long _completedTimestamp=System.Diagnostics.Stopwatch.GetTimestamp();
+    internal void ConfirmApplied(DateTime appliedUtc,long version)
+    {
+        if(DecisionCheckedUtc==null || AppliedUtc!=null)return;
+        ApplyWaitMilliseconds=System.Diagnostics.Stopwatch.GetElapsedTime(_completedTimestamp).TotalMilliseconds;
+        AppliedUtc=appliedUtc;AppliedVersion=version;
+    }
 }
 
 public static class PolicySafety
@@ -281,7 +297,7 @@ public sealed class PolicyWorker
                     }
                 }
                 else {_stability.Remove(pair.Key);Event(pair.Key.Domain+": "+result.Outcome+"; неподтверждённая замена не применена.");}
-                _measurements.Insert(0,new(){Key=pair.Key,Trigger=metadata.Trigger,FirstSignalUtc=metadata.Queued,StartedUtc=metadata.Started,FinishedUtc=DateTime.UtcNow,QueueMilliseconds=Math.Max(0,(metadata.Started-metadata.Queued).TotalMilliseconds),Outcome=result.Outcome,Route=result.Decision?.Route,DnsMilliseconds=result.DnsMilliseconds,TotalMilliseconds=result.TotalMilliseconds,Candidates=result.Candidates,DecisionCheckedUtc=accepted?result.Decision?.CheckedUtc:null,Disposition=accepted?"Accepted":result.Decision!=null?"AwaitingStableReturn":"Unconfirmed"});
+                _measurements.Insert(0,new(){Key=pair.Key,Trigger=metadata.Trigger,FirstSignalUtc=metadata.Queued,StartedUtc=metadata.Started,FinishedUtc=DateTime.UtcNow,QueueMilliseconds=Math.Max(0,(metadata.Started-metadata.Queued).TotalMilliseconds),Outcome=result.Outcome,Route=result.Decision?.Route,DnsMilliseconds=result.DnsMilliseconds,TotalMilliseconds=result.TotalMilliseconds,CandidateReadyMilliseconds=result.CandidateReadyMilliseconds,SelectionDecisionMilliseconds=result.SelectionDecisionMilliseconds,SelectionCompletionMilliseconds=result.SelectionCompletionMilliseconds,Candidates=result.Candidates,DecisionCheckedUtc=accepted?result.Decision?.CheckedUtc:null,Disposition=accepted?"Accepted":result.Decision!=null?"AwaitingStableReturn":"Unconfirmed"});
                 if(_measurements.Count>100)_measurements.RemoveAt(_measurements.Count-1);
                 Storage.Write(Path.Combine(_root,"data","policy-metrics.json"),new{epoch=_epoch,updatedUtc=DateTime.UtcNow,measurements=_measurements});
             }
@@ -366,7 +382,7 @@ public sealed class PolicyWorker
                 }
                 string id=connection.GetProperty("id").GetString()!;seen.Add(id);
                 long total=Math.Max(0,connection.GetProperty("upload").GetInt64())+Math.Max(0,connection.GetProperty("download").GetInt64());
-                string route=connection.GetProperty("chains").EnumerateArray().Select(c=>c.GetString()).FirstOrDefault(c=>c is "vpn" or "dpi" or "direct")??"direct";
+                string route=connection.GetProperty("chains").EnumerateArray().Select(c=>PolicyTcpBudget.CanonicalRoute(c.GetString())).FirstOrDefault(c=>c!=null)??"direct";
                 _bytes[route]+=Math.Max(0,total-(_connectionBytes.TryGetValue(id,out long previous)?previous:0));_connectionBytes[id]=total;
                 if(domain!=null && !Path.GetFileName(app).Equals("RoutePilot.Agent.exe",StringComparison.OrdinalIgnoreCase) && Path.IsPathFullyQualified(app) && Get("destinationPort")=="443" && Get("network")=="tcp")
                 {
@@ -440,7 +456,7 @@ public sealed class PolicyWorker
                 if(process.Success)context.App=Regex.Replace(process.Groups[1].Value.Trim(),@" \(\d+\)$","");
                 _logFlows[id]=context;
             }
-            var match=Regex.Match(line,@"connection: open connection to ([a-zA-Z0-9.-]+):443 using outbound/(?:direct|socks)\[(direct|dpi|vpn)\]");
+            var match=Regex.Match(line,@"connection: open connection to ([a-zA-Z0-9.-]+):443 using outbound/(?:direct|socks)\[(direct(?:-auto)?|dpi(?:-auto)?|vpn)\]");
             string? host=match.Success?PolicySafety.Domain(match.Groups[1].Value):null;
             if(host==null || Manual(host) || !flow.Success)continue;
             string? app=null;
@@ -501,12 +517,14 @@ public sealed class PolicyWorker
             _decisions.TryGetValue(key,out var current);
             var resolved=await PolicyTransport.SelectResolved(key.Domain,_ports,budget.Token,failureTriggered,observeRoute:current?.Route);dnsMs=resolved.DnsMilliseconds;
             var chosen=resolved.Selection;
-            if(chosen.Route==null)return new(chosen.Outcome,null,dnsMs,timer.ElapsedMilliseconds,chosen.Candidates);
+            CalibrationResult Result(ProbeOutcome outcome,PolicyDecision? decision)=>new(outcome,decision,dnsMs,timer.ElapsedMilliseconds,chosen.Candidates)
+            {CandidateReadyMilliseconds=chosen.Route==null?null:chosen.Milliseconds,SelectionDecisionMilliseconds=chosen.DecisionMilliseconds,SelectionCompletionMilliseconds=chosen.CompletionMilliseconds};
+            if(chosen.Route==null)return Result(chosen.Outcome,null);
             var now=DateTime.UtcNow;
             bool temporary=PolicyTransport.UnstablePreferred(chosen)||chosen.Candidates.TakeWhile(c=>c.Route!=chosen.Route).Any(c=>c.Outcome==ProbeOutcome.DnsUnavailable);
             var reason=chosen.Route=="direct"?"Две прямые TLS-пробы успешны.":temporary?"Подтверждён временный путь; прямой доступ или его DNS требуют перепроверки.":"Две TLS-пробы выбранного пути успешны; более приоритетные пути проверены.";
             var decision=new PolicyDecision(key,chosen.Route,reason,now,now.AddSeconds(temporary?60:900),chosen.Milliseconds);
-            return new(ProbeOutcome.Reachable,decision,dnsMs,timer.ElapsedMilliseconds,chosen.Candidates);
+            return Result(ProbeOutcome.Reachable,decision);
         }
         catch(OperationCanceledException){return new(ProbeOutcome.Cancelled,null,dnsMs,timer.ElapsedMilliseconds,Array.Empty<CandidateTiming>());}
     }
@@ -549,7 +567,7 @@ public sealed class PolicyWorker
         {
             if(new FileInfo(path).Length>1048576)return;
             var cache=Storage.Read<PolicyCache>(path);
-            if(cache.Fingerprint!=_fingerprint || cache.Mode!=_options.Mode || cache.AllowListedDpi!=_options.AllowListedDpi || cache.ClearRequest!=_clearRequest || cache.Decisions.Length>DecisionLimit)return;
+            if(cache.Fingerprint!=_fingerprint || cache.Mode!=_options.Mode || cache.AllowListedDpi!=_options.AllowListedDpi || cache.ExperimentalFastTcp!=_options.ExperimentalFastTcp || cache.ClearRequest!=_clearRequest || cache.Decisions.Length>DecisionLimit)return;
             foreach(var old in cache.Decisions)
             {
                 var decision=old with{Key=old.Key with{Epoch=_epoch}};
@@ -567,7 +585,7 @@ public sealed class PolicyWorker
         {
             if(new FileInfo(path).Length>1048576)return;
             var snapshot=Storage.Read<PolicyActiveSnapshot>(path);
-            if(snapshot.Epoch!=_epoch || snapshot.Mode!=_options.Mode || snapshot.AllowListedDpi!=_options.AllowListedDpi || snapshot.ClearRequest!=_clearRequest || snapshot.Decisions.Length>DecisionLimit)return;
+            if(snapshot.Epoch!=_epoch || snapshot.Mode!=_options.Mode || snapshot.AllowListedDpi!=_options.AllowListedDpi || snapshot.ExperimentalFastTcp!=_options.ExperimentalFastTcp || snapshot.ClearRequest!=_clearRequest || snapshot.Decisions.Length>DecisionLimit)return;
             foreach(var decision in snapshot.Decisions)
                 if(!_decisions.ContainsKey(decision.Key) && decision.Key.Epoch==_epoch && decision.Key.Strategy=="tls-record-ipv4-v2" && decision.Route is "vpn" or "dpi" && PolicySafety.Valid(decision.Key) && decision.ExpiresUtc>decision.CheckedUtc && decision.ExpiresUtc-decision.CheckedUtc<=TimeSpan.FromMinutes(16))StoreDecision(decision);
         }
@@ -588,18 +606,18 @@ public sealed class PolicyWorker
     }
     void PersistCache()
     {
-        if(_options.Mode=="Auto")Storage.Write(Path.Combine(_root,"data","policy-cache.json"),new PolicyCache(_fingerprint,_options.Mode,_options.AllowListedDpi,_clearRequest,_decisions.Values.Where(d=>PolicySafety.Live(d,_epoch,DateTime.UtcNow) && !Manual(d.Key.Domain)).ToArray()));
+        if(_options.Mode=="Auto")Storage.Write(Path.Combine(_root,"data","policy-cache.json"),new PolicyCache(_fingerprint,_options.Mode,_options.AllowListedDpi,_clearRequest,_decisions.Values.Where(d=>PolicySafety.Live(d,_epoch,DateTime.UtcNow) && !Manual(d.Key.Domain)).ToArray()){ExperimentalFastTcp=_options.ExperimentalFastTcp});
     }
     async Task PublishAsync(CancellationToken stop)
     {
         _progress?.Mark("Publishing",true);
         await _publisher!.Apply(Desired(),stop);
         if(!Current())throw new OperationCanceledException();
-        Storage.Write(Runtime("policy-active.json"),new PolicyActiveSnapshot(_epoch,_options.Mode,_options.AllowListedDpi,_clearRequest,_decisions.Values.ToArray()));
+        Storage.Write(Runtime("policy-active.json"),new PolicyActiveSnapshot(_epoch,_options.Mode,_options.AllowListedDpi,_clearRequest,_decisions.Values.ToArray()){ExperimentalFastTcp=_options.ExperimentalFastTcp});
         PersistCache();_dirty=false;
         var applied=DateTime.UtcNow;
         foreach(var measurement in _measurements.Where(m=>m.AppliedUtc==null && m.DecisionCheckedUtc!=null))
-            if(_decisions.TryGetValue(measurement.Key,out var decision) && decision.CheckedUtc==measurement.DecisionCheckedUtc){measurement.AppliedUtc=applied;measurement.AppliedVersion=_publisher.Version;}
+            if(_decisions.TryGetValue(measurement.Key,out var decision) && decision.CheckedUtc==measurement.DecisionCheckedUtc)measurement.ConfirmApplied(applied,_publisher.Version);
         if(_measurements.Count>0)Storage.Write(Path.Combine(_root,"data","policy-metrics.json"),new{epoch=_epoch,updatedUtc=applied,measurements=_measurements});
         Storage.Write(Runtime("policy-publication.json"),new{epoch=_epoch,phase=_publisher.Phase,version=_publisher.Version,appliedUtc=applied,milliseconds=_publisher.Milliseconds});
     }

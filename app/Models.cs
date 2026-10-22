@@ -107,7 +107,7 @@ public sealed class WindowPlacement
     public bool Maximized{get;set;}
     public static double Bounded(double value,double fallback,double min,double max)=>Math.Clamp(double.IsFinite(value)&&value>0?value:fallback,min,Math.Max(min,max));
 }
-public sealed class RoutingPolicyPreferences { public string Mode{get;set;}="Auto";public bool AllowListedDpi{get;set;} }
+public sealed class RoutingPolicyPreferences { public string Mode{get;set;}="Auto";public bool AllowListedDpi{get;set;}public bool ExperimentalFastTcp{get;set;} }
 public sealed class EngineSession
 {
     public bool Running{get;set;}
@@ -163,7 +163,7 @@ public sealed class Snapshot
             snapshot.Connections.Add(new ConnectionRow{
                 Id=Read(connection,"id"),Host=string.IsNullOrEmpty(host)?ip:host,
                 Address=(ip.Contains(':')?"["+ip+"]":ip)+":"+Read(metadata,"destinationPort"),Process=string.IsNullOrEmpty(path)?"—":Path.GetFileName(path),
-                Network=Read(metadata,"network").ToUpperInvariant(),IsVpn=vpn,IsDpi=connection.TryGetProperty("chains",out var dpiChains) && dpiChains.EnumerateArray().Any(c=>c.GetString()=="dpi"),Rule=Read(connection,"rule"),
+                Network=Read(metadata,"network").ToUpperInvariant(),IsVpn=vpn,IsDpi=connection.TryGetProperty("chains",out var dpiChains) && dpiChains.EnumerateArray().Any(c=>c.GetString() is "dpi" or "dpi-auto"),Rule=Read(connection,"rule"),
                 Upload=connection.GetProperty("upload").GetInt64(),Download=connection.GetProperty("download").GetInt64(),Started=Read(connection,"start")
             });
         }

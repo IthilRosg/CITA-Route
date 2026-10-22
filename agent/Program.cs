@@ -13,6 +13,11 @@ public static class Program
         try
         {
             if(args.Length==1 && args[0]=="--self-test"){await AgentTests.Run();return 0;}
+            if(args.Length==2 && args[0]=="--policy-timing-lab"){await PolicyTimingLab.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==2 && args[0]=="--dns-integration"){await PolicyDnsEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==2 && args[0]=="--tcp-budget-lab"){await PolicyTcpBudgetLab.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==2 && args[0]=="--resilience-lab"){await PolicyResilienceLab.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==2 && args[0]=="--live-routing-lab"){await PolicyLiveAcceptance.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==3 && args[0]=="--export-diagnostics")
             {Cita.Diagnostics.SessionEvidence.Export(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]));Console.WriteLine("Diagnostic archive saved. No network operation was requested.");return 0;}
             if(args.Length==1 && args[0]=="--resource-snapshot")
@@ -57,10 +62,12 @@ public static class Program
             if(args.Length==2 && args[0]=="--prepare-policy"){PolicyWorker.Prepare(args[1]);return 0;}
             if(args.Length==2 && args[0]=="--integration-policy"){await PolicyIntegration.Run(args[1]);return 0;}
             if(args.Length==2 && args[0]=="--optimization-integration"){await PolicyEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==3 && args[0]=="--optimization-integration"&&args[2]=="fast-tcp"){await PolicyEngineTests.Run(Path.GetFullPath(args[1]),true);return 0;}
             if(args.Length==2 && args[0]=="--component-integration"){await ComponentRecoveryTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--component-soak"){await ComponentRecoveryTests.Run(Path.GetFullPath(args[1]),20);return 0;}
             if(args.Length==3 && args[0]=="--mixed-soak"){await ComponentRecoveryTests.Run(Path.GetFullPath(args[1]),20,int.Parse(args[2]));return 0;}
             if(args.Length==2 && args[0]=="--udp-integration"){await UdpEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==3 && args[0]=="--udp-integration"&&args[2]=="fast-tcp"){await UdpEngineTests.Run(Path.GetFullPath(args[1]),true);return 0;}
             if(args.Length==2 && args[0]=="--resource-integration"){await ResourceGuardTests.Integration(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--optimization-live"){await PolicyLiveCheck.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==3 && args[0]=="--optimization-auto"){await PolicyAutoCheck.Run(Path.GetFullPath(args[1]),args[2]);return 0;}

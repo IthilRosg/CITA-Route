@@ -2,6 +2,16 @@ namespace RoutePilot.Agent;
 
 public static class SystemRouter
 {
+    internal static void PreserveDirectDnsProbe(System.Text.Json.Nodes.JsonNode data)
+    {
+        var inbounds=data["inbounds"]!.AsArray();
+        foreach(var old in inbounds.Where(n=>n?["tag"]?.GetValue<string>()=="direct-dns-probe").ToArray())inbounds.Remove(old);
+        inbounds.Add(System.Text.Json.JsonSerializer.SerializeToNode(new{type="mixed",tag="direct-dns-probe",listen="127.0.0.1",listen_port=20832}));
+        var rules=data["route"]!["rules"]!.AsArray();
+        foreach(var old in rules.Where(n=>n?["inbound"] is System.Text.Json.Nodes.JsonArray names&&names.Any(v=>v?.GetValue<string>()=="direct-dns-probe")).ToArray())rules.Remove(old);
+        rules.Insert(0,System.Text.Json.JsonSerializer.SerializeToNode(new{inbound=new[]{"direct-dns-probe"},action="reject"}));
+        rules.Insert(0,System.Text.Json.JsonSerializer.SerializeToNode(new{inbound=new[]{"direct-dns-probe"},ip_cidr=new[]{"1.1.1.1/32","8.8.8.8/32"},port=new[]{443},action="route",outbound="direct"}));
+    }
     internal static bool HasIpv6Gateway(IEnumerable<System.Net.IPAddress> gateways)=>gateways.Any(ip=>
         ip.AddressFamily==System.Net.Sockets.AddressFamily.InterNetworkV6 &&
         !ip.Equals(System.Net.IPAddress.IPv6Any) && !System.Net.IPAddress.IsLoopback(ip));
@@ -105,7 +115,7 @@ public static class SystemRouter
             outbounds=new object[]{new{type="direct",tag="direct",bind_interface=nic},new{type="direct",tag="dpi",bind_interface=nic},new{type="socks",tag="vpn",server="127.0.0.1",server_port=20818,version="5"}},
             route=new{rules,rule_set=local,final="direct",default_domain_resolver="dns-direct",auto_detect_interface=true}
         })!;
-        PreserveTailscaleDns(generated);Storage.Write(output,generated);
+        PreserveTailscaleDns(generated);PolicyDns.Configure(generated);PreserveDirectDnsProbe(generated);Storage.Write(output,generated);
         return output;
     }
     static string PrepareTemplate(AgentConfig config,RunState state,string template)
@@ -124,7 +134,7 @@ public static class SystemRouter
         foreach(var outbound in data["outbounds"]!.AsArray())
         {
             string type=outbound!["type"]!.GetValue<string>(),tag=outbound["tag"]!.GetValue<string>();
-            if(type=="direct" && tag is "direct" or "dpi")outbound["bind_interface"]=nic;
+            if(type=="direct" && tag is "direct" or "dpi" or "direct-auto" or "dpi-auto")outbound["bind_interface"]=nic;
             else if(type=="socks" && tag=="vpn" && outbound["server"]!.GetValue<string>()=="127.0.0.1")outbound["server_port"]=20818;
             else if(type=="direct" && tag=="policy-proof"){}
             else if(type=="direct" && tag=="tailnet"){}
@@ -148,6 +158,8 @@ public static class SystemRouter
         data["experimental"]!.AsObject().Remove("cache_file");
         data["experimental"]!["clash_api"]!["external_controller"]="127.0.0.1:20820";
         PreserveTailscaleDns(data);
+        PolicyDns.Configure(data);
+        PreserveDirectDnsProbe(data);
         string path=Path.Combine(config.DataDirectory,"router-"+state.Id+".json");Storage.Write(path,data);return path;
     }
 }

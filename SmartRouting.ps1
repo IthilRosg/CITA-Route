@@ -270,6 +270,8 @@ function Prepare-Configuration {
     }
     $controllerToken = [IO.File]::ReadAllText($controllerTokenPath).Trim()
     $routeRules = @(
+        @{inbound=@('direct-dns-probe');ip_cidr=@('1.1.1.1/32','8.8.8.8/32');port=443;action='route';outbound='direct'},
+        @{inbound=@('direct-dns-probe');action='reject'},
         # Preserve the overlay's own control/DERP transport before sniffing and
         # adaptive routing. Tailnet destinations keep their OS-specific routes.
         @{ process_name=@('tailscaled.exe','tailscale.exe','tailscale-ipn.exe'); action='route'; outbound='direct' },
@@ -362,8 +364,12 @@ function Prepare-Configuration {
         log=@{level='warn';timestamp=$true;output=(Join-Path $root 'logs\router.log')}
         dns=@{
             servers=@(
-                @{type='https';tag='dns-direct';server='1.1.1.1';detour='direct'},
-                @{type='https';tag='dns-vpn';server='1.1.1.1';detour='vpn'},
+                @{type='https';tag='dns-direct-primary';server='1.1.1.1';detour='direct'},
+                @{type='https';tag='dns-direct-backup';server='8.8.8.8';detour='direct';tls=@{enabled=$true;server_name='dns.google'}},
+                @{type='cita-fallback';tag='dns-direct';servers=@('dns-direct-primary','dns-direct-backup');timeout='1500ms'},
+                @{type='https';tag='dns-vpn-primary';server='1.1.1.1';detour='vpn'},
+                @{type='https';tag='dns-vpn-backup';server='8.8.8.8';detour='vpn';tls=@{enabled=$true;server_name='dns.google'}},
+                @{type='cita-fallback';tag='dns-vpn';servers=@('dns-vpn-primary','dns-vpn-backup');timeout='1500ms'},
                 @{type='udp';tag='dns-tailnet';server='100.100.100.100';server_port=53;detour='tailnet'},
                 @{type='fakeip';tag='fakeip';inet4_range='198.18.0.0/15';inet6_range='fc00::/18'}
             )
@@ -372,6 +378,7 @@ function Prepare-Configuration {
         inbounds=@(@{type='mixed';tag='local-test';listen='127.0.0.1';listen_port=20809},
             @{type='mixed';tag='dpi-probe';listen='127.0.0.1';listen_port=20828},
             @{type='mixed';tag='direct-probe';listen='127.0.0.1';listen_port=20829},
+            @{type='mixed';tag='direct-dns-probe';listen='127.0.0.1';listen_port=20832},
             @{type='mixed';tag='policy-ack';listen='127.0.0.1';listen_port=20830})
         outbounds=@(
             @{type='direct';tag='direct';bind_interface=$interface},
@@ -393,6 +400,20 @@ function Prepare-Configuration {
         $router.log.level = 'info'
         foreach ($outbound in $router.outbounds) {
             if ($outbound.tag -in @('direct','dpi')) { $outbound.connect_timeout = '3s' }
+        }
+        if ($policyOptions.ExperimentalFastTcp -eq $true) {
+            # Only adaptive flows/probes receive the shorter TCP dial budget.
+            # Manual routes, control traffic, tailnet and the default exit keep theirs.
+            foreach ($outbound in @($router.outbounds | Where-Object {$_.tag -in @('direct','dpi')})) {
+                $fastOutbound=$outbound.Clone();$fastOutbound.tag=$outbound.tag+'-auto';$fastOutbound.connect_timeout='1s'
+                $router.outbounds += $fastOutbound
+            }
+            foreach ($rule in $router.route.rules) {
+                if ($rule.action -ne 'route' -or $rule.outbound -notin @('direct','dpi')) { continue }
+                $tag=$rule.outbound
+                $sets=@($rule.rule_set)+@($rule.rules | ForEach-Object {$_.rule_set})
+                if ($rule.inbound -contains ($tag+'-probe') -or $sets -contains ('auto-'+$tag)) { $rule.outbound=$tag+'-auto' }
+            }
         }
     }
     Write-JsonFile (Join-Path $runtime 'router-proxy.json') $router
@@ -599,7 +620,7 @@ if ($Action -eq 'SyncProfile') {
     Sync-WireSockProfile $smartProfile (Join-Path $private ($smartProfile + '.conf')) (Join-Path $private 'profile-backups')
     exit
 }
-$routingPorts=@(20808,20809,20810,20828,20829,20830,20831)
+$routingPorts=@(20808,20809,20810,20828,20829,20830,20831,20832)
 $occupied=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object {$_.LocalPort -in $routingPorts})
 if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupied.LocalPort | Sort-Object -Unique) -join ', '))}
 

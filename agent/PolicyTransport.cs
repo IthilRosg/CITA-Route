@@ -10,16 +10,29 @@ namespace RoutePilot.Agent;
 
 public enum ProbeOutcome { Reachable, Unavailable, Indeterminate, DnsUnavailable, TlsAuthenticationError, Cancelled }
 public sealed record CandidateTiming(string Route,long Milliseconds,ProbeOutcome Outcome);
-public sealed record RouteSelection(ProbeOutcome Outcome,string? Route,long Milliseconds,CandidateTiming[] Candidates);
-internal sealed record CalibrationResult(ProbeOutcome Outcome,PolicyDecision? Decision,long DnsMilliseconds,long TotalMilliseconds,CandidateTiming[] Candidates);
+public sealed record RouteSelection(ProbeOutcome Outcome,string? Route,long Milliseconds,CandidateTiming[] Candidates)
+{
+    // Milliseconds remains the selected candidate's duration for compatibility.
+    // These monotonic milestones include preference/observation waiting and drain.
+    public long? DecisionMilliseconds{get;init;}
+    public long? CompletionMilliseconds{get;init;}
+}
+internal sealed record CalibrationResult(ProbeOutcome Outcome,PolicyDecision? Decision,long DnsMilliseconds,long TotalMilliseconds,CandidateTiming[] Candidates)
+{
+    public long? CandidateReadyMilliseconds{get;init;}
+    public long? SelectionDecisionMilliseconds{get;init;}
+    public long? SelectionCompletionMilliseconds{get;init;}
+}
 public sealed class PolicyPorts
 {
     public int Api{get;set;}=20810;
     public int Direct{get;set;}=20829;
     public int Dpi{get;set;}=20828;
+    public int DirectDns{get;set;}=20832;
     public int Vpn{get;set;}=20808;
     public int Ack{get;set;}=20830;
     public int Proof{get;set;}=20831;
+    internal int DnsPort(int probePort)=>probePort==Direct||probePort==Dpi?DirectDns:probePort;
     internal static PolicyPorts Read(string root)=>File.Exists(Path.Combine(root,"runtime","policy-ports.json"))?Storage.Read<PolicyPorts>(Path.Combine(root,"runtime","policy-ports.json")):new();
 }
 
@@ -50,10 +63,10 @@ internal static class PolicyTransport
         }
         catch{socket.Dispose();throw;}
     }
-    static HttpClient Client(int port,IPAddress address,TimeSpan timeout,Action<SslPolicyErrors>? certificateResult=null)
+    static HttpClient Client(int port,IPAddress address,TimeSpan timeout,Action<SslPolicyErrors>? certificateResult=null,Action? connected=null)
     {
         var handler=new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false,ConnectTimeout=timeout,
-            ConnectCallback=(_,stop)=>new ValueTask<Stream>(Socks(port,address.ToString(),443,stop))};
+            ConnectCallback=async(_,stop)=>{var stream=await Socks(port,address.ToString(),443,stop);connected?.Invoke();return stream;}};
         if(certificateResult!=null)handler.SslOptions.RemoteCertificateValidationCallback=(_,_,_,errors)=>{certificateResult(errors);return errors==SslPolicyErrors.None;};
         return new HttpClient(handler){Timeout=timeout};
     }
@@ -61,16 +74,16 @@ internal static class PolicyTransport
     {
         if(PolicySafety.Domain(domain)!=domain || !PolicySafety.Public(address))throw new ArgumentException("Invalid public policy probe.");
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(stop);timeout.CancelAfter(TimeSpan.FromSeconds(3));
-        int rejectedCertificate=0;
-        using var client=Client(port,address,TimeSpan.FromSeconds(3),errors=>{if(errors!=SslPolicyErrors.None)Interlocked.Exchange(ref rejectedCertificate,1);});
+        int rejectedCertificate=0,connectionEstablished=0;
+        using var client=Client(port,address,TimeSpan.FromSeconds(3),errors=>{if(errors!=SslPolicyErrors.None)Interlocked.Exchange(ref rejectedCertificate,1);},()=>Interlocked.Exchange(ref connectionEstablished,1));
         using var request=new HttpRequestMessage(HttpMethod.Head,"https://"+domain+"/"){Version=HttpVersion.Version11,VersionPolicy=HttpVersionPolicy.RequestVersionExact};
         var timer=Stopwatch.StartNew();
         try
-        {using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,timeout.Token);return new(true,true,"TLS established; HTTP "+(int)response.StatusCode,timer.ElapsedMilliseconds);}
+        {using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,timeout.Token);return new(true,true,"TLS established; HTTP "+(int)response.StatusCode,timer.ElapsedMilliseconds){ConnectionEstablished=true};}
         catch(HttpRequestException)when(Volatile.Read(ref rejectedCertificate)!=0)
-        {return new(false,true,"TLS authentication failed.",timer.ElapsedMilliseconds);}
+        {return new(false,true,"TLS authentication failed.",timer.ElapsedMilliseconds){ConnectionEstablished=Volatile.Read(ref connectionEstablished)!=0};}
         catch(Exception ex)when(ex is HttpRequestException or IOException or OperationCanceledException or SocketException)
-        {stop.ThrowIfCancellationRequested();return new(false,false,ex is HttpRequestException http?http.HttpRequestError+": "+http.Message:ex.GetType().Name,timer.ElapsedMilliseconds);}
+        {stop.ThrowIfCancellationRequested();return new(false,false,ex is HttpRequestException http?http.HttpRequestError+": "+http.Message:ex.GetType().Name,timer.ElapsedMilliseconds){ConnectionEstablished=Volatile.Read(ref connectionEstablished)!=0};}
     }
     internal static async Task<IPAddress[]?> Resolve(string domain,PolicyPorts ports,CancellationToken stop)
     {
@@ -88,26 +101,61 @@ internal static class PolicyTransport
                     if(result!=null){round.Cancel();return result;}
                 }
             }
+            catch(OperationCanceledException)when(!stop.IsCancellationRequested){}
             finally {round.Cancel();foreach(var task in tasks){try{await task;}catch(OperationCanceledException){}}}
             stop.ThrowIfCancellationRequested();
         }
         return null;
     }
     static async Task<IPAddress[]?> ResolveOne(string domain,string host,string path,IPAddress address,int port,CancellationToken stop)
+        =>(await ResolveDetailed(domain,new(host,path,address),port,stop)).Addresses;
+    static async Task<PolicyDnsAnswer> ResolveDetailed(string domain,PolicyResolver resolver,int port,CancellationToken stop)
     {
         try
         {
-            using var client=Client(port,address,TimeSpan.FromMilliseconds(1500));
-            using var request=new HttpRequestMessage(HttpMethod.Get,"https://"+host+path+Uri.EscapeDataString(domain));request.Headers.Accept.ParseAdd("application/dns-json");
+            using var client=Client(port,resolver.Address,TimeSpan.FromMilliseconds(1500));
+            using var request=new HttpRequestMessage(HttpMethod.Get,"https://"+resolver.Host+resolver.Path+Uri.EscapeDataString(domain));request.Headers.Accept.ParseAdd("application/dns-json");
             using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,stop);response.EnsureSuccessStatusCode();
             await using var input=await response.Content.ReadAsStreamAsync(stop);using var limited=new MemoryStream();byte[] buffer=new byte[4096];int count;
-            while((count=await input.ReadAsync(buffer,stop))>0){if(limited.Length+count>32768)return null;limited.Write(buffer,0,count);}
-            using var json=JsonDocument.Parse(limited.ToArray());
-            if(json.RootElement.GetProperty("Status").GetInt32()!=0 || !json.RootElement.TryGetProperty("Answer",out var answers))return null;
-            var ips=answers.EnumerateArray().Where(a=>a.GetProperty("type").GetInt32()==1).Select(a=>IPAddress.Parse(a.GetProperty("data").GetString()!)).Distinct().ToArray();
-            return ips.Length>0 && ips.All(PolicySafety.Public)?ips:null;
+            while((count=await input.ReadAsync(buffer,stop))>0){if(limited.Length+count>32768)return new(null,false);limited.Write(buffer,0,count);}
+            return PolicyDns.Parse(limited.ToArray());
         }
-        catch(Exception ex)when(ex is HttpRequestException or IOException or SocketException or OperationCanceledException or JsonException or FormatException or InvalidOperationException or KeyNotFoundException){return null;}
+        catch(Exception ex)when(ex is HttpRequestException or IOException or SocketException or OperationCanceledException or JsonException or FormatException or InvalidOperationException or KeyNotFoundException){stop.ThrowIfCancellationRequested();return new(null,false);}
+    }
+    internal static async Task<IPAddress[]?> ResolveConfigured(string domain,int port,CancellationToken stop,Func<PolicyResolver,CancellationToken,Task<PolicyDnsAnswer>>? lookup=null)
+    {
+        if(PolicySafety.Domain(domain)!=domain)throw new ArgumentException("Invalid public DNS domain.");
+        foreach(var resolver in PolicyDns.Resolvers)
+        {
+            stop.ThrowIfCancellationRequested();
+            using var attempt=CancellationTokenSource.CreateLinkedTokenSource(stop);attempt.CancelAfter(1500);
+            PolicyDnsAnswer answer;
+            try{answer=await (lookup?.Invoke(resolver,attempt.Token)??ResolveDetailed(domain,resolver,port,attempt.Token));}
+            catch(OperationCanceledException)when(!stop.IsCancellationRequested){continue;}
+            stop.ThrowIfCancellationRequested();
+            if(answer.Terminal)return answer.Addresses;
+        }
+        return null;
+    }
+    internal static async Task<CandidateResult> ProbeAddresses(IPAddress[] addresses,Func<IPAddress,CancellationToken,Task<CandidateResult>> probe,CancellationToken stop)
+    {
+        if(addresses.Length==0||addresses.Any(ip=>!PolicySafety.Public(ip)))throw new ArgumentException("Invalid public probe addresses.");
+        using var budget=CancellationTokenSource.CreateLinkedTokenSource(stop);budget.CancelAfter(3000);
+        var timer=Stopwatch.StartNew();
+        try
+        {
+            foreach(var address in addresses.Distinct().Take(4))
+            {
+                budget.Token.ThrowIfCancellationRequested();
+                var result=await probe(address,budget.Token);
+                // Match a TCP dialer's boundary: once connected, TLS/HTTP failure
+                // cannot be repaired by replaying the stream on another address.
+                if(result.Reachable||result.Definitive||result.ConnectionEstablished)return result;
+            }
+        }
+        catch(OperationCanceledException)when(!stop.IsCancellationRequested){}
+        stop.ThrowIfCancellationRequested();
+        return new(false,false,"Public address attempts unavailable within probe budget.",timer.ElapsedMilliseconds);
     }
     internal static async Task<(RouteSelection Selection,long DnsMilliseconds)> SelectResolved(string domain,PolicyPorts ports,CancellationToken stop,bool allowUnstableFallback=false,
         Func<int,CancellationToken,Task<IPAddress[]?>>? resolve=null,Func<IPAddress,int,CancellationToken,Task<CandidateResult>>? probe=null,string? observeRoute=null)
@@ -122,7 +170,7 @@ internal static class PolicyTransport
                 // Match dns-direct/dns-vpn in the prepared engine. A DNS answer
                 // obtained through VPN must not certify a broken direct resolver
                 // or pin the direct probe to another region's CDN address.
-                addresses=await (resolve?.Invoke(port,dnsStop.Token)??ResolveOne(domain,"1.1.1.1","/dns-query?type=A&name=",IPAddress.Parse("1.1.1.1"),port,dnsStop.Token));
+                addresses=await (resolve?.Invoke(port,dnsStop.Token)??ResolveConfigured(domain,ports.DnsPort(port),dnsStop.Token));
                 if(addresses is not {Length:>0}||addresses.Any(ip=>!PolicySafety.Public(ip)))addresses=null;
             }
             catch(OperationCanceledException)when(dnsStop.IsCancellationRequested){}
@@ -136,7 +184,7 @@ internal static class PolicyTransport
             {
                 var answer=await (port==ports.Vpn?vpn:direct).WaitAsync(token);
                 if(answer.Addresses==null)return new(false,false,"Configured route DNS unavailable",answer.Milliseconds);
-                return await (probe?.Invoke(answer.Addresses[0],port,token)??Probe(domain,answer.Addresses[0],port,token));
+                return await ProbeAddresses(answer.Addresses,(ip,attempt)=>probe?.Invoke(ip,port,attempt)??Probe(domain,ip,port,attempt),token);
             },ports,stop,allowUnstableFallback,observeRoute);
         }
         finally{dnsStop.Cancel();await Task.WhenAll(direct,vpn);}
@@ -148,6 +196,7 @@ internal static class PolicyTransport
     internal static bool UnstablePreferred(RouteSelection selection)=>selection.Route!=null&&selection.Candidates.TakeWhile(c=>c.Route!=selection.Route).Any(c=>c.Outcome==ProbeOutcome.Indeterminate);
     internal static async Task<RouteSelection> Select(Func<int,CancellationToken,Task<CandidateResult>> probe,PolicyPorts ports,CancellationToken stop,bool allowUnstableFallback=false,string? observeRoute=null)
     {
+        var selectionTimer=Stopwatch.StartNew();
         using var cancel=CancellationTokenSource.CreateLinkedTokenSource(stop);
         var candidates=new[]{("direct",ports.Direct),("dpi",ports.Dpi),("vpn",ports.Vpn)};
         async Task<CandidateTiming> Check(string route,int port)
@@ -164,7 +213,7 @@ internal static class PolicyTransport
             catch(OperationCanceledException){return new(route,timer.ElapsedMilliseconds,ProbeOutcome.Cancelled);}
         }
         var tasks=candidates.Select(c=>Check(c.Item1,c.Item2)).ToArray();
-        string? selected=null;ProbeOutcome outcome=ProbeOutcome.Unavailable;long elapsed=0;
+        string? selected=null;ProbeOutcome outcome=ProbeOutcome.Unavailable;long elapsed=0,decisionMilliseconds=0;
         try
         {
             // Completion order never changes the direct > DPI > VPN policy.
@@ -181,8 +230,10 @@ internal static class PolicyTransport
             int observed=Array.FindIndex(candidates,c=>c.Item1==observeRoute);
             if(selected!=null && observed>=0 && Array.FindIndex(candidates,c=>c.Item1==selected)<observed)
             {await tasks[observed];stop.ThrowIfCancellationRequested();}
+            decisionMilliseconds=selectionTimer.ElapsedMilliseconds;
         }
         finally{cancel.Cancel();await Task.WhenAll(tasks);}
-        return new(outcome,selected,elapsed,tasks.Select(t=>t.Result).ToArray());
+        return new(outcome,selected,elapsed,tasks.Select(t=>t.Result).ToArray())
+        {DecisionMilliseconds=decisionMilliseconds,CompletionMilliseconds=selectionTimer.ElapsedMilliseconds};
     }
 }

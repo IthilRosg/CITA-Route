@@ -27,9 +27,9 @@ $scripts=@('SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1
 foreach($name in $scripts){Copy-Item -LiteralPath (Join-Path $root $name) -Destination $stage}
 $routerSource=Join-Path $root 'runtime\router-engine-build\smart-router.exe'
 $coreReceipt=Get-Content -LiteralPath (Join-Path $root 'runtime\router-engine-build.json') -Raw|ConvertFrom-Json
-$recipe=(@('Build-RouterEngine.ps1','engine-patches\cita_dns_windows.go','engine-patches\cita_dns_windows_test.go')|ForEach-Object {(Get-FileHash -LiteralPath (Join-Path $root $_)).Hash}) -join ':'
+$recipe=(@('Build-RouterEngine.ps1','engine-patches\cita_dns_windows.go','engine-patches\cita_dns_windows_test.go','engine-patches\cita_fallback.go','engine-patches\cita_fallback_test.go')|ForEach-Object {(Get-FileHash -LiteralPath (Join-Path $root $_)).Hash}) -join ':'
 if($coreReceipt.recipe -ne $recipe -or $coreReceipt.sha256 -ne (Get-FileHash -LiteralPath $routerSource).Hash){throw 'Rebuild the CITA routing core from the current pinned source before packaging.'}
-if($coreReceipt.sourceSha256 -ne (Get-FileHash -LiteralPath (Join-Path $root 'distribution-licenses\cita-routing-core-1.14.3-cita.1-source.zip')).Hash){throw 'Corresponding routing core source archive differs from the build receipt.'}
+if($coreReceipt.sourceSha256 -ne (Get-FileHash -LiteralPath (Join-Path $root 'distribution-licenses\cita-routing-core-1.14.3-cita.2-source.zip')).Hash){throw 'Corresponding routing core source archive differs from the build receipt.'}
 Copy-Item -LiteralPath $routerSource -Destination (Join-Path $stage 'runtime\smart-router.exe')
 Copy-Item -LiteralPath (Join-Path $root 'runtime\vpn-bridge.exe') -Destination (Join-Path $stage 'runtime')
 foreach($name in @('russia_inside.srs','discord.srs')){Copy-Item -LiteralPath (Join-Path $root ('runtime\rules\'+$name)) -Destination (Join-Path $stage 'runtime\rules')}
@@ -42,7 +42,7 @@ foreach($project in @('agent','app')){
     Get-ChildItem -LiteralPath (Join-Path $root $project) -File | Where-Object {$_.Extension -in @('.cs','.csproj','.xaml','.manifest')} | Copy-Item -Destination (Join-Path $stage ('source\'+$project))
 }
 Copy-Item -LiteralPath (Join-Path $root 'app\Assets\RoutePilot.ico') -Destination (Join-Path $stage 'source\app\Assets')
-foreach($name in @('sing-box-LICENSE.txt','GPL-3.0.txt','sing-box-1.14.3-source.zip','cita-routing-core-1.14.3-cita.1-source.zip','dotnet-LICENSE.txt','dotnet-THIRD-PARTY-NOTICES.txt')){
+foreach($name in @('sing-box-LICENSE.txt','GPL-3.0.txt','sing-box-1.14.3-source.zip','cita-routing-core-1.14.3-cita.2-source.zip','dotnet-LICENSE.txt','dotnet-THIRD-PARTY-NOTICES.txt')){
     Copy-Item -LiteralPath (Join-Path $root ('distribution-licenses\'+$name)) -Destination (Join-Path $stage 'licenses')
 }
 # Include the engine's build settings without a user's configuration.

@@ -82,6 +82,10 @@ public static class SelfTests
         rescue.Results.Add(new(){Success=false});Assert(!rescue.Passed,"A real diagnostic failure cannot be shown as success.");
         string json="""{"uploadTotal":123,"downloadTotal":456,"connections":[{"id":"abbda8c7-432e-41f4-938c-2a72a04f725c","metadata":{"host":"youtube.com","network":"tcp","destinationIP":"1.2.3.4","destinationPort":"443","processPath":"C:\\Browser\\browser.exe"},"upload":42,"download":80,"chains":["vpn"],"rule":"rule-set=russia-inside","start":"2026-10-17T12:00:00Z"}]}""";
         var snapshot=Snapshot.Parse(json);Assert(snapshot.Download==456 && snapshot.Connections[0].IsVpn && snapshot.Connections[0].Process=="browser.exe","Real Clash API shape");
+        Assert(Snapshot.Parse(json.Replace("\"vpn\"","\"dpi-auto\"")).Connections[0].IsDpi&&!Snapshot.Parse(json.Replace("\"vpn\"","\"direct-auto\"")).Connections[0].IsDpi,"Experimental output aliases must keep the correct route category in statistics.");
+        var experimental=System.Text.Json.JsonSerializer.Deserialize<RoutingPolicyPreferences>("{\"Mode\":\"Auto\",\"ExperimentalFastTcp\":true}",AppPaths.Json)!;
+        experimental.AllowListedDpi=true;
+        Assert(System.Text.Json.JsonSerializer.Deserialize<RoutingPolicyPreferences>(System.Text.Json.JsonSerializer.Serialize(experimental,AppPaths.Json),AppPaths.Json)!.ExperimentalFastTcp,"Editing visible routing preferences must preserve the hidden opt-in experiment.");
         string x86Json=json.Replace("C:\\\\Browser\\\\browser.exe","C:\\\\Program Files (x86)\\\\Browser\\\\browser.exe (123)");
         Assert(Snapshot.Parse(x86Json).Connections[0].Process=="browser.exe","Parenthesized directory names must not truncate the process path");
         bool invalidApiRejected=false;

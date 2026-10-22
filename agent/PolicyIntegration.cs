@@ -25,7 +25,7 @@ public static class PolicyIntegration
             string token=Guid.NewGuid().ToString("N");data["experimental"]!["clash_api"]!["secret"]=token;
             File.WriteAllText(Path.Combine(folder,"private","controller-token.txt"),token);
             var routes=data["route"]!["rules"]!.AsArray();
-            foreach(var outbound in data["outbounds"]!.AsArray())if(outbound!["tag"]!.GetValue<string>() is "direct" or "dpi")outbound["connect_timeout"]="3s";
+            PolicyTcpBudget.Configure(data,new(){Mode="Auto"});
             foreach(var rule in routes.Where(r=>r?["rule_set"] is JsonArray sets && sets.Any(t=>t?.GetValue<string>() is "russia-inside" or "discord")).ToArray())routes.Remove(rule);
             foreach(var set in data["route"]!["rule_set"]!.AsArray())
             {

@@ -26,6 +26,10 @@ internal static class SystemRouterTests
             Assert(tun["route_exclude_address"]!.AsArray().Count==2,"Repeated preparation must not accumulate exclusions.");
         }
         var rules=JsonNode.Parse("[{\"inbound\":[\"policy-ack\"],\"action\":\"reject\"},{\"action\":\"sniff\"},{\"rule_set\":[\"auto-vpn\"],\"action\":\"route\",\"outbound\":\"vpn\"}]")!.AsArray();
+        var resolverConfig=JsonNode.Parse("{\"inbounds\":[],\"route\":{\"rules\":[]}}")!;
+        SystemRouter.PreserveDirectDnsProbe(resolverConfig);SystemRouter.PreserveDirectDnsProbe(resolverConfig);
+        Assert(resolverConfig["inbounds"]!.AsArray().Count==1&&resolverConfig["route"]!["rules"]!.AsArray().Count==2,"Migrating the dedicated resolver probe must be idempotent.");
+        Assert(resolverConfig["route"]!["rules"]![0]!["ip_cidr"]!.AsArray().Count==2&&resolverConfig["route"]!["rules"]![0]!["port"]![0]!.GetValue<int>()==443&&resolverConfig["route"]!["rules"]![1]!["action"]!.GetValue<string>()=="reject","The direct DNS probe must allow only the configured resolver IPs on TLS port 443 and reject everything else.");
         SystemRouter.PreserveTailscaleTransport(rules);
         Assert(rules[0]!["action"]!.GetValue<string>()=="reject","Tailscale compatibility must preserve the dedicated policy-proof boundary.");
         Assert(rules[1]!["process_name"]!.AsArray().Any(n=>n!.GetValue<string>()=="tailscaled.exe") && rules[1]!["outbound"]!.GetValue<string>()=="direct","The Tailscale daemon transport must precede sniffing and adaptive decisions.");
