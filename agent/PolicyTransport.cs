@@ -8,7 +8,7 @@ using System.Text.Json;
 
 namespace RoutePilot.Agent;
 
-public enum ProbeOutcome { Reachable, Unavailable, Indeterminate, DnsUnavailable, TlsAuthenticationError, Cancelled }
+public enum ProbeOutcome { Reachable, Unavailable, Indeterminate, DnsUnavailable, TlsAuthenticationError, Cancelled, HttpRestricted }
 public sealed record CandidateTiming(string Route,long Milliseconds,ProbeOutcome Outcome);
 public sealed record RouteSelection(ProbeOutcome Outcome,string? Route,long Milliseconds,CandidateTiming[] Candidates)
 {
@@ -38,6 +38,15 @@ public sealed class PolicyPorts
 
 internal static class PolicyTransport
 {
+    internal static CandidateResult HttpResponse(int status,long milliseconds)
+    {
+        // A valid TLS response proves the peer, not that this route can serve
+        // the application. 451 explicitly refuses access. A generic 403 may be
+        // a browser challenge/authentication requirement on every route.
+        bool restricted=status==451;
+        return new(!restricted,!restricted,restricted?"TLS established; HTTP 451 access restriction":"TLS established; HTTP "+status,milliseconds)
+        {ConnectionEstablished=true,HttpStatus=status};
+    }
     // IP-only SOCKS destinations keep probes on the validated address. HttpClient
     // still owns TLS and validates the ORIGINAL URI hostname, SNI and certificate.
     internal static async Task<Stream> Socks(int port,string host,int destinationPort,CancellationToken stop)
@@ -79,7 +88,7 @@ internal static class PolicyTransport
         using var request=new HttpRequestMessage(HttpMethod.Head,"https://"+domain+"/"){Version=HttpVersion.Version11,VersionPolicy=HttpVersionPolicy.RequestVersionExact};
         var timer=Stopwatch.StartNew();
         try
-        {using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,timeout.Token);return new(true,true,"TLS established; HTTP "+(int)response.StatusCode,timer.ElapsedMilliseconds){ConnectionEstablished=true};}
+        {using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,timeout.Token);return HttpResponse((int)response.StatusCode,timer.ElapsedMilliseconds);}
         catch(HttpRequestException)when(Volatile.Read(ref rejectedCertificate)!=0)
         {return new(false,true,"TLS authentication failed.",timer.ElapsedMilliseconds){ConnectionEstablished=Volatile.Read(ref connectionEstablished)!=0};}
         catch(Exception ex)when(ex is HttpRequestException or IOException or OperationCanceledException or SocketException)
@@ -208,7 +217,8 @@ internal static class PolicyTransport
                 if(first.Definitive && !first.Reachable)return new(route,timer.ElapsedMilliseconds,ProbeOutcome.TlsAuthenticationError);
                 var second=await probe(port,cancel.Token);
                 return new(route,timer.ElapsedMilliseconds,second.Definitive && !second.Reachable?ProbeOutcome.TlsAuthenticationError:
-                    first.Reachable && second.Reachable?ProbeOutcome.Reachable:first.Reachable || second.Reachable?ProbeOutcome.Indeterminate:ProbeOutcome.Unavailable);
+                    first.Reachable && second.Reachable?ProbeOutcome.Reachable:first.Reachable || second.Reachable?ProbeOutcome.Indeterminate:
+                    first.HttpStatus==451&&second.HttpStatus==451?ProbeOutcome.HttpRestricted:ProbeOutcome.Unavailable);
             }
             catch(OperationCanceledException){return new(route,timer.ElapsedMilliseconds,ProbeOutcome.Cancelled);}
         }
@@ -233,6 +243,7 @@ internal static class PolicyTransport
             decisionMilliseconds=selectionTimer.ElapsedMilliseconds;
         }
         finally{cancel.Cancel();await Task.WhenAll(tasks);}
+        if(selected==null&&outcome==ProbeOutcome.Unavailable&&tasks.Any(t=>t.Result.Outcome==ProbeOutcome.HttpRestricted))outcome=ProbeOutcome.HttpRestricted;
         return new(outcome,selected,elapsed,tasks.Select(t=>t.Result).ToArray())
         {DecisionMilliseconds=decisionMilliseconds,CompletionMilliseconds=selectionTimer.ElapsedMilliseconds};
     }

@@ -93,6 +93,7 @@ public partial class MainWindow
         _resourceReadAt=DateTime.UtcNow;
         _resourceState=ResourceStateCache.Read(ResourcePath,DateTime.UtcNow);
         ShowResourceState();
+        if(!_preferences.ResourceNotificationsEnabled){_resourceClearSamples=0;_resourceSampleAt=default;_resourceMonitorId="";return;}
         if(_resourceState==null){_resourceClearSamples=0;_resourceSampleAt=default;_resourceMonitorId="";return;}
         if(_resourceMonitorId!=_resourceState.MonitorId||_resourceState.Sample.ObservedUtc<_resourceSampleAt)
         {_resourceClearSamples=0;_resourceSampleAt=default;_resourceMonitorId=_resourceState.MonitorId;}
@@ -126,17 +127,29 @@ public partial class MainWindow
         string summary=ResourcePresentation.Summary(_resourceState);
         ResourceSummary.Text=summary;ResourceSummary.Foreground=_resourceState?.Level>0?ConsoleTheme.Warn:ConsoleTheme.Dim;
         CompactResourceWarning.BorderBrush=_resourceState?.Level==2?ConsoleTheme.Red:ConsoleTheme.Warn;
-        CompactResourceWarning.Visibility=_resourceState?.Level>0?Visibility.Visible:Visibility.Collapsed;
-        CompactPolicyNote.Visibility=_resourceState?.Level>0?Visibility.Collapsed:Visibility.Visible;
+        bool showWarning=_preferences.ResourceNotificationsEnabled&&_resourceState?.Level>0;
+        CompactResourceWarning.Visibility=showWarning?Visibility.Visible:Visibility.Collapsed;
+        CompactPolicyNote.Visibility=showWarning?Visibility.Collapsed:Visibility.Visible;
         CompactResourceText.Text=summary+" Подробнее ↗";
     }
     public void PreviewResourceWarning()
     {
         if(!_render)return;
+        _preferences.ResourceNotificationsEnabled=true;
+        ResourceNotificationsBox.IsChecked=true;
         var now=DateTime.UtcNow;
         _resourceState=new(){MonitorId=Guid.NewGuid().ToString("N"),AgentVersion=ReleaseUpdates.Current.ToString(3),UpdatedUtc=now,
             Sample=new(){ObservedUtc=now},Issues=new(){new(){Key="ports-IPv4",Code="UdpPressure",Scope="IPv4",Level=2,ObservedUtc=now}}};
         ShowResourceState();
+    }
+    private void ResourceNotifications_Changed(object sender,RoutedEventArgs e)
+    {
+        if(!_ready)return;
+        _preferences.ResourceNotificationsEnabled=ResourceNotificationsBox.IsChecked==true;
+        _preferences.ResourceNotificationKey="";_preferences.ResourceNotificationAt=default;_preferences.ResourceNotificationLevel=0;
+        _resourceClearSamples=0;_resourceSampleAt=default;_resourceMonitorId="";
+        SaveData();ShowResourceState();
+        if(_preferences.ResourceNotificationsEnabled){_resourceReadAt=default;RefreshResourceState();}
     }
     private void ResourceDetails_Click(object sender,RoutedEventArgs e)=>ShowResourceDetails();
     void ShowResourceDetails()

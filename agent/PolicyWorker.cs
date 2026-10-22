@@ -8,13 +8,15 @@ using System.Text.RegularExpressions;
 
 namespace RoutePilot.Agent;
 
-public sealed record PolicyKey(string Epoch,string Domain,string Application,int Port,string Protocol="tcp",string Strategy="tls-record-ipv4-v2");
+public sealed record PolicyKey(string Epoch,string Domain,string Application,int Port,string Protocol="tcp",string Strategy=PolicyKey.CurrentStrategy)
+{public const string CurrentStrategy="tls-record-ipv4-v3";}
 public sealed record PolicyDecision(PolicyKey Key,string Route,string Reason,DateTime CheckedUtc,DateTime ExpiresUtc,long Milliseconds);
 public sealed class PolicyOptions {public string Mode{get;set;}="Lists";public bool AllowListedDpi{get;set;}public bool ExperimentalFastTcp{get;set;}}
-public sealed class PolicySession {public string Id{get;set;}="";public bool Running{get;set;}public int RouterPid{get;set;}}
+public sealed class PolicySession {public string Id{get;set;}="";public bool Running{get;set;}public int RouterPid{get;set;}public int BridgeGeneration{get;set;}}
 public sealed record CandidateResult(bool Reachable,bool Definitive,string Detail,long Milliseconds)
 {
     public bool ConnectionEstablished{get;init;}
+    public int? HttpStatus{get;init;}
 }
 internal sealed record PolicyCache(string Fingerprint,string Mode,bool AllowListedDpi,string ClearRequest,PolicyDecision[] Decisions)
 {public bool ExperimentalFastTcp{get;init;}}
@@ -413,7 +415,7 @@ public sealed class PolicyWorker
         }
         catch(Exception ex)when(ex is HttpRequestException or IOException or JsonException or TaskCanceledException or KeyNotFoundException or InvalidOperationException){/* No routing inference from a missing statistics API. */}
     }
-    void Failures(string path,CancellationToken cancellation)
+    internal void Failures(string path,CancellationToken cancellation)
     {
         if(!File.Exists(path))return;
         if(new FileInfo(path).Length>8*1024*1024)
@@ -450,8 +452,11 @@ public sealed class PolicyWorker
             {
                 string id=flow.Groups[1].Value;
                 var context=_logFlows.TryGetValue(id,out var existing)?existing:(Host:(string?)null,App:(string?)null,At:DateTime.UtcNow);
-                var destination=Regex.Match(line,@"inbound connection to ([a-zA-Z0-9.-]+):443$");
-                if(destination.Success)context.Host=PolicySafety.Domain(destination.Groups[1].Value);
+                var destination=Regex.Match(line,@"(?:inbound|outbound) connection to ([a-zA-Z0-9.-]+):443$");
+                // A FakeIP TUN inbound has no hostname. The subsequent outbound
+                // line carries it, including flows that die before an API poll.
+                // Resolver/IP-only lines must not erase an already known name.
+                if(destination.Success && PolicySafety.Domain(destination.Groups[1].Value) is {} name)context.Host=name;
                 var process=Regex.Match(line,@"router: found process path: (.+)$");
                 if(process.Success)context.App=Regex.Replace(process.Groups[1].Value.Trim(),@" \(\d+\)$","");
                 _logFlows[id]=context;
@@ -543,7 +548,7 @@ public sealed class PolicyWorker
         using var client=new HttpClient(handler);using var request=new HttpRequestMessage(HttpMethod.Head,"https://"+domain+"/"){Version=HttpVersion.Version11,VersionPolicy=HttpVersionPolicy.RequestVersionExact};
         var watch=System.Diagnostics.Stopwatch.StartNew();
         try
-        {using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,timeout.Token);return new(true,true,"TLS established; HTTP "+(int)response.StatusCode,watch.ElapsedMilliseconds);}
+        {using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,timeout.Token);return PolicyTransport.HttpResponse((int)response.StatusCode,watch.ElapsedMilliseconds);}
         catch(HttpRequestException)when(Volatile.Read(ref rejectedCertificate)!=0)
         {return new(false,true,"TLS certificate/authentication error; adaptation refused.",watch.ElapsedMilliseconds);}
         catch(Exception ex)when(ex is HttpRequestException or OperationCanceledException or IOException)
@@ -571,7 +576,7 @@ public sealed class PolicyWorker
             foreach(var old in cache.Decisions)
             {
                 var decision=old with{Key=old.Key with{Epoch=_epoch}};
-                if(decision.Route is "direct" or "dpi" or "vpn" && decision.Key.Strategy=="tls-record-ipv4-v2" && PolicySafety.Live(decision,_epoch,DateTime.UtcNow) && !Manual(decision.Key.Domain))StoreDecision(decision);
+                if(decision.Route is "direct" or "dpi" or "vpn" && decision.Key.Strategy==PolicyKey.CurrentStrategy && PolicySafety.Live(decision,_epoch,DateTime.UtcNow) && !Manual(decision.Key.Domain))StoreDecision(decision);
             }
             if(_decisions.Count>0)Event("Восстановлены проверенные маршруты: "+_decisions.Count);
         }
@@ -587,7 +592,7 @@ public sealed class PolicyWorker
             var snapshot=Storage.Read<PolicyActiveSnapshot>(path);
             if(snapshot.Epoch!=_epoch || snapshot.Mode!=_options.Mode || snapshot.AllowListedDpi!=_options.AllowListedDpi || snapshot.ExperimentalFastTcp!=_options.ExperimentalFastTcp || snapshot.ClearRequest!=_clearRequest || snapshot.Decisions.Length>DecisionLimit)return;
             foreach(var decision in snapshot.Decisions)
-                if(!_decisions.ContainsKey(decision.Key) && decision.Key.Epoch==_epoch && decision.Key.Strategy=="tls-record-ipv4-v2" && decision.Route is "vpn" or "dpi" && PolicySafety.Valid(decision.Key) && decision.ExpiresUtc>decision.CheckedUtc && decision.ExpiresUtc-decision.CheckedUtc<=TimeSpan.FromMinutes(16))StoreDecision(decision);
+                if(!_decisions.ContainsKey(decision.Key) && decision.Key.Epoch==_epoch && decision.Key.Strategy==PolicyKey.CurrentStrategy && decision.Route is "vpn" or "dpi" && PolicySafety.Valid(decision.Key) && decision.ExpiresUtc>decision.CheckedUtc && decision.ExpiresUtc-decision.CheckedUtc<=TimeSpan.FromMinutes(16))StoreDecision(decision);
         }
         catch(Exception ex)when(ex is IOException or JsonException or InvalidOperationException or NullReferenceException){Event("Направления активной сессии не загружены.");}
     }

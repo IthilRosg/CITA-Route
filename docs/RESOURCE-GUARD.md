@@ -4,7 +4,12 @@ The existing protected RoutePilotRescue service observes system resources even
 when the GUI exits. It writes a bounded `resource-state.json` in its protected
 ProgramData directory. The GUI reads that report, shows a compact warning only
 when an issue is confirmed, and offers a report in Settings or the compact menu.
-Tray notifications require a running GUI (including a window hidden to the tray).
+Resource notifications are opt-in in the next build: `ResourceNotificationsEnabled`
+defaults to false, including when an older preferences file has no such property.
+The Settings switch controls both tray balloons (warnings and recovery) and the
+compact-window warning. The resource report and protected service observations
+remain available independently of that switch. Tray notifications also require
+a running GUI (including a window hidden to the tray).
 After installing this release, the protected agent updates on the next Connect
 through the existing Windows confirmation. A missing/stale report is unavailable,
 not a successful resource check and not proof of lost internet.

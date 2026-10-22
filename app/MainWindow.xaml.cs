@@ -79,6 +79,7 @@ public partial class MainWindow : Window
         AboutVersionLabel.Text="Версия "+ReleaseUpdates.Current.ToString(3)+" · Windows desktop";
         _preferences.RefreshSeconds=Math.Clamp(_preferences.RefreshSeconds,1,3);
         CloseToTrayBox.IsChecked=_preferences.CloseToTray;RefreshIntervalInput.SelectedIndex=_preferences.RefreshSeconds-1;
+        ResourceNotificationsBox.IsChecked=_preferences.ResourceNotificationsEnabled;
         InitializeUpdates();
         InitializeStartup();
         InitializeQuality();

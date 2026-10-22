@@ -6,6 +6,27 @@ namespace RoutePilot.Agent;
 
 internal static class PolicyLiveCheck
 {
+    internal static async Task Site(string root,string domain)
+    {
+        domain=PolicySafety.Domain(domain)??throw new ArgumentException("Specify a public DNS hostname, not a URL or address.");
+        var session=Storage.Read<PolicySession>(Path.Combine(root,"runtime/session.json"));
+        if(!session.Running||session.BridgeGeneration<=0)throw new IOException("An active ordinary session with a known bridge generation is required.");
+        var ports=PolicyPorts.Read(root);using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(14));
+        var attempts=new System.Collections.Concurrent.ConcurrentQueue<object>();
+        var resolved=await PolicyTransport.SelectResolved(domain,ports,stop.Token,probe:async(address,port,token)=>
+        {
+            var result=await PolicyTransport.Probe(domain,address,port,token);
+            attempts.Enqueue(new{route=port==ports.Vpn?"vpn":port==ports.Dpi?"dpi":"direct",result.Reachable,result.Definitive,result.HttpStatus,result.Milliseconds});
+            return result;
+        });
+        var after=Storage.Read<PolicySession>(Path.Combine(root,"runtime/session.json"));
+        if(!after.Running||after.Id!=session.Id||after.BridgeGeneration!=session.BridgeGeneration)throw new IOException("Routing generation changed; site observation discarded.");
+        var report=new{success=true,domain,sessionId=session.Id,bridgeGeneration=session.BridgeGeneration,finishedUtc=DateTime.UtcNow,route=resolved.Selection.Route,
+            outcome=resolved.Selection.Outcome.ToString(),resolved.DnsMilliseconds,candidates=resolved.Selection.Candidates,attempts=attempts.ToArray(),
+            scope="Own credential-free DNS/HEAD only; no rules applied or user requests replayed; TLS/HTTP reachability does not certify browser challenges or the whole application"};
+        Storage.Write(Path.Combine(root,"logs/site-check-last.json"),report);
+        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(report,Storage.Json));
+    }
     internal static async Task Run(string root)
     {
         var session=Storage.Read<PolicySession>(Path.Combine(root,"runtime/session.json"));

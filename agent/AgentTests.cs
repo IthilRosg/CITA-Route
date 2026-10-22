@@ -69,6 +69,7 @@ public static class AgentTests
             await PolicyWorkerTests.Run(temporary);
             await PolicyStabilityTests.Run(temporary);
             await PolicyOptimizationTests.Run(temporary);
+            await PolicyHttpTests.Run(temporary);
             await UdpQualityTests.Run(temporary);
             await WireSockStatisticsTests.Run();
             var store=new RunStore(temporary);store.Begin(TestKind.DryRun,1,2,5);string old=store.State.Id;
