@@ -189,7 +189,7 @@ internal static class ComponentRecoveryTests
                             Assert(udpRefused&&vpnReflector.Requests==before,"Paused VPN UDP reached the reflector through a fallback path.");
                             await Task.Delay(TimeSpan.FromSeconds(soakSeconds/(2.0*soakCycles)),budget.Token);
                         }
-                        await Ping(direct);Assert(trafficFailure==null,"Continuous direct traffic failed during recovery.");
+                        await Ping(direct);if(trafficFailure!=null)throw new IOException("Continuous direct traffic failed during recovery.",trafficFailure);
                         Assert(Storage.Read<JsonElement>(sessionPath).GetProperty("routerPid").GetInt32()==router.Id,"Soak replaced the direct router.");
                         router.Refresh();peakBytes=Math.Max(peakBytes,router.PrivateMemorySize64);peakHandles=Math.Max(peakHandles,router.HandleCount);
                         if(soakSeconds>0)Console.WriteLine($"Mixed soak: cycle {cycle+1}/{soakCycles}, elapsed {elapsed.Elapsed.TotalSeconds:F0}s, direct frames {continuousFrames}, video bytes {videoBytes}, UDP {udpReceived}/{udpSent}.");

@@ -5,7 +5,7 @@ Part of the CITA family: [AWG CITA](https://github.com/IthilRosg/AWG-CITA) manag
 
 The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspired palette, sharp frames and terminal typography.
 
-**0.6.0** combines pause/network recovery with a confirmed return to preferred routes, less background polling/writing, and a smaller installer that prepares .NET only when needed. See [scope and acceptance boundaries](docs/RELEASE-0.6.0.md). Protected routing before Windows sign-in remains opt-in; see [startup behavior](docs/STARTUP.md).
+**0.6.1** adds per-route DNS fallback, bounded CDN/resource failure detection, QUIC retry handling, recoverable EXE installation and an optional experimental browser adapter. Resource-pressure notifications are off by default. See [scope and acceptance boundaries](docs/RELEASE-0.6.1.md) and [browser adapter setup](docs/BROWSER-FEEDBACK.md). Protected routing before Windows sign-in remains opt-in; see [startup behavior](docs/STARTUP.md).
 
 [Download stable releases](https://github.com/IthilRosg/CITA-Route/releases) · [Report a bug](https://github.com/IthilRosg/CITA-Route/issues)
 

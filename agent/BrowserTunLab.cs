@@ -112,7 +112,13 @@ internal static class BrowserTunLab
             async Task<JsonElement[]> Warm(Browser page,bool requireQuic)
             {
                 JsonElement[] pair=Array.Empty<JsonElement>();
-                for(int i=0;i<20;i++){pair=await FetchPair(page);if(pair.All(p=>p.GetProperty("ok").GetBoolean())&&(!requireQuic||pair.Any(p=>p.GetProperty("protocol").GetString()=="h3")))return pair;await Task.Delay(750,stop.Token);}
+                for(int i=0;i<20;i++)
+                {
+                    pair=await FetchPair(page);bool observerReady=true;
+                    if(nativeBroker!=null){nativeBroker.Pump();var state=await page.ExtensionState();observerReady=state.GetProperty("enabled").GetBoolean()&&state.GetProperty("connected").GetBoolean()&&state.GetProperty("watched").GetInt32()>0;}
+                    if(observerReady&&pair.All(p=>p.GetProperty("ok").GetBoolean())&&(!requireQuic||pair.Any(p=>p.GetProperty("protocol").GetString()=="h3")))return pair;
+                    await Task.Delay(750,stop.Token);
+                }
                 observations.Add(new{phase="baseline-not-reached",resources=pair});
                 throw new IOException("Browser did not reach the required healthy HTTP/3 baseline.");
             }
@@ -200,9 +206,9 @@ internal static class BrowserTunLab
                 observations.Add(new{phase="automatic-tcp-body-recovery",resources=repaired,ownTcpProbes,appliedVersion=publisher.Version,controllerAndBrowserMs=replacement.ElapsedMilliseconds});
                 if(nativeBroker!=null)
                 {
-                    int Hosts(){int count=0;foreach(var p in Process.GetProcessesByName("RoutePilot.Agent")){using(p){if(p.Id!=Environment.ProcessId&&string.Equals(p.MainModule?.FileName,BrowserNativeIdentity.AgentImage,StringComparison.OrdinalIgnoreCase))count++;}}return count;}
+                    int Hosts(){int count=0;foreach(var p in Process.GetProcessesByName("RoutePilot.Agent")){using(p){if(p.Id!=Environment.ProcessId&&string.Equals(BrowserNativeIdentity.Read(p.Id)?.Path,BrowserNativeIdentity.AgentImage,StringComparison.OrdinalIgnoreCase))count++;}}return count;}
                     int before=Hosts();Assert(before>0,"An idle native host must exist before the stop test.");
-                    if(mediumBrowser){var levels=new List<int>();foreach(var p in Process.GetProcessesByName("RoutePilot.Agent")){using(p){if(p.Id!=Environment.ProcessId&&string.Equals(p.MainModule?.FileName,BrowserNativeIdentity.AgentImage,StringComparison.OrdinalIgnoreCase))levels.Add(BrowserIntegrityLab.Level(p));}}Assert(levels.Count>0&&levels.All(l=>l==8192),"Native hosts must also run at medium integrity.");observations.Add(new{phase="native-integrity",levels});}
+                    if(mediumBrowser){var levels=new List<int>();foreach(var p in Process.GetProcessesByName("RoutePilot.Agent")){using(p){if(p.Id!=Environment.ProcessId&&string.Equals(BrowserNativeIdentity.Read(p.Id)?.Path,BrowserNativeIdentity.AgentImage,StringComparison.OrdinalIgnoreCase))levels.Add(BrowserIntegrityLab.Level(p));}}Assert(levels.Count>0&&levels.All(l=>l==8192),"Native hosts must also run at medium integrity.");observations.Add(new{phase="native-integrity",levels});}
                     await nativeBroker.DisposeAsync();nativeBroker=null;
                     var shutdown=Stopwatch.StartNew();while(Hosts()!=0){Assert(shutdown.Elapsed<TimeSpan.FromSeconds(4),"An idle native host kept the agent executable locked after observer Stop.");await Task.Delay(25,stop.Token);}
                     observations.Add(new{phase="idle-native-host-stop",before,remaining=0,elapsedMs=shutdown.ElapsedMilliseconds,browserStillOpen=true});

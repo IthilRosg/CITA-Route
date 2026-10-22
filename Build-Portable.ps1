@@ -30,7 +30,7 @@ foreach($name in @('manifest.json','background.js','images.js','popup.html','pop
 Copy-Item -LiteralPath (Join-Path $root 'docs\BROWSER-FEEDBACK.md') -Destination (Join-Path $stage 'browser-extension\README.md')
 $routerSource=Join-Path $root 'runtime\router-engine-build\smart-router.exe'
 $coreReceipt=Get-Content -LiteralPath (Join-Path $root 'runtime\router-engine-build.json') -Raw|ConvertFrom-Json
-$recipe=(@('Build-RouterEngine.ps1','engine-patches\cita_dns_windows.go','engine-patches\cita_dns_windows_test.go','engine-patches\cita_fallback.go','engine-patches\cita_fallback_test.go')|ForEach-Object {(Get-FileHash -LiteralPath (Join-Path $root $_)).Hash}) -join ':'
+$recipe=(@('Build-RouterEngine.ps1','engine-patches\cita_dns_windows.go','engine-patches\cita_dns_windows_test.go','engine-patches\cita_fallback.go','engine-patches\cita_fallback_test.go','engine-patches\cita_quic_domain.go','engine-patches\cita_quic_domain_test.go')|ForEach-Object {(Get-FileHash -LiteralPath (Join-Path $root $_)).Hash}) -join ':'
 if($coreReceipt.recipe -ne $recipe -or $coreReceipt.sha256 -ne (Get-FileHash -LiteralPath $routerSource).Hash){throw 'Rebuild the CITA routing core from the current pinned source before packaging.'}
 if($coreReceipt.sourceSha256 -ne (Get-FileHash -LiteralPath (Join-Path $root 'distribution-licenses\cita-routing-core-1.14.3-cita.3-source.zip')).Hash){throw 'Corresponding routing core source archive differs from the build receipt.'}
 Copy-Item -LiteralPath $routerSource -Destination (Join-Path $stage 'runtime\smart-router.exe')

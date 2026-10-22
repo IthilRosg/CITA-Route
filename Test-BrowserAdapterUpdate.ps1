@@ -27,10 +27,10 @@ try {
     $env:DOTNET_ROOT='C:\CitaLab\Dotnet';$env:DOTNET_ROOT_X64='C:\CitaLab\Dotnet'
     & 'C:\CitaLab\Test-BrowserTun.ps1' -KeepBrowser
     $browser=Get-Content 'C:\CitaLab\browser-tun-result.json' -Raw|ConvertFrom-Json
+    if(-not $browser.success){throw ('The owned browser cycle failed: '+$browser.error)}
     $identity=$browser.result.retainedBrowser
     if(-not $identity -or $identity.path -ne 'C:\CitaLab\Browser\chrome-win64\chrome.exe'){throw 'The owned browser identity is missing'}
     $chrome=Get-Process -Id $identity.pid -ErrorAction Stop;Assert-LabChrome
-    if(-not $browser.success){throw 'The complete owned browser cycle failed'}
     Assert-NoNative
     if(Test-Path 'HKCU:\Software\CITA\Route\BrowserFeedback'){throw 'The old adapter registration was not removed'}
     . 'C:\CitaLab\AgentPackage.ps1'

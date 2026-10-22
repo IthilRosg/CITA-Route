@@ -16,7 +16,7 @@ internal static class BrowserNativeIdentity
     [DllImport("kernel32.dll",SetLastError=true)]static extern SafeProcessHandle OpenProcess(uint access,bool inherit,int pid);
     [DllImport("kernel32.dll",SetLastError=true)]static extern bool GetProcessTimes(SafeProcessHandle process,out long created,out long exit,out long kernel,out long user);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]static extern bool QueryFullProcessImageName(SafeProcessHandle process,uint flags,StringBuilder name,ref int size);
-    static ProcessIdentity? Read(int pid)=>Read(pid,out _);
+    internal static ProcessIdentity? Read(int pid)=>Read(pid,out _);
     static ProcessIdentity? Read(int pid,out string status)
     {
         using var handle=OpenProcess(0x1000,false,pid);status="Open:"+Marshal.GetLastWin32Error();if(handle.IsInvalid)return null;

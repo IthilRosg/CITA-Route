@@ -32,7 +32,10 @@ jobs:
         run: ./Bootstrap.ps1
       - name: Build and run agent tests
         shell: powershell
-        run: ./Build-All.ps1
+        run: |
+          ./Build-All.ps1
+          node ./tools/test-browser-extension.cjs
+          if($LASTEXITCODE -ne 0){throw 'Browser extension regression tests failed'}
       - name: Verify native DNS filter boundaries on isolated runner
         shell: powershell
         run: |
@@ -55,7 +58,7 @@ jobs:
           ./Verify-DesktopRuntime.ps1
           ./Verify-ReleaseUpdate.ps1
           ./Verify-ReleaseUpdate.ps1 -FrameworkDependent
-          ./Verify-ReleaseUpdate.ps1 -InstallerSource tests/fixtures/Install-Release-0.5.4.ps1
+          ./Verify-ReleaseUpdate.ps1 -InstallerSource tests/fixtures/Install-Release-0.5.4.ps1 -Legacy
           ./Verify-Prepare.ps1
           ./Verify-ConnectionHandoff.ps1
           ./Verify-InstallationGuard.ps1

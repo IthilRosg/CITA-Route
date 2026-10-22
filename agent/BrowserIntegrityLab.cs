@@ -69,7 +69,7 @@ internal static class BrowserIntegrityLab
         static string Literal(string text)=>"'"+text.Replace("'","''")+"'";
         string root=Directory.GetParent(Directory.GetParent(profile)!.FullName)!.FullName;
         string probe="Start-Process -WindowStyle Hidden -FilePath "+Literal(BrowserNativeIdentity.AgentImage)+" -ArgumentList "+Literal("--browser-native-peer-lab "+Quote(root)+" "+Quote(profile))+" -Wait -RedirectStandardOutput "+Literal(Path.Combine(profile,"probe-out.log"))+" -RedirectStandardError "+Literal(Path.Combine(profile,"probe-error.log"))+";";
-        File.WriteAllText(script,@"$ErrorActionPreference='Stop';$env:DOTNET_ROOT='C:\CitaLab\Dotnet';$env:DOTNET_ROOT_X64='C:\CitaLab\Dotnet';"+probe+"$p=Start-Process -WindowStyle Hidden -FilePath "+Literal(info.FileName)+" -ArgumentList "+Literal(string.Join(" ",info.ArgumentList.Select(Quote)))+" -PassThru -RedirectStandardOutput "+Literal(Path.Combine(profile,"stdout.log"))+" -RedirectStandardError "+Literal(Path.Combine(profile,"stderr.log"))+";$p.Id|Set-Content -LiteralPath "+Literal(pidFile)+" -Encoding ASCII;$p.WaitForExit()",new UTF8Encoding(true));
+        File.WriteAllText(script,@"$ErrorActionPreference='Stop';$env:DOTNET_ROOT='C:\CitaLab\Dotnet';$env:DOTNET_ROOT_X64='C:\CitaLab\Dotnet';"+probe+"$p=Start-Process -WindowStyle Hidden -FilePath "+Literal(info.FileName)+" -ArgumentList "+Literal(string.Join(" ",info.ArgumentList.Select(Quote)))+" -PassThru -RedirectStandardOutput "+Literal(Path.Combine(profile,"stdout.log"))+" -RedirectStandardError "+Literal(Path.Combine(profile,"stderr.log"))+";[IO.File]::WriteAllText("+Literal(pidFile+".tmp")+",$p.Id.ToString(),[Text.Encoding]::ASCII);[IO.File]::Move("+Literal(pidFile+".tmp")+","+Literal(pidFile)+");$p.WaitForExit()",new UTF8Encoding(true));
         dynamic service=Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service")!)!;service.Connect();dynamic folder=service.GetFolder("\\");
         string name="Cita-BrowserLab-"+Guid.NewGuid().ToString("N");dynamic definition=service.NewTask(0);
         definition.Principal.UserId=user.Value;definition.Principal.LogonType=3;definition.Principal.RunLevel=0;
@@ -85,7 +85,9 @@ internal static class BrowserIntegrityLab
                 if(File.Exists(pidFile)&&int.TryParse(File.ReadAllText(pidFile).Trim(),out int pid))
                 {
                     var process=Process.GetProcessById(pid);
-                    if(process.HasExited||process.StartTime.ToUniversalTime()<launchUtc.AddSeconds(-1)||!string.Equals(process.MainModule?.FileName,info.FileName,StringComparison.OrdinalIgnoreCase)){process.Dispose();throw new IOException("Scheduled browser identity differs.");}
+                    var actual=BrowserNativeIdentity.Read(pid);
+                    if(actual==null){process.Dispose();Thread.Sleep(100);continue;}
+                    if(process.HasExited||actual.StartedUtc<launchUtc.AddSeconds(-1)||!string.Equals(actual.Path,info.FileName,StringComparison.OrdinalIgnoreCase)){process.Dispose();throw new IOException("Scheduled browser identity differs.");}
                     if(Level(process)!=8192){process.Kill(true);process.Dispose();throw new IOException("Scheduled Chrome is not medium integrity.");}started=true;return process;
                 }
                 Thread.Sleep(100);

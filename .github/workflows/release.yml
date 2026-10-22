@@ -43,6 +43,8 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Native DNS filter lifecycle failed'}
           Remove-Item Env:CITA_WFP_LAB
           ./Build-All.ps1
+          node ./tools/test-browser-extension.cjs
+          if($LASTEXITCODE -ne 0){throw 'Browser extension regression tests failed'}
           & ./runtime/cita-dns-tests.exe '-test.run=^TestCitaFallback$' '-test.timeout=15s'
           if($LASTEXITCODE -ne 0){throw 'Native DNS fallback failed'}
           & ./runtime/agent-build/RoutePilot.Agent.exe --dns-integration $PWD.Path
@@ -53,7 +55,7 @@ jobs:
           ./Verify-DesktopRuntime.ps1
           ./Verify-ReleaseUpdate.ps1
           ./Verify-ReleaseUpdate.ps1 -FrameworkDependent
-          ./Verify-ReleaseUpdate.ps1 -InstallerSource tests/fixtures/Install-Release-0.5.4.ps1
+          ./Verify-ReleaseUpdate.ps1 -InstallerSource tests/fixtures/Install-Release-0.5.4.ps1 -Legacy
           ./Verify-Prepare.ps1
           ./Verify-AgentPackage.ps1
           ./Verify-OptimizationGate.ps1
