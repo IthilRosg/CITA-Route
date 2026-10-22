@@ -24,6 +24,7 @@ public static class Program
             }
             if(args.Length==2 && args[0]=="--policy-timing-lab"){await PolicyTimingLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--web-routing-lab"){await PolicyWebEngineLab.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==2 && args[0]=="--browser-tun-lab"){await BrowserTunLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--dns-integration"){await PolicyDnsEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--tcp-budget-lab"){await PolicyTcpBudgetLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--resilience-lab"){await PolicyResilienceLab.Run(Path.GetFullPath(args[1]));return 0;}
