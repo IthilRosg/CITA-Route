@@ -45,9 +45,13 @@ internal static class BrowserNativeHost
         string root=ConfiguredRoot();var state=ComponentLiveness.Read<BrowserObserverState>(Path.Combine(root,"runtime/browser-observer.json"));
         var session=ComponentLiveness.Read<PolicySession>(Path.Combine(root,"runtime/session.json"));
         if(!session.Running||session.Id!=state.SessionId||state.Pipe!="Cita.Browser.v1."+state.SessionId+"."+state.Owner.Pid||!Guid.TryParseExact(state.SessionId,"N",out _))throw new IOException("Browser observer session is not active.");
-        using var pipe=new NamedPipeClientStream(".",state.Pipe,PipeDirection.InOut,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly,TokenImpersonationLevel.Identification);
+        // Server identity below checks its actual user SID, image and start time;
+        // CurrentUserOnly compares token OWNER and rejects a high/medium pair.
+        using var pipe=new NamedPipeClientStream(".",state.Pipe,PipeDirection.InOut,PipeOptions.Asynchronous,TokenImpersonationLevel.Identification);
         using var lifetime=new CancellationTokenSource(TimeSpan.FromHours(2));
         using(var connect=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token)){connect.CancelAfter(4000);await pipe.ConnectAsync(connect.Token);}
+        using(var caller=WindowsIdentity.GetCurrent())
+            if(pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier))?.Equals(caller.User)!=true)throw new IOException("Untrusted browser observer user.");
         if(!BrowserNativeIdentity.GetNamedPipeServerProcessId(pipe.SafePipeHandle,out uint pid)||!BrowserNativeIdentity.Server((int)pid,state.Owner))throw new IOException("Untrusted browser observer process.");
         using var input=Console.OpenStandardInput();using var output=Console.OpenStandardOutput();
         async Task Watch()

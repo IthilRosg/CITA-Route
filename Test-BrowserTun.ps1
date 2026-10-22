@@ -1,11 +1,16 @@
 #requires -Version 5.1
 # Run INSIDE the prepared VMware guest. Never switches the installed pilot.
-param([switch]$Feedback,[switch]$Native)
+param([switch]$Feedback,[switch]$Native,[switch]$MediumBrowser,[switch]$KeepBrowser)
+if($KeepBrowser){$MediumBrowser=$true}
+if($MediumBrowser){$Native=$true}
 if($Native){$Feedback=$true}
 $ErrorActionPreference='Stop'
 $browserMaker=[string](Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS').SystemManufacturer
 if($browserMaker -notmatch 'VMware'){throw 'This acceptance runner is restricted to a VMware guest.'}
 if(-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'An elevated guest token is required.'}
+if(-not ('CitaBrowserLabAwake' -as [type])){Add-Type 'using System.Runtime.InteropServices; public static class CitaBrowserLabAwake { [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint state); }'}
+$browserPowerState=[CitaBrowserLabAwake]::SetThreadExecutionState(2147483649)
+if($browserPowerState -eq 0){throw 'Could not hold guest standby during browser acceptance.'}
 $browserPilot=Join-Path $env:USERPROFILE 'CITA Test\Client\client'
 function Read-BrowserPilot {Get-Content -LiteralPath (Join-Path $browserPilot 'runtime\session.json') -Raw|ConvertFrom-Json}
 function Get-BrowserNetwork {
@@ -25,6 +30,8 @@ try {
     $browserRoot='C:\CitaLab\BrowserTun\'+[guid]::NewGuid().ToString('N');$browserReport.labRoot=$browserRoot
     if($Feedback){$browserExecutable='C:\CitaLab\Dotnet\dotnet.exe';$browserArguments='"C:\CitaLab\Adaptive\browser\RoutePilot.Agent.dll" --browser-feedback-lab "'+$browserRoot+'"'}else{$browserExecutable='C:\CitaLab\Adaptive\browser\RoutePilot.Agent.exe';$browserArguments='--browser-tun-lab "'+$browserRoot+'"'}
     if($Native){$env:DOTNET_ROOT='C:\CitaLab\Dotnet';$env:DOTNET_ROOT_X64='C:\CitaLab\Dotnet';$browserExecutable='C:\CitaLab\Adaptive\browser\RoutePilot.Agent.exe';$browserArguments='--browser-native-lab "'+$browserRoot+'"'}
+    if($MediumBrowser){$browserArguments='--browser-native-medium-lab "'+$browserRoot+'"'}
+    if($KeepBrowser){$browserArguments='--browser-native-update-lab "'+$browserRoot+'"'}
     $browserRun=Start-Process $browserExecutable -ArgumentList $browserArguments -WindowStyle Hidden -PassThru -RedirectStandardOutput 'C:\CitaLab\browser-tun.out' -RedirectStandardError 'C:\CitaLab\browser-tun.err'
     $null=$browserRun.Handle;$browserStarted=$true
     if(-not $browserRun.WaitForExit(235000)){$browserRun.Kill();throw 'Browser acceptance exceeded its deadline.'}
@@ -36,6 +43,7 @@ try {
     $browserReport.success=$true
 } catch {$browserReport.error=$_.Exception.Message}
 finally {
+    [void][CitaBrowserLabAwake]::SetThreadExecutionState($browserPowerState)
     if($browserRun){$browserRun.Dispose()}
     if($browserStarted){
         $browserRemaining=@(Get-NetRoute -DestinationPrefix '203.0.113.231/32' -ErrorAction SilentlyContinue|Where-Object {$_.InterfaceAlias -eq 'Cita-WebLab'})

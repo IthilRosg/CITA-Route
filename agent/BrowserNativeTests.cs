@@ -27,6 +27,14 @@ internal static class BrowserNativeTests
         bool originRejected=false;try{await BrowserNativeHost.Run(["chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"]);}catch(IOException){originRejected=true;}
         Assert(originRejected,"An unapproved extension cannot enter native messaging.");
         Assert(BrowserNativeIdentity.Browser(Environment.ProcessId)==null,"A self-test launched outside Chrome/Edge cannot attest itself as a browser.");
+        using(var caller=System.Security.Principal.WindowsIdentity.GetCurrent())
+        {
+            var security=BrowserNativeBroker.UserSecurity();var grants=security.GetAccessRules(true,true,typeof(System.Security.Principal.SecurityIdentifier));
+            Assert(security.AreAccessRulesProtected&&security.GetOwner(typeof(System.Security.Principal.SecurityIdentifier))?.Equals(caller.User)==true&&grants.Count==1,"The browser pipe must have one protected user-SID grant, not an Administrators/everyone grant.");
+            var grant=grants[0] as System.IO.Pipes.PipeAccessRule??throw new IOException("Missing user pipe rule.");Assert(grant.IdentityReference.Equals(caller.User)&&grant.AccessControlType==System.Security.AccessControl.AccessControlType.Allow,"Only the actual user SID may connect.");
+            using var pipe=BrowserNativeBroker.UserPipe("Cita.Browser.Test."+Guid.NewGuid().ToString("N"),1);
+            Assert(BrowserNativeBroker.HasMediumLabel(pipe),"The real kernel pipe must have an explicit medium label; low integrity cannot write up.");
+        }
         Console.WriteLine("PASS: native-browser framing, partial reads/EOF, unknown and private fields, bounds, POST refusal and untrusted origin/process rejection.");
     }
 }

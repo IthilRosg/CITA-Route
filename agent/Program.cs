@@ -30,6 +30,9 @@ public static class Program
             if(args.Length==2 && args[0]=="--browser-tun-lab"){await BrowserTunLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--browser-feedback-lab"){await BrowserTunLab.Run(Path.GetFullPath(args[1]),true);return 0;}
             if(args.Length==2 && args[0]=="--browser-native-lab"){await BrowserTunLab.Run(Path.GetFullPath(args[1]),true,true);return 0;}
+            if(args.Length==2 && args[0]=="--browser-native-medium-lab"){await BrowserTunLab.Run(Path.GetFullPath(args[1]),true,true,true);return 0;}
+            if(args.Length==2 && args[0]=="--browser-native-update-lab"){await BrowserTunLab.Run(Path.GetFullPath(args[1]),true,true,true,true);return 0;}
+            if(args.Length==3 && args[0]=="--browser-native-peer-lab"){await BrowserIntegrityLab.Probe(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]));return 0;}
             if(args.Length==2 && args[0]=="--public-browser-tun-lab"){await PublicBrowserTunLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--dns-integration"){await PolicyDnsEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--tcp-budget-lab"){await PolicyTcpBudgetLab.Run(Path.GetFullPath(args[1]));return 0;}

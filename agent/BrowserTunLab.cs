@@ -20,13 +20,14 @@ internal static class BrowserTunLab
     const string Domain="web.cita-route.test",Address="203.0.113.231";
     const string BrowserPath=@"C:\CitaLab\Browser\chrome-win64\chrome.exe";
     static void Assert(bool value,string message){if(!value)throw new IOException(message);}
-    internal static async Task Run(string directory,bool feedback=false,bool native=false)
+    internal static async Task Run(string directory,bool feedback=false,bool native=false,bool mediumBrowser=false,bool keepBrowser=false)
     {
         string root=Path.GetFullPath(directory);
         using var bios=Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\BIOS");
         Assert((bios?.GetValue("SystemManufacturer") as string)?.Contains("VMware")==true,"VMware guest required.");
         Assert(root.StartsWith(@"C:\CitaLab\BrowserTun\",StringComparison.OrdinalIgnoreCase)&&Guid.TryParseExact(Path.GetFileName(root),"N",out _),"Only a fresh owned guest lab directory is allowed.");
         Assert(!Directory.Exists(root),"Browser test directory already exists.");
+        Assert(!keepBrowser||(mediumBrowser&&native),"Only the owned medium-browser update fixture may retain Chrome.");
         using(var image=File.OpenRead(BrowserPath))Assert(Convert.ToHexString(SHA256.HashData(image))=="5AF44A250A2139D4E0864C07227BF0687A6D12655BAB9682A5BE784B41BC82E1","Pinned official browser binary differs.");
         string installed=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),"CITA Test/Client/client");
         if(feedback)Assert(Process.GetProcessesByName("RoutePilot").Length==0&&Process.GetProcessesByName("smart-router").Length==0&&Process.GetProcessesByName("vpn-bridge").Length==0,"Use the clean second guest for feedback acceptance.");
@@ -64,7 +65,7 @@ internal static class BrowserTunLab
         void Progress(string phase)=>Storage.Write(Path.Combine(root,"progress.json"),new{phase,updatedUtc=DateTime.UtcNow});
         var info=new ProcessStartInfo(@"C:\CitaLab\Adaptive\browser\Cita.BrowserLab.exe"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};info.ArgumentList.Add(root);
         using var helper=Process.Start(info)??throw new IOException("Owned helper did not start.");var helperOut=helper.StandardOutput.ReadToEndAsync();var helperErr=helper.StandardError.ReadToEndAsync();
-        string? control=null;Browser? browser=null;BrowserNativeBroker? nativeBroker=null;bool nativeRegistered=false;var observations=new List<object>();var browserEvents=new List<object>();bool success=false;string? failure=null;
+        string? control=null;Browser? browser=null;ProcessIdentity? retainedBrowser=null;BrowserNativeBroker? nativeBroker=null;bool nativeRegistered=false;var observations=new List<object>();var browserEvents=new List<object>();bool success=false;string? failure=null;
         try
         {
             Progress("StartingScopedTun");string readyPath=Path.Combine(root,"ready.json");
@@ -89,13 +90,16 @@ internal static class BrowserTunLab
                 }
                 worker=new PolicyWorker(root,session,new(){Mode="Auto",AllowListedDpi=true,ExperimentalBrowserFeedback=true},Calibrate);
                 await worker.AttachBrowserPublisher(publisher,stop.Token);
-                if(native){BrowserNativeHost.Register(root,false);nativeRegistered=true;nativeBroker=new(root,session.Id,worker);}
+                if(native){BrowserNativeHost.Register(root,false);nativeRegistered=true;nativeBroker=new(root,session.Id,worker);Assert(nativeBroker.ListenerFailure==null,"Native listener startup: "+nativeBroker.ListenerFailure);}
             }
             var key=new PolicyKey("owned-web-test",Domain,BrowserPath,443);
             async Task<Browser> Open(string phase)
             {
                 Progress(phase);Assert(Current(),"Pilot changed; test abandoned.");
-                return await Browser.Open(BrowserPath,Path.Combine(root,"profiles",phase),spki,local,stop.Token,feedback:native?null:worker,nativeExtension:native,pump:nativeBroker==null?null:nativeBroker.Pump);
+                var page=await Browser.Open(BrowserPath,Path.Combine(root,"profiles",phase),spki,local,stop.Token,feedback:native?null:worker,nativeExtension:native,pump:nativeBroker==null?null:nativeBroker.Pump,mediumBrowser:mediumBrowser);
+                if(mediumBrowser){var peer=Storage.Read<JsonElement>(Path.Combine(root,"profiles",phase,"peer-probe.json"));if(!peer.GetProperty("server").GetBoolean()){await page.DisposeAsync();throw new IOException("Medium server identity: "+peer.GetRawText());}}
+                if(mediumBrowser){using var owner=Process.GetCurrentProcess();int agentLevel=BrowserIntegrityLab.Level(owner),browserLevel=page.Integrity;Assert(agentLevel==12288&&browserLevel==8192,"Actual agent/browser integrity levels differ from the acceptance case.");observations.Add(new{phase="integrity-"+phase,agentLevel,browserLevel});}
+                return page;
             }
             async Task<JsonElement> Resource(Browser page,string kind)
             {
@@ -197,11 +201,13 @@ internal static class BrowserTunLab
                 if(nativeBroker!=null)
                 {
                     int Hosts(){int count=0;foreach(var p in Process.GetProcessesByName("RoutePilot.Agent")){using(p){if(p.Id!=Environment.ProcessId&&string.Equals(p.MainModule?.FileName,BrowserNativeIdentity.AgentImage,StringComparison.OrdinalIgnoreCase))count++;}}return count;}
-                    int before=Hosts();Assert(before>0,"An idle native host must exist before the stop test.");await nativeBroker.DisposeAsync();nativeBroker=null;
+                    int before=Hosts();Assert(before>0,"An idle native host must exist before the stop test.");
+                    if(mediumBrowser){var levels=new List<int>();foreach(var p in Process.GetProcessesByName("RoutePilot.Agent")){using(p){if(p.Id!=Environment.ProcessId&&string.Equals(p.MainModule?.FileName,BrowserNativeIdentity.AgentImage,StringComparison.OrdinalIgnoreCase))levels.Add(BrowserIntegrityLab.Level(p));}}Assert(levels.Count>0&&levels.All(l=>l==8192),"Native hosts must also run at medium integrity.");observations.Add(new{phase="native-integrity",levels});}
+                    await nativeBroker.DisposeAsync();nativeBroker=null;
                     var shutdown=Stopwatch.StartNew();while(Hosts()!=0){Assert(shutdown.Elapsed<TimeSpan.FromSeconds(4),"An idle native host kept the agent executable locked after observer Stop.");await Task.Delay(25,stop.Token);}
                     observations.Add(new{phase="idle-native-host-stop",before,remaining=0,elapsedMs=shutdown.ElapsedMilliseconds,browserStillOpen=true});
                 }
-                browserEvents.AddRange(browser.Events);await browser.DisposeAsync();browser=null;await Ping();worker.Clear();await worker.ApplyBrowserWork(stop.Token);
+                browserEvents.AddRange(browser.Events);if(!keepBrowser){await browser.DisposeAsync();browser=null;}await Ping();worker.Clear();await worker.ApplyBrowserWork(stop.Token);
             }
             var state=JsonSerializer.Deserialize<JsonElement>(await local.GetStringAsync(control+"/status",stop.Token));
             Assert(state.GetProperty("events").EnumerateArray().Any(e=>e.GetProperty("broken").GetBoolean()),"The injected HTTP/3 fault must actually occur.");
@@ -212,14 +218,14 @@ internal static class BrowserTunLab
         catch(Exception ex){if(browser!=null){if(native)try{observations.Add(new{phase="native-extension-diagnostic",state=await browser.ExtensionState()});}catch{}browserEvents.AddRange(browser.Events);}failure=ex.GetType().Name+": "+ex.Message;Progress("Failed");}
         finally
         {
-            if(browser!=null)await browser.DisposeAsync();
+            if(browser!=null){if(success&&keepBrowser)retainedBrowser=browser.RetainForUpdate();await browser.DisposeAsync();}
             try{if(nativeBroker!=null)await nativeBroker.DisposeAsync();}catch(Exception ex){failure??="Native observer cleanup: "+ex.GetType().Name;success=false;}
             try{if(nativeRegistered)BrowserNativeHost.Unregister(root);}catch(Exception ex){failure??="Native registration cleanup: "+ex.GetType().Name;success=false;}
             if(control!=null)try{observations.Add(new{phase="server-events",state=JsonSerializer.Deserialize<JsonElement>(await local.GetStringAsync(control+"/status"))});await local.GetStringAsync(control+"/shutdown");}catch{}
             using var close=new CancellationTokenSource(12000);try{await helper.WaitForExitAsync(close.Token);}catch(OperationCanceledException){helper.Kill(true);await helper.WaitForExitAsync();}
             await Task.WhenAll(helperOut,helperErr);
         }
-        var report=new{success,failure,finishedUtc=DateTime.UtcNow,pilotPreserved=Current(),observations,browserEvents,browserFeedbackVerified=feedback&&success,ordinaryExtensionVerified=native&&success,automaticPublicCertificateFallbackVerified=false,scope="Owned VMware TUN /32 and generated HTTPS/HTTP3 resources; pinned TLS probe transport, real worker/selector/ack publisher. Native mode uses the ordinary MV3 extension and authenticated native/pipe channel; CDP only drives the test and does not deliver failures. Generated-certificate H3 flags still differ by phase, public certificate behavior is covered separately. No default route/DNS/profile changes; no existing-stream migration claim"};
+        var report=new{success,failure,finishedUtc=DateTime.UtcNow,pilotPreserved=Current(),observations,browserEvents,retainedBrowser,browserFeedbackVerified=feedback&&success,ordinaryExtensionVerified=native&&success,automaticPublicCertificateFallbackVerified=false,scope="Owned VMware TUN /32 and generated HTTPS/HTTP3 resources; pinned TLS probe transport, real worker/selector/ack publisher. Native mode uses the ordinary MV3 extension and authenticated native/pipe channel; CDP only drives the test and does not deliver failures. Generated-certificate H3 flags still differ by phase, public certificate behavior is covered separately. No default route/DNS/profile changes; no existing-stream migration claim"};
         Storage.Write(Path.Combine(root,"result.json"),report);Console.WriteLine(JsonSerializer.Serialize(new{success,root,failure}));if(!success)throw new IOException(failure);
     }
 
@@ -227,11 +233,14 @@ internal static class BrowserTunLab
     {
         readonly Process _process;readonly ClientWebSocket _socket;readonly CancellationToken _stop;readonly string _phase,_domain,_application;int _next;
         readonly PolicyWorker? _feedback;readonly Action? _pump;
+        bool _retain;
         readonly Dictionary<string,string?> _requests=new();
         readonly Task<string> _error,_output;int _debugPort;
         internal readonly List<object> Events=new();
-        Browser(Process process,ClientWebSocket socket,string phase,string domain,string application,CancellationToken stop,PolicyWorker? feedback,Action? pump){_process=process;_socket=socket;_phase=phase;_domain=domain;_application=application;_stop=stop;_feedback=feedback;_pump=pump;_error=process.StandardError.ReadToEndAsync();_output=process.StandardOutput.ReadToEndAsync();}
-        internal static async Task<Browser> Open(string exe,string profile,string? spki,HttpClient local,CancellationToken stop,string? publicDomain=null,string? publicAddress=null,PolicyWorker? feedback=null,bool nativeExtension=false,Action? pump=null)
+        internal int Integrity=>BrowserIntegrityLab.Level(_process);
+        internal ProcessIdentity RetainForUpdate(){_retain=true;return ProcessIdentity.From(_process);}
+        Browser(Process process,ClientWebSocket socket,string phase,string domain,string application,CancellationToken stop,PolicyWorker? feedback,Action? pump,bool redirected=true){_process=process;_socket=socket;_phase=phase;_domain=domain;_application=application;_stop=stop;_feedback=feedback;_pump=pump;_error=redirected?process.StandardError.ReadToEndAsync():Task.FromResult("");_output=redirected?process.StandardOutput.ReadToEndAsync():Task.FromResult("");}
+        internal static async Task<Browser> Open(string exe,string profile,string? spki,HttpClient local,CancellationToken stop,string? publicDomain=null,string? publicAddress=null,PolicyWorker? feedback=null,bool nativeExtension=false,Action? pump=null,bool mediumBrowser=false)
         {
             bool synthetic=publicDomain==null;string domain=publicDomain??Domain,address=publicAddress??Address;
             Assert(synthetic||(domain is "cloudflare-quic.com" or "www.cloudflare.com"&&IPAddress.TryParse(address,out var ip)&&ip.AddressFamily==AddressFamily.InterNetwork),"Only fixed public lab origins are allowed.");
@@ -246,7 +255,7 @@ internal static class BrowserTunLab
             info.ArgumentList.Add("--host-resolver-rules=MAP "+domain+" "+address+", MAP * ~NOTFOUND, EXCLUDE localhost");
             info.ArgumentList.Add("--log-net-log="+Path.Combine(profile,"netlog.json"));
             if(nativeExtension){info.ArgumentList.Add(@"--load-extension=C:\CitaLab\BrowserFeedback");info.ArgumentList.Add(@"--disable-extensions-except=C:\CitaLab\BrowserFeedback");}
-            var process=Process.Start(info)??throw new IOException("Pinned browser did not start.");var socket=new ClientWebSocket();var page=new Browser(process,socket,Path.GetFileName(profile),domain,exe,stop,feedback,pump);
+            var process=mediumBrowser?BrowserIntegrityLab.Start(info):Process.Start(info)??throw new IOException("Pinned browser did not start.");var socket=new ClientWebSocket();var page=new Browser(process,socket,Path.GetFileName(profile),domain,exe,stop,feedback,pump,!mediumBrowser);
             try
             {
                 string portFile=Path.Combine(profile,"DevToolsActivePort");int port=0;
@@ -326,7 +335,7 @@ internal static class BrowserTunLab
         }
         public async ValueTask DisposeAsync()
         {
-            if(!_process.HasExited){try{await Call("Browser.close",new{});}catch{}using var close=new CancellationTokenSource(2000);try{await _process.WaitForExitAsync(close.Token);}catch(OperationCanceledException){_process.Kill(true);await _process.WaitForExitAsync();}}
+            if(!_retain&&!_process.HasExited){try{await Call("Browser.close",new{});}catch{}using var close=new CancellationTokenSource(2000);try{await _process.WaitForExitAsync(close.Token);}catch(OperationCanceledException){_process.Kill(true);await _process.WaitForExitAsync();}}
             foreach(var ticket in _requests.Values)_feedback?.FinishBrowserResource(ticket);_requests.Clear();
             await Task.WhenAll(_error,_output);_socket.Dispose();_process.Dispose();
         }

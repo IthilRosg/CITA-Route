@@ -28,6 +28,14 @@ foreach($file in $manifest.files){
 }
 $files=@('RoutePilot.exe','SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','Verify-Routing.ps1','Install-Release.ps1','DesktopRuntime.ps1','product.json','README.md','THIRD-PARTY.md','LICENSE','runtime\smart-router.exe','runtime\vpn-bridge.exe','runtime\agent-build\RoutePilot.Agent.exe','runtime\rules\russia_inside.srs','runtime\rules\discord.srs','rules\telegram-cidr.txt')
 foreach($name in $files){if(-not $names.ContainsKey((Join-Path $packagePath $name))){throw ('Required update file missing: '+$name)}}
+# An optional adapter must be delivered as one complete, verified set. Never
+# leave new native registration paired with an old background/content script.
+$browserFiles=@('Register-BrowserFeedback.ps1','browser-extension\manifest.json','browser-extension\background.js','browser-extension\images.js','browser-extension\popup.html','browser-extension\popup.js','browser-extension\README.md')
+$browserPresent=@($browserFiles|Where-Object {$names.ContainsKey((Join-Path $packagePath $_))})
+if($browserPresent.Count){
+    if($browserPresent.Count -ne $browserFiles.Count){throw 'Incomplete browser adapter update. Use a complete verified release package.'}
+    $files+=$browserFiles
+}
 if(-not $manifest.selfContained){
     # Old clients copy only their historical allowlist. Read the already hashed
     # helper from this verified package, so the first update from 0.5.x can

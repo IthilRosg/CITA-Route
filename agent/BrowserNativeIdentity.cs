@@ -16,11 +16,15 @@ internal static class BrowserNativeIdentity
     [DllImport("kernel32.dll",SetLastError=true)]static extern SafeProcessHandle OpenProcess(uint access,bool inherit,int pid);
     [DllImport("kernel32.dll",SetLastError=true)]static extern bool GetProcessTimes(SafeProcessHandle process,out long created,out long exit,out long kernel,out long user);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]static extern bool QueryFullProcessImageName(SafeProcessHandle process,uint flags,StringBuilder name,ref int size);
-    static ProcessIdentity? Read(int pid)
+    static ProcessIdentity? Read(int pid)=>Read(pid,out _);
+    static ProcessIdentity? Read(int pid,out string status)
     {
-        using var handle=OpenProcess(0x1000,false,pid);if(handle.IsInvalid||!GetProcessTimes(handle,out long created,out _,out _,out _))return null;
-        var name=new StringBuilder(32768);int size=name.Capacity;if(!QueryFullProcessImageName(handle,0,name,ref size))return null;return new(pid,DateTime.FromFileTimeUtc(created),name.ToString());
+        using var handle=OpenProcess(0x1000,false,pid);status="Open:"+Marshal.GetLastWin32Error();if(handle.IsInvalid)return null;
+        if(!GetProcessTimes(handle,out long created,out _,out _,out _)){status="Times:"+Marshal.GetLastWin32Error();return null;}
+        var name=new StringBuilder(32768);int size=name.Capacity;if(!QueryFullProcessImageName(handle,0,name,ref size)){status="Image:"+Marshal.GetLastWin32Error();return null;}status="Read";return new(pid,DateTime.FromFileTimeUtc(created),name.ToString());
     }
+    internal static object ServerProbe(int pid,ProcessIdentity expected)
+    {var actual=Read(pid,out var status);return new{status,pidMatches=pid==expected.Pid,imageMatches=actual!=null&&string.Equals(actual.Path,AgentImage,StringComparison.OrdinalIgnoreCase),expectedImageMatches=actual!=null&&string.Equals(actual.Path,expected.Path,StringComparison.OrdinalIgnoreCase),startDeltaMs=actual==null?(double?)null:(actual.StartedUtc-expected.StartedUtc).TotalMilliseconds};}
     [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]struct Entry
     {public uint Size,Usage,Pid;public UIntPtr Heap;public uint Module,Threads,Parent;public int Priority;public uint Flags;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=260)]public string Exe;}
     static int Parent(int pid)
