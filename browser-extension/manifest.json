@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "CITA Route — Browser Feedback",
+  "version": "0.1.0",
+  "minimum_chrome_version": "116",
+  "description": "Сообщает CITA Route о сетевых ошибках ресурсов. Передаёт только домен и тип ошибки.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuxsnzupv6iK4I4X5ybTt+1g9s/os2PIglGPaKJ12aGM4jzrZxQu/4hB3lCxWsF327ZbjCdDqUutmx6udvdsTtjvt/CeGHxxCqDSiM5kofkidJmpENvn22g5Fg1rdIUOYolzf9lYyLDuOnzdWwMubSAW2LelzBd791AKQMlNQNwhfyRZJ1shw7NjhbrRRYRR8Yvzl/gApR3lZSD80qLuGd22ghGplmTGJV2FxONeT5180IGfEwmZoQNYkHgG6SBVkc2sqLwkVvKl50xHnuH/0IIyLkro1nRQS5+qXpnC1N7q7YFXmJ8sITG9xI82qR5V5b8qLytG3ZCdd0gxFqWEa/QIDAQAB",
+  "permissions": [
+    "webRequest",
+    "nativeMessaging",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "CITA Route"
+  },
+  "content_scripts": [
+    {
+      "all_frames": false,
+      "js": [
+        "images.js"
+      ],
+      "run_at": "document_start",
+      "matches": [
+        "https://*/*"
+      ]
+    }
+  ],
+  "incognito": "not_allowed"
+}

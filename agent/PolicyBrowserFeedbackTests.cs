@@ -38,6 +38,7 @@ internal static class PolicyBrowserFeedbackTests
         channel.Calibration(key,now,result,true);Assert(channel.Confirmed(decision,now.AddSeconds(2))&&!channel.Confirmed(decision,now.AddMinutes(4)),"Fresh independent TCP proof authorizes temporary, expiring QUIC compatibility.");
         channel.Clear();Assert(channel.Pending==0&&!channel.Confirmed(decision,now.AddSeconds(2))&&channel.Avoided(key,now).Count==0,"Clear removes tickets, route faults and compatibility proofs.");
         Assert(!new PolicyOptions().ExperimentalBrowserFeedback,"User-browser observation remains opt-in until an authenticated adapter is delivered.");
+        await BrowserNativeTests.Run();
         Console.WriteLine("PASS: browser GET-resource identity, cancelled/client/TLS errors, generations, publication tickets, independent evidence, bounded queues/rate and fresh TCP fallback proof.");
     }
 }

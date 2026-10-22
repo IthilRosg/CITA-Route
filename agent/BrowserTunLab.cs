@@ -20,7 +20,7 @@ internal static class BrowserTunLab
     const string Domain="web.cita-route.test",Address="203.0.113.231";
     const string BrowserPath=@"C:\CitaLab\Browser\chrome-win64\chrome.exe";
     static void Assert(bool value,string message){if(!value)throw new IOException(message);}
-    internal static async Task Run(string directory,bool feedback=false)
+    internal static async Task Run(string directory,bool feedback=false,bool native=false)
     {
         string root=Path.GetFullPath(directory);
         using var bios=Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\BIOS");
@@ -64,7 +64,7 @@ internal static class BrowserTunLab
         void Progress(string phase)=>Storage.Write(Path.Combine(root,"progress.json"),new{phase,updatedUtc=DateTime.UtcNow});
         var info=new ProcessStartInfo(@"C:\CitaLab\Adaptive\browser\Cita.BrowserLab.exe"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};info.ArgumentList.Add(root);
         using var helper=Process.Start(info)??throw new IOException("Owned helper did not start.");var helperOut=helper.StandardOutput.ReadToEndAsync();var helperErr=helper.StandardError.ReadToEndAsync();
-        string? control=null;Browser? browser=null;var observations=new List<object>();var browserEvents=new List<object>();bool success=false;string? failure=null;
+        string? control=null;Browser? browser=null;BrowserNativeBroker? nativeBroker=null;bool nativeRegistered=false;var observations=new List<object>();var browserEvents=new List<object>();bool success=false;string? failure=null;
         try
         {
             Progress("StartingScopedTun");string readyPath=Path.Combine(root,"ready.json");
@@ -89,12 +89,13 @@ internal static class BrowserTunLab
                 }
                 worker=new PolicyWorker(root,session,new(){Mode="Auto",AllowListedDpi=true,ExperimentalBrowserFeedback=true},Calibrate);
                 await worker.AttachBrowserPublisher(publisher,stop.Token);
+                if(native){BrowserNativeHost.Register(root,false);nativeRegistered=true;nativeBroker=new(root,session.Id,worker);}
             }
             var key=new PolicyKey("owned-web-test",Domain,BrowserPath,443);
             async Task<Browser> Open(string phase)
             {
                 Progress(phase);Assert(Current(),"Pilot changed; test abandoned.");
-                return await Browser.Open(BrowserPath,Path.Combine(root,"profiles",phase),spki,local,stop.Token,feedback:worker);
+                return await Browser.Open(BrowserPath,Path.Combine(root,"profiles",phase),spki,local,stop.Token,feedback:native?null:worker,nativeExtension:native,pump:nativeBroker==null?null:nativeBroker.Pump);
             }
             async Task<JsonElement> Resource(Browser page,string kind)
             {
@@ -122,14 +123,15 @@ internal static class BrowserTunLab
                 Assert((await reader.ReadLineAsync(stop.Token))?.StartsWith("HTTP/1.1 200 ")==true,"Persistent TCP response.");while(await reader.ReadLineAsync(stop.Token) is {Length:>0}){}char[] answer=new char[2];await reader.ReadBlockAsync(answer,stop.Token);Assert(new string(answer)=="OK","Persistent TCP body.");
             }
             await Ping();Progress("ControlledHttp3Fault");await local.GetStringAsync(control+"/fault",stop.Token);var fault=await FetchPair(browser);observations.Add(new{phase="controlled-http3-error",resources=fault});
+            if(nativeBroker!=null){var delivery=Stopwatch.StartNew();while(nativeBroker.AcceptedErrors<2){nativeBroker.Pump();Assert(delivery.Elapsed<TimeSpan.FromSeconds(12),"Native extension did not report actual QUIC failures.");await Task.Delay(25,stop.Token);}}
             browserEvents.AddRange(browser.Events);await browser.DisposeAsync();browser=null;
             Progress("PublishingCompatibility");
             if(worker!=null)
             {
                 var until=Stopwatch.StartNew();
-                await worker.ApplyBrowserWork(stop.Token);
+                nativeBroker?.Pump();await worker.ApplyBrowserWork(stop.Token);
                 while(Storage.Read<JsonElement>(Path.Combine(root,"runtime/rules/auto-blocked.json")).GetProperty("rules").EnumerateArray().All(r=>!r.TryGetProperty("process_path",out _)))
-                {Assert(until.Elapsed<TimeSpan.FromSeconds(15),"Browser error did not produce an acknowledged compatibility rule.");await Task.Delay(50,stop.Token);await worker.ApplyBrowserWork(stop.Token);}
+                {Assert(until.Elapsed<TimeSpan.FromSeconds(15),"Browser error did not produce an acknowledged compatibility rule.");await Task.Delay(50,stop.Token);nativeBroker?.Pump();await worker.ApplyBrowserWork(stop.Token);}
                 Assert(ownTcpProbes>=2,"Two own TCP/TLS probes must precede compatibility.");
                 observations.Add(new{phase="automatic-feedback-publication",ownTcpProbes,appliedVersion=publisher.Version,controllerProcessingMs=until.ElapsedMilliseconds});
             }
@@ -166,19 +168,39 @@ internal static class BrowserTunLab
             browser=await Open("RestoredHttp3");var restored=await Warm(browser,true);Assert(Complete(restored[0],"image")&&Complete(restored[1],"file"),"Restored resource integrity.");await Ping();observations.Add(new{phase="restored",resources=restored});browserEvents.AddRange(browser.Events);await browser.DisposeAsync();browser=null;
             if(worker!=null)
             {
-                worker.Clear();await worker.ApplyBrowserWork(stop.Token);await local.GetStringAsync(control+"/body-tcp",stop.Token);
+                worker.Clear();await worker.ApplyBrowserWork(stop.Token);await local.GetStringAsync(control+(native?"/body-http1":"/body-tcp"),stop.Token);
                 browser=await Open("BodyHealthyTcp");var healthy=await Warm(browser,false);Assert(Complete(healthy[0],"image")&&Complete(healthy[1],"file"),"Healthy TCP resources must complete before fault injection.");
                 async Task WaitRule(string route)
                 {
                     var timer=Stopwatch.StartNew();
-                    while(true){await worker.ApplyBrowserWork(stop.Token);if(Storage.Read<JsonElement>(Path.Combine(root,"runtime/rules/auto-"+route+".json")).GetProperty("rules").EnumerateArray().Any(r=>r.TryGetProperty("process_path",out _)))break;Assert(timer.Elapsed<TimeSpan.FromSeconds(15),"Automatic resource rule was not acknowledged: "+route);await Task.Delay(50,stop.Token);}
+                    while(true){nativeBroker?.Pump();await worker.ApplyBrowserWork(stop.Token);if(Storage.Read<JsonElement>(Path.Combine(root,"runtime/rules/auto-"+route+".json")).GetProperty("rules").EnumerateArray().Any(r=>r.TryGetProperty("process_path",out _)))break;Assert(timer.Elapsed<TimeSpan.FromSeconds(15),"Automatic resource rule was not acknowledged: "+route);await Task.Delay(50,stop.Token);}
                 }
                 await WaitRule("direct");await local.GetStringAsync(control+"/body-fault",stop.Token);
                 var brokenBody=await FetchPair(browser);await browser.Evaluate("true");observations.Add(new{phase="controlled-tcp-body-error",resources=brokenBody});
-                Assert(brokenBody.All(p=>!p.GetProperty("ok").GetBoolean()),"Both partial TCP resources must actually fail.");browserEvents.AddRange(browser.Events);await browser.DisposeAsync();browser=null;
+                Assert(brokenBody.All(p=>!p.GetProperty("ok").GetBoolean()),"Both partial TCP resources must actually fail.");
+                if(native)
+                {
+                    await browser.Evaluate("""(()=>{for(const path of ['/image.png','/image2.png']){const img=document.createElement('img');img.id=path.includes('2')?'repair2':'repair1';img.src=path;document.body.append(img)}return true})()""");
+                    var observed=Stopwatch.StartNew();while(nativeBroker!.AcceptedErrors<6){await browser.Evaluate("true");nativeBroker.Pump();Assert(observed.Elapsed<TimeSpan.FromSeconds(12),"Native extension did not report both image failures.");await Task.Delay(25,stop.Token);}
+                }
+                else{browserEvents.AddRange(browser.Events);await browser.DisposeAsync();browser=null;}
                 var replacement=Stopwatch.StartNew();await WaitRule("dpi");
-                browser=await Open("BodyRecoveredTcp");var repaired=await Warm(browser,false);Assert(Complete(repaired[0],"image")&&Complete(repaired[1],"file"),"Alternative path must receive/decode both entire resources.");
+                if(native)
+                {
+                    var repair=Stopwatch.StartNew();
+                    while(true){var sizes=await browser!.Evaluate("[document.getElementById('repair1').naturalWidth,document.getElementById('repair2').naturalWidth]");if(sizes.EnumerateArray().All(s=>s.GetInt32()==256))break;nativeBroker!.Pump();Assert(repair.Elapsed<TimeSpan.FromSeconds(12),"Extension did not automatically retry the exact failed images.");await Task.Delay(50,stop.Token);}
+                    observations.Add(new{phase="native-extension-image-retry",nativeBroker!.AcceptedErrors,nativeBroker.ReadyResults,nativeBroker.TrustedConnections,nativeBroker.TrustedResources,noCdpFeedback=true});
+                }
+                else browser=await Open("BodyRecoveredTcp");
+                var repaired=await Warm(browser!,false);Assert(Complete(repaired[0],"image")&&Complete(repaired[1],"file"),"Alternative path must receive/decode both entire resources.");
                 observations.Add(new{phase="automatic-tcp-body-recovery",resources=repaired,ownTcpProbes,appliedVersion=publisher.Version,controllerAndBrowserMs=replacement.ElapsedMilliseconds});
+                if(nativeBroker!=null)
+                {
+                    int Hosts(){int count=0;foreach(var p in Process.GetProcessesByName("RoutePilot.Agent")){using(p){if(p.Id!=Environment.ProcessId&&string.Equals(p.MainModule?.FileName,BrowserNativeIdentity.AgentImage,StringComparison.OrdinalIgnoreCase))count++;}}return count;}
+                    int before=Hosts();Assert(before>0,"An idle native host must exist before the stop test.");await nativeBroker.DisposeAsync();nativeBroker=null;
+                    var shutdown=Stopwatch.StartNew();while(Hosts()!=0){Assert(shutdown.Elapsed<TimeSpan.FromSeconds(4),"An idle native host kept the agent executable locked after observer Stop.");await Task.Delay(25,stop.Token);}
+                    observations.Add(new{phase="idle-native-host-stop",before,remaining=0,elapsedMs=shutdown.ElapsedMilliseconds,browserStillOpen=true});
+                }
                 browserEvents.AddRange(browser.Events);await browser.DisposeAsync();browser=null;await Ping();worker.Clear();await worker.ApplyBrowserWork(stop.Token);
             }
             var state=JsonSerializer.Deserialize<JsonElement>(await local.GetStringAsync(control+"/status",stop.Token));
@@ -187,27 +209,29 @@ internal static class BrowserTunLab
             Assert(log.Split('\n').Any(line=>line.Contains("match["+blockedIndex+"]",StringComparison.Ordinal)&&line.Contains("=> reject",StringComparison.Ordinal)),"The browser must exercise the scoped QUIC rule, not a missing-canary rejection.");
             Assert(Current(),"Pilot changed during test.");success=true;Progress("Passed");
         }
-        catch(Exception ex){if(browser!=null)browserEvents.AddRange(browser.Events);failure=ex.GetType().Name+": "+ex.Message;Progress("Failed");}
+        catch(Exception ex){if(browser!=null){if(native)try{observations.Add(new{phase="native-extension-diagnostic",state=await browser.ExtensionState()});}catch{}browserEvents.AddRange(browser.Events);}failure=ex.GetType().Name+": "+ex.Message;Progress("Failed");}
         finally
         {
             if(browser!=null)await browser.DisposeAsync();
+            try{if(nativeBroker!=null)await nativeBroker.DisposeAsync();}catch(Exception ex){failure??="Native observer cleanup: "+ex.GetType().Name;success=false;}
+            try{if(nativeRegistered)BrowserNativeHost.Unregister(root);}catch(Exception ex){failure??="Native registration cleanup: "+ex.GetType().Name;success=false;}
             if(control!=null)try{observations.Add(new{phase="server-events",state=JsonSerializer.Deserialize<JsonElement>(await local.GetStringAsync(control+"/status"))});await local.GetStringAsync(control+"/shutdown");}catch{}
             using var close=new CancellationTokenSource(12000);try{await helper.WaitForExitAsync(close.Token);}catch(OperationCanceledException){helper.Kill(true);await helper.WaitForExitAsync();}
             await Task.WhenAll(helperOut,helperErr);
         }
-        var report=new{success,failure,finishedUtc=DateTime.UtcNow,pilotPreserved=Current(),observations,browserEvents,browserFeedbackVerified=feedback&&success,automaticPublicCertificateFallbackVerified=false,scope="Owned VMware TUN /32 and generated HTTPS/HTTP3 resources; clean headless Chromium. Feedback mode wires actual CDP request failures to the production worker/selector/ack publisher using a pinned owned TLS probe transport; it does not provide a user-browser extension or external ingress. Healthy/manual/restored H3 use the synthetic-origin QUIC flag, TCP compatibility uses ordinary Alt-Svc attempts. Public certificate fallback is covered by the separate public lab. No default route/DNS/profile changes; server retires its own failed QUIC; no existing-stream migration claim"};
+        var report=new{success,failure,finishedUtc=DateTime.UtcNow,pilotPreserved=Current(),observations,browserEvents,browserFeedbackVerified=feedback&&success,ordinaryExtensionVerified=native&&success,automaticPublicCertificateFallbackVerified=false,scope="Owned VMware TUN /32 and generated HTTPS/HTTP3 resources; pinned TLS probe transport, real worker/selector/ack publisher. Native mode uses the ordinary MV3 extension and authenticated native/pipe channel; CDP only drives the test and does not deliver failures. Generated-certificate H3 flags still differ by phase, public certificate behavior is covered separately. No default route/DNS/profile changes; no existing-stream migration claim"};
         Storage.Write(Path.Combine(root,"result.json"),report);Console.WriteLine(JsonSerializer.Serialize(new{success,root,failure}));if(!success)throw new IOException(failure);
     }
 
     internal sealed class Browser:IAsyncDisposable
     {
         readonly Process _process;readonly ClientWebSocket _socket;readonly CancellationToken _stop;readonly string _phase,_domain,_application;int _next;
-        readonly PolicyWorker? _feedback;
+        readonly PolicyWorker? _feedback;readonly Action? _pump;
         readonly Dictionary<string,string?> _requests=new();
-        readonly Task<string> _error,_output;
+        readonly Task<string> _error,_output;int _debugPort;
         internal readonly List<object> Events=new();
-        Browser(Process process,ClientWebSocket socket,string phase,string domain,string application,CancellationToken stop,PolicyWorker? feedback){_process=process;_socket=socket;_phase=phase;_domain=domain;_application=application;_stop=stop;_feedback=feedback;_error=process.StandardError.ReadToEndAsync();_output=process.StandardOutput.ReadToEndAsync();}
-        internal static async Task<Browser> Open(string exe,string profile,string? spki,HttpClient local,CancellationToken stop,string? publicDomain=null,string? publicAddress=null,PolicyWorker? feedback=null)
+        Browser(Process process,ClientWebSocket socket,string phase,string domain,string application,CancellationToken stop,PolicyWorker? feedback,Action? pump){_process=process;_socket=socket;_phase=phase;_domain=domain;_application=application;_stop=stop;_feedback=feedback;_pump=pump;_error=process.StandardError.ReadToEndAsync();_output=process.StandardOutput.ReadToEndAsync();}
+        internal static async Task<Browser> Open(string exe,string profile,string? spki,HttpClient local,CancellationToken stop,string? publicDomain=null,string? publicAddress=null,PolicyWorker? feedback=null,bool nativeExtension=false,Action? pump=null)
         {
             bool synthetic=publicDomain==null;string domain=publicDomain??Domain,address=publicAddress??Address;
             Assert(synthetic||(domain is "cloudflare-quic.com" or "www.cloudflare.com"&&IPAddress.TryParse(address,out var ip)&&ip.AddressFamily==AddressFamily.InterNetwork),"Only fixed public lab origins are allowed.");
@@ -221,7 +245,8 @@ internal static class BrowserTunLab
             info.ArgumentList.Add("--no-proxy-server");
             info.ArgumentList.Add("--host-resolver-rules=MAP "+domain+" "+address+", MAP * ~NOTFOUND, EXCLUDE localhost");
             info.ArgumentList.Add("--log-net-log="+Path.Combine(profile,"netlog.json"));
-            var process=Process.Start(info)??throw new IOException("Pinned browser did not start.");var socket=new ClientWebSocket();var page=new Browser(process,socket,Path.GetFileName(profile),domain,exe,stop,feedback);
+            if(nativeExtension){info.ArgumentList.Add(@"--load-extension=C:\CitaLab\BrowserFeedback");info.ArgumentList.Add(@"--disable-extensions-except=C:\CitaLab\BrowserFeedback");}
+            var process=Process.Start(info)??throw new IOException("Pinned browser did not start.");var socket=new ClientWebSocket();var page=new Browser(process,socket,Path.GetFileName(profile),domain,exe,stop,feedback,pump);
             try
             {
                 string portFile=Path.Combine(profile,"DevToolsActivePort");int port=0;
@@ -234,11 +259,34 @@ internal static class BrowserTunLab
                 }
                 using var request=new HttpRequestMessage(HttpMethod.Put,"http://127.0.0.1:"+port+"/json/new?about:blank");using var response=await local.SendAsync(request,stop);response.EnsureSuccessStatusCode();
                 var tab=JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync(stop));var endpoint=new Uri(tab.GetProperty("webSocketDebuggerUrl").GetString()!);Assert(endpoint.Host=="127.0.0.1"||endpoint.Host=="localhost","Browser debugger must stay loopback.");
+                page._debugPort=port; // Native fixture opt-in is an explicit test-only bootstrap, not a debugger command.
                 await socket.ConnectAsync(endpoint,stop);await page.Call("Page.enable",new{});await page.Call("Network.enable",new{});await page.Call("Page.navigate",new{url="https://"+domain+(synthetic?"/":"/cdn-cgi/trace")});
                 for(int i=0;i<80;i++){var state=await page.Evaluate("document.readyState==='complete' && location.hostname==='"+domain+"'");if(state.ValueKind==JsonValueKind.True)return page;await Task.Delay(100,stop);}
                 throw new IOException("Owned browser page did not load.");
             }
             catch{await page.DisposeAsync();throw;}
+        }
+        internal async Task<JsonElement> ExtensionState()
+        {using var local=new HttpClient(new SocketsHttpHandler{UseProxy=false});return await ExtensionCommand(_debugPort,local,_stop,"chrome.runtime.sendMessage({kind:'state'})");}
+        static async Task EnableExtension(int port,HttpClient local,CancellationToken stop)
+        {
+            for(int attempt=0;;attempt++)try{_ = await ExtensionCommand(port,local,stop,"(async()=>{await chrome.storage.local.set({enabled:true});for(let i=0;i<40;i++){const state=await chrome.runtime.sendMessage({kind:'state'});if(state?.enabled)return true;await new Promise(r=>setTimeout(r,25))}throw new Error('Extension opt-in did not become active')})()");return;}
+            catch(IOException)when(attempt<2){await Task.Delay(100,stop);}
+        }
+        static async Task<JsonElement> ExtensionCommand(int port,HttpClient local,CancellationToken stop,string expression)
+        {
+            string? endpoint=null;
+            for(int attempt=0;attempt<100&&endpoint==null;attempt++)
+            {
+                var targets=JsonSerializer.Deserialize<JsonElement>(await local.GetStringAsync("http://127.0.0.1:"+port+"/json/list",stop));
+                foreach(var target in targets.EnumerateArray())if(target.GetProperty("type").GetString()=="page"&&target.GetProperty("url").GetString()==BrowserNativeWire.Origin+"popup.html")endpoint=target.GetProperty("webSocketDebuggerUrl").GetString();
+                if(endpoint==null&&attempt==0){using var request=new HttpRequestMessage(HttpMethod.Put,"http://127.0.0.1:"+port+"/json/new?"+BrowserNativeWire.Origin+"popup.html");using var response=await local.SendAsync(request,stop);response.EnsureSuccessStatusCode();}
+                if(endpoint==null)await Task.Delay(100,stop);
+            }
+            Assert(endpoint!=null,"Native extension popup did not load.");using var socket=new ClientWebSocket();await socket.ConnectAsync(new Uri(endpoint!),stop);
+            await socket.SendAsync(JsonSerializer.SerializeToUtf8Bytes(new{id=1,method="Runtime.evaluate",@params=new{expression,awaitPromise=true,returnByValue=true}}),WebSocketMessageType.Text,true,stop);
+            using var timeout=CancellationTokenSource.CreateLinkedTokenSource(stop);timeout.CancelAfter(6000);
+            while(true){using var message=new MemoryStream();byte[] block=new byte[8192];WebSocketReceiveResult frame;do{frame=await socket.ReceiveAsync(block,timeout.Token);Assert(frame.MessageType!=WebSocketMessageType.Close,"Extension debugger closed during startup.");message.Write(block,0,frame.Count);Assert(message.Length<=1024*1024,"Extension debugger message too large.");}while(!frame.EndOfMessage);var value=JsonSerializer.Deserialize<JsonElement>(message.ToArray());if(value.TryGetProperty("id",out var id)&&id.GetInt32()==1){if(value.TryGetProperty("error",out var error))throw new IOException("Extension command: "+error.GetProperty("message").GetString());if(value.GetProperty("result").TryGetProperty("exceptionDetails",out var details)){string reason=details.TryGetProperty("exception",out var exception)&&exception.TryGetProperty("description",out var description)?description.GetString()??"Uncaught":details.GetProperty("text").GetString()??"Uncaught";throw new IOException("Extension opt-in failed: "+reason.Split('\n')[0][..Math.Min(240,reason.Split('\n')[0].Length)]);}return value.GetProperty("result").GetProperty("result").GetProperty("value").Clone();}}
         }
         async Task<JsonElement> Call(string method,object args)
         {
@@ -247,7 +295,7 @@ internal static class BrowserTunLab
             while(true)
             {
                 using var message=new MemoryStream();byte[] buffer=new byte[8192];WebSocketReceiveResult frame;
-                do{frame=await _socket.ReceiveAsync(buffer,deadline.Token);if(frame.MessageType==WebSocketMessageType.Close)throw new IOException("Owned browser debugger closed.");message.Write(buffer,0,frame.Count);Assert(message.Length<=1024*1024,"Oversized own browser message.");}while(!frame.EndOfMessage);
+                do{var read=_socket.ReceiveAsync(buffer,deadline.Token);if(_pump!=null)while(!read.IsCompleted){await Task.WhenAny(read,Task.Delay(25,deadline.Token));_pump();}frame=await read;if(frame.MessageType==WebSocketMessageType.Close)throw new IOException("Owned browser debugger closed.");message.Write(buffer,0,frame.Count);Assert(message.Length<=1024*1024,"Oversized own browser message.");}while(!frame.EndOfMessage);
                 using var json=JsonDocument.Parse(message.ToArray());var value=json.RootElement;
                 if(value.TryGetProperty("method",out var eventName)&&value.TryGetProperty("params",out var parameters))
                 {

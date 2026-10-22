@@ -146,11 +146,18 @@ public sealed partial class PolicyWorker
         worker._offset=File.Exists(log)?new FileInfo(log).Length:0;
         string terminalPhase="Stopped";
         Task quality=UdpQualityWorker.Run(root,session.Id,worker._fingerprint,worker._ports,cancel.Token);
+        BrowserNativeBroker? browser=null;
         try
         {
             worker.RefreshListed();worker.LoadCache();worker.LoadActiveBindings();
             worker._publisher=new(root,worker._ports,worker.Current);
             await InitializePublication(worker.PublishAsync,worker.Current,cancel.Token);
+            if(options.Mode=="Auto"&&options.ExperimentalBrowserFeedback)
+            {
+                using var browserOwner=System.Security.Principal.WindowsIdentity.GetCurrent();
+                if(browserOwner.IsSystem)worker.Event("Браузерный адаптер требует подключения в пользовательском сеансе; SYSTEM-режим пока не поддерживается.");
+                else try{browser=new(root,session.Id,worker);}catch(Exception ex)when(ex is IOException or UnauthorizedAccessException){worker.Event("Браузерный адаптер недоступен; маршрутизация продолжает работу.");}
+            }
             while(identity.Matches())
             {
                 var current=Storage.Read<PolicySession>(Path.Combine(root,"runtime","session.json"));
@@ -170,6 +177,7 @@ public sealed partial class PolicyWorker
                 }
                 await worker.Observe();
                 if(options.Mode=="Auto")worker.Failures(log,cancel.Token);
+                browser?.Pump();
                 await worker.CompletePending();
                 worker.Prune();
                 if(worker._dirty && DateTime.UtcNow>=worker._nextPublish)
@@ -182,7 +190,7 @@ public sealed partial class PolicyWorker
                 if(options.Mode=="Auto")worker.DrainFailures(cancel.Token);
                 worker.MaybeStatus(worker._dirty?"Applying":options.Mode=="Auto"?"Auto":"Lists");
                 worker._progress.Mark("Running");
-                await WaitForWork(worker._pending.Values,cancel.Token);
+                await WaitForWork(browser==null?worker._pending.Values:worker._pending.Values.Append(browser.Signal),cancel.Token);
             }
         }
         catch(Exception ex)
@@ -191,6 +199,7 @@ public sealed partial class PolicyWorker
         {
             try{worker._progress.Mark(terminalPhase,true);}catch{}
             cancel.Cancel();await quality;await Task.WhenAll(worker._pending.Values.Select(async t=>{try{await t;}catch{}}));
+            if(browser!=null)await browser.DisposeAsync();
             // Keep the last applied rules across a controller crash/restart.
             // Start/Stop owns the engine; an old controller never clears a newer generation.
             try{if(Storage.Read<PolicySession>(worker.Runtime("session.json")).Id==session.Id)worker.Status(terminalPhase);}catch{}
@@ -247,7 +256,7 @@ public sealed partial class PolicyWorker
     {
         _generation++;foreach(var pendingStop in _pendingStops.Values)pendingStop.Cancel();
         _decisions.Clear();_failures.Clear();_seenFailures.Clear();_lastUse.Clear();_nextProbe.Clear();_queuedAt.Clear();_bindingStates.Clear();
-        _web.Clear();_browserFeedback.Clear();_browserPublished.Clear();
+        _web.Clear();_browserFeedback.Clear();_browserPublished.Clear();_browserFallbackPublished.Clear();_browserGuardTick=long.MinValue;_browserTicketGeneration++;
         _stability.Clear();
         lock(_events)_events.Clear();_dirty=true;
     }
@@ -267,7 +276,7 @@ public sealed partial class PolicyWorker
         // before a pause or wall-clock change as fresh post-resume evidence.
         _generation++;foreach(var stop in _pendingStops.Values)stop.Cancel();
         _stability.Clear();_nextProbe.Clear();_failures.Clear();_queuedAt.Clear();
-        _web.Clear();_browserFeedback.Clear();_browserPublished.Clear();
+        _web.Clear();_browserFeedback.Clear();_browserPublished.Clear();_browserFallbackPublished.Clear();_browserGuardTick=long.MinValue;_browserTicketGeneration++;
         _logFlows.Clear();_applications.Clear();_flowHealth.Clear();_earlyFlows.Clear();
         foreach(var key in _lastUse.Where(p=>p.Value>now).Select(p=>p.Key).ToArray())_lastUse[key]=now;
         Event("Пауза или изменение времени: незавершённые проверки сброшены; активные пути сохранены.");

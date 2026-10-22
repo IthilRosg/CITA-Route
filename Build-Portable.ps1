@@ -23,8 +23,11 @@ foreach($exe in @('runtime\app-build\RoutePilot.exe','runtime\agent-build\RouteP
 foreach($name in @('product.json','LICENSE','NOTICE')){Copy-Item -LiteralPath (Join-Path $root $name) -Destination $stage}
 Copy-Item -LiteralPath (Join-Path $root 'Directory.Build.props') -Destination (Join-Path $stage 'source')
 # Explicit allowlist: never recurse into this computer's private/runtime/data/log folders.
-$scripts=@('SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','Verify-Routing.ps1','Install-Release.ps1','DesktopRuntime.ps1')
+$scripts=@('SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','Verify-Routing.ps1','Install-Release.ps1','DesktopRuntime.ps1','Register-BrowserFeedback.ps1')
 foreach($name in $scripts){Copy-Item -LiteralPath (Join-Path $root $name) -Destination $stage}
+[void][IO.Directory]::CreateDirectory((Join-Path $stage 'browser-extension'))
+foreach($name in @('manifest.json','background.js','images.js','popup.html','popup.js')){Copy-Item -LiteralPath (Join-Path $root ('browser-extension\'+$name)) -Destination (Join-Path $stage ('browser-extension\'+$name))}
+Copy-Item -LiteralPath (Join-Path $root 'docs\BROWSER-FEEDBACK.md') -Destination (Join-Path $stage 'browser-extension\README.md')
 $routerSource=Join-Path $root 'runtime\router-engine-build\smart-router.exe'
 $coreReceipt=Get-Content -LiteralPath (Join-Path $root 'runtime\router-engine-build.json') -Raw|ConvertFrom-Json
 $recipe=(@('Build-RouterEngine.ps1','engine-patches\cita_dns_windows.go','engine-patches\cita_dns_windows_test.go','engine-patches\cita_fallback.go','engine-patches\cita_fallback_test.go')|ForEach-Object {(Get-FileHash -LiteralPath (Join-Path $root $_)).Hash}) -join ':'

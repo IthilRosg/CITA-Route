@@ -12,6 +12,9 @@ public static class Program
     {
         try
         {
+            if(args.Length>0&&args[0].StartsWith("chrome-extension://",StringComparison.Ordinal)){await BrowserNativeHost.Run(args);return 0;}
+            if(args.Length==2&&args[0]=="--register-browser-feedback"){BrowserNativeHost.Register(Path.GetFullPath(args[1]),true);return 0;}
+            if(args.Length==2&&args[0]=="--unregister-browser-feedback"){BrowserNativeHost.Unregister(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==1 && args[0]=="--self-test"){await AgentTests.Run();return 0;}
             if(args.Length==2&&args[0]=="--diagnostics-journal-benchmark"){DiagnosticEvidenceLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==3&&args[0]=="--diagnostics-replay"){DiagnosticEvidenceLab.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]));return 0;}
@@ -26,6 +29,7 @@ public static class Program
             if(args.Length==2 && args[0]=="--web-routing-lab"){await PolicyWebEngineLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--browser-tun-lab"){await BrowserTunLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--browser-feedback-lab"){await BrowserTunLab.Run(Path.GetFullPath(args[1]),true);return 0;}
+            if(args.Length==2 && args[0]=="--browser-native-lab"){await BrowserTunLab.Run(Path.GetFullPath(args[1]),true,true);return 0;}
             if(args.Length==2 && args[0]=="--public-browser-tun-lab"){await PublicBrowserTunLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--dns-integration"){await PolicyDnsEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--tcp-budget-lab"){await PolicyTcpBudgetLab.Run(Path.GetFullPath(args[1]));return 0;}

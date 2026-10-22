@@ -84,6 +84,14 @@ internal static class PolicyWebTests
         worker.ObserveDestination(new(epoch,"ignored.example.com",@"C:\Agent\RoutePilot.Agent.exe",443),"tcp","tls",now);
         worker.DrainFailures(CancellationToken.None);Assert(started==2,"First-use discovery must share the existing two-calibration concurrency limit and exclude the diagnostic agent.");
         worker.Clear();pending.SetResult(new(ProbeOutcome.Unavailable,null,0,0,Array.Empty<CandidateTiming>()));await worker.CompletePending();
+        worker=new(root,session,new(){Mode="Auto",AllowListedDpi=true,ExperimentalBrowserFeedback=true});
+        string? oldResource=worker.BeginBrowserResource("asset.example.com",app,"GET","Image",DateTime.UtcNow);
+        Assert(oldResource!=null,"The trusted adapter can issue a current resource ticket.");
+        session.BridgeGeneration++;Storage.Write(Path.Combine(root,"runtime/session.json"),session);
+        Assert(!worker.ObserveBrowserFailure(oldResource,"ERR_QUIC_PROTOCOL_ERROR",false,DateTime.UtcNow),"A bridge reconnect invalidates old resource events even inside the network-signature cache window.");
+        string? currentResource=worker.BeginBrowserResource("asset.example.com",app,"GET","Image",DateTime.UtcNow);
+        Assert(currentResource!=null&&worker.ObserveBrowserFailure(currentResource,"ERR_QUIC_PROTOCOL_ERROR",false,DateTime.UtcNow),"The new bridge generation can collect fresh evidence.");
+        worker.Clear();Assert(!worker.ObserveBrowserFailure(currentResource,"ERR_QUIC_PROTOCOL_ERROR",false,DateTime.UtcNow),"Clear invalidates browser events too.");
         await PolicyBrowserFeedbackTests.Run();
         Console.WriteLine("PASS: bounded first-use CDN discovery, repeated stream-fault quarantine, root-vs-body evidence, certificate guards and scoped browser QUIC/TCP rules.");
     }

@@ -138,7 +138,13 @@ func run() error {
 	imageHash := sha256.Sum256(imageData.Bytes())
 	fileHash := sha256.Sum256(fileData)
 	var fault atomic.Bool
-	var bodyTCP, bodyFault atomic.Bool
+	var bodyTCP, bodyFault, bodyHTTP1 atomic.Bool
+	tlsConfig.GetConfigForClient = func(_ *tls.ClientHelloInfo) (*tls.Config, error) {
+		if bodyHTTP1.Load() {
+			return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}, nil
+		}
+		return nil, nil
+	}
 	var mu sync.Mutex
 	events := make([]map[string]any, 0, 64)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +155,7 @@ func run() error {
 		}
 		body := []byte("<!doctype html><title>CITA owned routing fixture</title><body>ready</body>")
 		kind := "page"
-		if r.URL.Path == "/image.png" {
+		if r.URL.Path == "/image.png" || r.URL.Path == "/image2.png" {
 			body = imageData.Bytes()
 			kind = "image"
 			w.Header().Set("Content-Type", "image/png")
@@ -268,6 +274,11 @@ func run() error {
 	mux.HandleFunc(prefix+"/fault", func(w http.ResponseWriter, r *http.Request) { fault.Store(true); reply(w, map[string]bool{"ok": true}) })
 	mux.HandleFunc(prefix+"/body-tcp", func(w http.ResponseWriter, r *http.Request) {
 		bodyTCP.Store(true)
+		reply(w, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc(prefix+"/body-http1", func(w http.ResponseWriter, r *http.Request) {
+		bodyTCP.Store(true)
+		bodyHTTP1.Store(true)
 		reply(w, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc(prefix+"/body-fault", func(w http.ResponseWriter, r *http.Request) {
