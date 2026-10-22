@@ -148,25 +148,27 @@ internal static class BrowserTunLab
         Storage.Write(Path.Combine(root,"result.json"),report);Console.WriteLine(JsonSerializer.Serialize(new{success,root,failure}));if(!success)throw new IOException(failure);
     }
 
-    sealed class Browser:IAsyncDisposable
+    internal sealed class Browser:IAsyncDisposable
     {
-        readonly Process _process;readonly ClientWebSocket _socket;readonly CancellationToken _stop;readonly string _phase;int _next;
+        readonly Process _process;readonly ClientWebSocket _socket;readonly CancellationToken _stop;readonly string _phase,_domain;int _next;
         readonly Task<string> _error,_output;
         internal readonly List<object> Events=new();
-        Browser(Process process,ClientWebSocket socket,string phase,CancellationToken stop){_process=process;_socket=socket;_phase=phase;_stop=stop;_error=process.StandardError.ReadToEndAsync();_output=process.StandardOutput.ReadToEndAsync();}
-        internal static async Task<Browser> Open(string exe,string profile,string spki,HttpClient local,CancellationToken stop)
+        Browser(Process process,ClientWebSocket socket,string phase,string domain,CancellationToken stop){_process=process;_socket=socket;_phase=phase;_domain=domain;_stop=stop;_error=process.StandardError.ReadToEndAsync();_output=process.StandardOutput.ReadToEndAsync();}
+        internal static async Task<Browser> Open(string exe,string profile,string? spki,HttpClient local,CancellationToken stop,string? publicDomain=null,string? publicAddress=null)
         {
+            bool synthetic=publicDomain==null;string domain=publicDomain??Domain,address=publicAddress??Address;
+            Assert(synthetic||(domain is "cloudflare-quic.com" or "www.cloudflare.com"&&IPAddress.TryParse(address,out var ip)&&ip.AddressFamily==AddressFamily.InterNetwork),"Only fixed public lab origins are allowed.");
             Directory.CreateDirectory(profile);var info=new ProcessStartInfo(exe){UseShellExecute=false,CreateNoWindow=true,RedirectStandardError=true,RedirectStandardOutput=true};
-            foreach(string arg in new[]{"--headless","--disable-gpu","--no-first-run","--no-default-browser-check","--disable-background-networking","--disable-component-update","--disable-sync","--disable-domain-reliability","--disable-features=MediaRouter,OptimizationHints,AutofillServerCommunication,UseDnsHttpsSvcbAlpn","--remote-debugging-port=0","--user-data-dir="+profile,"--ignore-certificate-errors-spki-list="+spki,"--host-resolver-rules=MAP "+Domain+" "+Address,"about:blank"})info.ArgumentList.Add(arg);
+            foreach(string arg in new[]{"--headless","--disable-gpu","--no-first-run","--no-default-browser-check","--disable-background-networking","--disable-component-update","--disable-sync","--disable-domain-reliability","--disable-features=MediaRouter,OptimizationHints,AutofillServerCommunication,UseDnsHttpsSvcbAlpn","--remote-debugging-port=0","--user-data-dir="+profile,"about:blank"})info.ArgumentList.Add(arg);
             // Force is needed to allow the synthetic QUIC root, but also
             // suppresses normal TCP fallback. Therefore do not claim this
             // fixture verifies automatic fallback with a publicly trusted cert.
-            if(Path.GetFileName(profile)!="CompatibilityTcp")info.ArgumentList.Add("--origin-to-force-quic-on="+Domain+":443");
+            if(synthetic){info.ArgumentList.Add("--ignore-certificate-errors-spki-list="+spki);if(Path.GetFileName(profile)!="CompatibilityTcp")info.ArgumentList.Add("--origin-to-force-quic-on="+Domain+":443");}
             // Resolve only the fixture origin in this disposable profile.
             info.ArgumentList.Add("--no-proxy-server");
-            info.ArgumentList.Add("--host-resolver-rules=MAP "+Domain+" "+Address+", MAP * ~NOTFOUND, EXCLUDE localhost");
+            info.ArgumentList.Add("--host-resolver-rules=MAP "+domain+" "+address+", MAP * ~NOTFOUND, EXCLUDE localhost");
             info.ArgumentList.Add("--log-net-log="+Path.Combine(profile,"netlog.json"));
-            var process=Process.Start(info)??throw new IOException("Pinned browser did not start.");var socket=new ClientWebSocket();var page=new Browser(process,socket,Path.GetFileName(profile),stop);
+            var process=Process.Start(info)??throw new IOException("Pinned browser did not start.");var socket=new ClientWebSocket();var page=new Browser(process,socket,Path.GetFileName(profile),domain,stop);
             try
             {
                 string portFile=Path.Combine(profile,"DevToolsActivePort");int port=0;
@@ -179,8 +181,8 @@ internal static class BrowserTunLab
                 }
                 using var request=new HttpRequestMessage(HttpMethod.Put,"http://127.0.0.1:"+port+"/json/new?about:blank");using var response=await local.SendAsync(request,stop);response.EnsureSuccessStatusCode();
                 var tab=JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync(stop));var endpoint=new Uri(tab.GetProperty("webSocketDebuggerUrl").GetString()!);Assert(endpoint.Host=="127.0.0.1"||endpoint.Host=="localhost","Browser debugger must stay loopback.");
-                await socket.ConnectAsync(endpoint,stop);await page.Call("Page.enable",new{});await page.Call("Network.enable",new{});await page.Call("Page.navigate",new{url="https://"+Domain+"/"});
-                for(int i=0;i<80;i++){var state=await page.Evaluate("document.readyState==='complete' && location.hostname==='"+Domain+"'");if(state.ValueKind==JsonValueKind.True)return page;await Task.Delay(100,stop);}
+                await socket.ConnectAsync(endpoint,stop);await page.Call("Page.enable",new{});await page.Call("Network.enable",new{});await page.Call("Page.navigate",new{url="https://"+domain+(synthetic?"/":"/cdn-cgi/trace")});
+                for(int i=0;i<80;i++){var state=await page.Evaluate("document.readyState==='complete' && location.hostname==='"+domain+"'");if(state.ValueKind==JsonValueKind.True)return page;await Task.Delay(100,stop);}
                 throw new IOException("Owned browser page did not load.");
             }
             catch{await page.DisposeAsync();throw;}
@@ -196,7 +198,7 @@ internal static class BrowserTunLab
                 using var json=JsonDocument.Parse(message.ToArray());var value=json.RootElement;
                 if(value.TryGetProperty("method",out var eventName)&&value.TryGetProperty("params",out var parameters))
                 {
-                    if(eventName.GetString()=="Network.responseReceived"){var r=parameters.GetProperty("response");if(Uri.TryCreate(r.GetProperty("url").GetString(),UriKind.Absolute,out var url)&&url.Host==Domain)Events.Add(new{phase=_phase,kind=url.AbsolutePath,protocol=r.GetProperty("protocol").GetString(),status=r.GetProperty("status").GetDouble()});}
+                    if(eventName.GetString()=="Network.responseReceived"){var r=parameters.GetProperty("response");if(Uri.TryCreate(r.GetProperty("url").GetString(),UriKind.Absolute,out var url)&&url.Host==_domain)Events.Add(new{phase=_phase,kind=url.AbsolutePath,protocol=r.GetProperty("protocol").GetString(),status=r.GetProperty("status").GetDouble(),tls=r.TryGetProperty("securityDetails",out var security)?security.GetProperty("protocol").GetString():null});}
                     if(eventName.GetString()=="Network.loadingFailed")Events.Add(new{phase=_phase,error=parameters.GetProperty("errorText").GetString()});
                     if(Events.Count>96)Events.RemoveAt(0);
                 }

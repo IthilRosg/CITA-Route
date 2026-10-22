@@ -48,7 +48,7 @@ func checkedRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !strings.HasPrefix(strings.ToLower(root), `c:\citalab\browsertun\`) {
+	if !strings.HasPrefix(strings.ToLower(root), `c:\citalab\browsertun\`) && !strings.HasPrefix(strings.ToLower(root), `c:\citalab\publicwebtun\`) {
 		return "", fmt.Errorf("only the authorized guest lab path is allowed")
 	}
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, `HARDWARE\DESCRIPTION\System\BIOS`, registry.QUERY_VALUE)
@@ -97,6 +97,9 @@ func run() error {
 	root, err := checkedRoot()
 	if err != nil {
 		return err
+	}
+	if strings.HasPrefix(strings.ToLower(root), `c:\citalab\publicwebtun\`) {
+		return runPublic(root)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "router.json"))
 	if err != nil {
