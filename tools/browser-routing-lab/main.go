@@ -138,11 +138,15 @@ func run() error {
 	imageHash := sha256.Sum256(imageData.Bytes())
 	fileHash := sha256.Sum256(fileData)
 	var fault atomic.Bool
+	var bodyTCP, bodyFault atomic.Bool
 	var mu sync.Mutex
 	events := make([]map[string]any, 0, 64)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Alt-Svc", `h3=":443"; ma=120`)
+		if bodyTCP.Load() {
+			w.Header().Set("Alt-Svc", "clear")
+		}
 		body := []byte("<!doctype html><title>CITA owned routing fixture</title><body>ready</body>")
 		kind := "page"
 		if r.URL.Path == "/image.png" {
@@ -159,7 +163,9 @@ func run() error {
 			body = []byte("OK")
 			kind = "ping"
 		}
-		broken := fault.Load() && r.ProtoMajor == 3 && kind != "page" && kind != "ping"
+		localAddress, _ := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+		primary := localAddress != nil && localAddress.String() == "127.0.0.1:443"
+		broken := (fault.Load() && r.ProtoMajor == 3 || bodyFault.Load() && primary && r.ProtoMajor != 3) && kind != "page" && kind != "ping"
 		mu.Lock()
 		events = append(events, map[string]any{"utc": time.Now().UTC(), "protocol": r.Proto, "kind": kind, "broken": broken})
 		if len(events) > 128 {
@@ -184,6 +190,13 @@ func run() error {
 	tcpServer := &http.Server{Handler: handler, TLSConfig: tlsConfig.Clone()}
 	defer tcpServer.Close()
 	go tcpServer.ServeTLS(tcpListener, "", "")
+	alternateListener, err := net.Listen("tcp", "127.0.0.1:4443")
+	if err != nil {
+		return err
+	}
+	alternateServer := &http.Server{Handler: handler, TLSConfig: tlsConfig.Clone()}
+	defer alternateServer.Close()
+	go alternateServer.ServeTLS(alternateListener, "", "")
 	var h3 *http3.Server
 	var h3Lock sync.Mutex
 	startH3 := func() {
@@ -253,6 +266,14 @@ func run() error {
 		reply(w, map[string]any{"events": events, "fault": fault.Load()})
 	})
 	mux.HandleFunc(prefix+"/fault", func(w http.ResponseWriter, r *http.Request) { fault.Store(true); reply(w, map[string]bool{"ok": true}) })
+	mux.HandleFunc(prefix+"/body-tcp", func(w http.ResponseWriter, r *http.Request) {
+		bodyTCP.Store(true)
+		reply(w, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc(prefix+"/body-fault", func(w http.ResponseWriter, r *http.Request) {
+		bodyFault.Store(true)
+		reply(w, map[string]bool{"ok": true})
+	})
 	mux.HandleFunc(prefix+"/healthy", func(w http.ResponseWriter, r *http.Request) {
 		fault.Store(false)
 		startH3()

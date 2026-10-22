@@ -77,9 +77,9 @@ public sealed partial class PolicyWorker
     readonly PolicyWebSignals _web=new();
     HashSet<PolicyKey> _webFallbacks=new();
     bool _quicCompatible;
-    internal HashSet<string> AvoidedRoutes(PolicyKey key,DateTime now)=>_web.Avoided(key,now);
+    internal HashSet<string> AvoidedRoutes(PolicyKey key,DateTime now){var routes=_web.Avoided(key,now);if(_options.ExperimentalBrowserFeedback)routes.UnionWith(_browserFeedback.Avoided(key,now));return routes;}
     HashSet<PolicyKey> WebFallbacks(DateTime now)=>_options.Mode=="Auto"&&_quicCompatible
-        ?_decisions.Values.Where(d=>PolicySafety.Live(d,_epoch,now)&&(d.Route is "vpn" or "dpi")&&!Manual(d.Key.Domain)&&_web.HasQuic(d.Key,now)).Select(d=>d.Key).ToHashSet():new();
+        ?_decisions.Values.Where(d=>PolicySafety.Live(d,_epoch,now)&&((d.Route is "vpn" or "dpi")||(_options.ExperimentalBrowserFeedback&&_browserFeedback.Confirmed(d,now)))&&!Manual(d.Key.Domain)&&_web.HasQuic(d.Key,now)).Select(d=>d.Key).ToHashSet():new();
     void PruneWeb(DateTime now)
     {
         var current=WebFallbacks(now);if(!_webFallbacks.SetEquals(current)){_webFallbacks=current;_dirty=true;}

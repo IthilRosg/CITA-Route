@@ -1,5 +1,6 @@
 #requires -Version 5.1
 # Run INSIDE the prepared VMware guest. Never switches the installed pilot.
+param([switch]$Feedback)
 $ErrorActionPreference='Stop'
 $browserMaker=[string](Get-ItemProperty 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS').SystemManufacturer
 if($browserMaker -notmatch 'VMware'){throw 'This acceptance runner is restricted to a VMware guest.'}
@@ -13,20 +14,21 @@ function Get-BrowserNetwork {
 }
 $browserReport=@{success=$false;startedUtc=[datetime]::UtcNow.ToString('o')};$browserRun=$null;$browserStarted=$false
 try {
-    $browserBefore=Read-BrowserPilot
-    if(-not $browserBefore.running){throw 'An active ordinary pilot session is required.'}
+    if(-not $Feedback){$browserBefore=Read-BrowserPilot;if(-not $browserBefore.running){throw 'An active ordinary pilot session is required.'}}
     if(Get-NetRoute -DestinationPrefix '203.0.113.231/32' -ErrorAction SilentlyContinue|Where-Object {$_.InterfaceAlias -eq 'Cita-WebLab'}){throw 'A scoped browser test is already active.'}
     $browserNetwork=Get-BrowserNetwork
     $browserManifest=Get-Content 'C:\CitaLab\Adaptive\browser\stage.json' -Raw|ConvertFrom-Json
-    if($browserManifest.files.Count -ne 6){throw 'Unexpected fixture manifest.'}
+    if($browserManifest.files.Count -ne $(if($Feedback){7}else{6})){throw 'Unexpected fixture manifest.'}
     foreach($browserFile in $browserManifest.files){if((Get-FileHash -LiteralPath $browserFile.guest).Hash -ne $browserFile.sha256){throw 'Fixture artifact differs from the staging manifest.'}}
     $browserRoot='C:\CitaLab\BrowserTun\'+[guid]::NewGuid().ToString('N');$browserReport.labRoot=$browserRoot
-    $browserRun=Start-Process 'C:\CitaLab\Adaptive\browser\RoutePilot.Agent.exe' -ArgumentList ('--browser-tun-lab "'+$browserRoot+'"') -WindowStyle Hidden -PassThru -RedirectStandardOutput 'C:\CitaLab\browser-tun.out' -RedirectStandardError 'C:\CitaLab\browser-tun.err'
+    if($Feedback){$browserExecutable='C:\CitaLab\Dotnet\dotnet.exe';$browserArguments='"C:\CitaLab\Adaptive\browser\RoutePilot.Agent.dll" --browser-feedback-lab "'+$browserRoot+'"'}else{$browserExecutable='C:\CitaLab\Adaptive\browser\RoutePilot.Agent.exe';$browserArguments='--browser-tun-lab "'+$browserRoot+'"'}
+    $browserRun=Start-Process $browserExecutable -ArgumentList $browserArguments -WindowStyle Hidden -PassThru -RedirectStandardOutput 'C:\CitaLab\browser-tun.out' -RedirectStandardError 'C:\CitaLab\browser-tun.err'
     $null=$browserRun.Handle;$browserStarted=$true
     if(-not $browserRun.WaitForExit(235000)){$browserRun.Kill();throw 'Browser acceptance exceeded its deadline.'}
     $browserRun.Refresh();$browserReport.exitCode=$browserRun.ExitCode
     if(Test-Path ($browserRoot+'\result.json')){$browserReport.result=Get-Content ($browserRoot+'\result.json') -Raw|ConvertFrom-Json}
     if($browserRun.ExitCode -ne 0){throw ([IO.File]::ReadAllText('C:\CitaLab\browser-tun.err'))}
+    if(-not $browserReport.result.success -or ($Feedback -and -not $browserReport.result.browserFeedbackVerified)){throw 'Complete browser acceptance was not verified.'}
     $browserReport.success=$true
 } catch {$browserReport.error=$_.Exception.Message}
 finally {
@@ -36,8 +38,9 @@ finally {
         $browserReport.gracefulScopedRouteCleanup=($browserRemaining.Count -eq 0)
         foreach($browserRoute in $browserRemaining){Remove-NetRoute -InterfaceIndex $browserRoute.InterfaceIndex -DestinationPrefix '203.0.113.231/32' -NextHop $browserRoute.NextHop -Confirm:$false}
         $browserAfterNetwork=Get-BrowserNetwork;$browserReport.defaultRoutesUnchanged=($browserNetwork.routes -eq $browserAfterNetwork.routes);$browserReport.dnsUnchanged=($browserNetwork.dns -eq $browserAfterNetwork.dns)
-        $browserAfter=Read-BrowserPilot;$browserReport.pilotPreserved=($browserAfter.running -and $browserAfter.id -eq $browserBefore.id -and $browserAfter.bridgeGeneration -eq $browserBefore.bridgeGeneration -and $browserAfter.routerPid -eq $browserBefore.routerPid -and $browserAfter.bridgePid -eq $browserBefore.bridgePid)
-        if(-not $browserReport.gracefulScopedRouteCleanup -or -not $browserReport.defaultRoutesUnchanged -or -not $browserReport.dnsUnchanged -or -not $browserReport.pilotPreserved){$browserReport.success=$false;$browserReport.cleanupMismatch=$true}
+        $browserReport.feedbackMode=[bool]$Feedback
+        if(-not $Feedback){$browserAfter=Read-BrowserPilot;$browserReport.pilotPreserved=($browserAfter.running -and $browserAfter.id -eq $browserBefore.id -and $browserAfter.bridgeGeneration -eq $browserBefore.bridgeGeneration -and $browserAfter.routerPid -eq $browserBefore.routerPid -and $browserAfter.bridgePid -eq $browserBefore.bridgePid)}
+        if(-not $browserReport.gracefulScopedRouteCleanup -or -not $browserReport.defaultRoutesUnchanged -or -not $browserReport.dnsUnchanged -or (-not $Feedback -and -not $browserReport.pilotPreserved)){$browserReport.success=$false;$browserReport.cleanupMismatch=$true}
     }
 }
 $browserReport.finishedUtc=[datetime]::UtcNow.ToString('o')

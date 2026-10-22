@@ -84,6 +84,7 @@ internal static class PolicyWebTests
         worker.ObserveDestination(new(epoch,"ignored.example.com",@"C:\Agent\RoutePilot.Agent.exe",443),"tcp","tls",now);
         worker.DrainFailures(CancellationToken.None);Assert(started==2,"First-use discovery must share the existing two-calibration concurrency limit and exclude the diagnostic agent.");
         worker.Clear();pending.SetResult(new(ProbeOutcome.Unavailable,null,0,0,Array.Empty<CandidateTiming>()));await worker.CompletePending();
+        await PolicyBrowserFeedbackTests.Run();
         Console.WriteLine("PASS: bounded first-use CDN discovery, repeated stream-fault quarantine, root-vs-body evidence, certificate guards and scoped browser QUIC/TCP rules.");
     }
 }

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Security;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
@@ -19,7 +20,7 @@ internal static class BrowserTunLab
     const string Domain="web.cita-route.test",Address="203.0.113.231";
     const string BrowserPath=@"C:\CitaLab\Browser\chrome-win64\chrome.exe";
     static void Assert(bool value,string message){if(!value)throw new IOException(message);}
-    internal static async Task Run(string directory)
+    internal static async Task Run(string directory,bool feedback=false)
     {
         string root=Path.GetFullPath(directory);
         using var bios=Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\BIOS");
@@ -28,9 +29,10 @@ internal static class BrowserTunLab
         Assert(!Directory.Exists(root),"Browser test directory already exists.");
         using(var image=File.OpenRead(BrowserPath))Assert(Convert.ToHexString(SHA256.HashData(image))=="5AF44A250A2139D4E0864C07227BF0687A6D12655BAB9682A5BE784B41BC82E1","Pinned official browser binary differs.");
         string installed=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),"CITA Test/Client/client");
-        var session=Storage.Read<PolicySession>(Path.Combine(installed,"runtime/session.json"));Assert(session.Running&&session.BridgeGeneration>0,"An existing ordinary pilot is required.");
-        bool Current(){var after=Storage.Read<PolicySession>(Path.Combine(installed,"runtime/session.json"));return after.Running&&after.Id==session.Id&&after.BridgeGeneration==session.BridgeGeneration;}
-        foreach(string part in new[]{"runtime/rules","logs","profiles"})Directory.CreateDirectory(Path.Combine(root,part));
+        if(feedback)Assert(Process.GetProcessesByName("RoutePilot").Length==0&&Process.GetProcessesByName("smart-router").Length==0&&Process.GetProcessesByName("vpn-bridge").Length==0,"Use the clean second guest for feedback acceptance.");
+        var session=feedback?new PolicySession{Id=Guid.NewGuid().ToString("N"),Running=true,RouterPid=Environment.ProcessId}:Storage.Read<PolicySession>(Path.Combine(installed,"runtime/session.json"));Assert(session.Running&&(feedback||session.BridgeGeneration>0),"An existing ordinary pilot is required.");
+        bool Current(){if(feedback)return !File.Exists(Path.Combine(root,"stop.request"));var after=Storage.Read<PolicySession>(Path.Combine(installed,"runtime/session.json"));return after.Running&&after.Id==session.Id&&after.BridgeGeneration==session.BridgeGeneration;}
+        foreach(string part in new[]{"runtime/rules","logs","profiles","private","data"})Directory.CreateDirectory(Path.Combine(root,part));
         using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(210));
         using var local=new HttpClient(new SocketsHttpHandler{UseProxy=false}){Timeout=TimeSpan.FromSeconds(8)};
         var portNumbers=new HashSet<int>();int Port(){while(true){var l=new TcpListener(IPAddress.Loopback,0);l.Start();int n=((IPEndPoint)l.LocalEndpoint).Port;l.Stop();if(portNumbers.Add(n))return n;}}
@@ -45,6 +47,7 @@ internal static class BrowserTunLab
         rules.Add(new JsonObject{["action"]="sniff",["timeout"]="300ms"});
         rules.Add(new JsonObject{["process_name"]=new JsonArray("nonexistent-cita-browser-fixture.exe"),["action"]="reject"});
         rules.Add(new JsonObject{["rule_set"]=new JsonArray("personal-direct"),["action"]="route",["outbound"]="fixture",["override_address"]="127.0.0.1",["override_port"]=443});
+        if(feedback)foreach(string route in new[]{"direct","dpi","vpn"})rules.Add(new JsonObject{["rule_set"]=new JsonArray("auto-"+route),["action"]="route",["outbound"]="fixture",["override_address"]="127.0.0.1",["override_port"]=route=="direct"?443:4443});
         int blockedIndex=rules.Count;
         rules.Add(JsonNode.Parse("""{"type":"logical","mode":"and","rules":[{"rule_set":["auto-blocked"]},{"ip_version":6,"invert":true}],"action":"reject"}"""));
         int quicIndex=rules.Count;
@@ -57,6 +60,7 @@ internal static class BrowserTunLab
             outbounds=new[]{new{type="direct",tag="fixture"}},dns=new{servers=new[]{new{type="hosts",tag="owned",predefined=new Dictionary<string,string[]>{{Domain,new[]{"127.0.0.1"}}}}}},
             route=new{rules,rule_set=sets,default_domain_resolver="owned",auto_detect_interface=true}})!;
         PolicyWebRouting.Configure(config);Storage.Write(Path.Combine(root,"router.json"),config);
+        if(feedback){Storage.Write(Path.Combine(root,"runtime/router.json"),config);Storage.Write(Path.Combine(root,"runtime/session.json"),session);Storage.Write(Path.Combine(root,"runtime/policy-ports.json"),ports);Storage.Write(Path.Combine(root,"runtime/bridge.json"),new{outbounds=new[]{new{bind_interface=NetworkInterface.GetAllNetworkInterfaces().First(n=>n.OperationalStatus==OperationalStatus.Up&&n.NetworkInterfaceType!=NetworkInterfaceType.Loopback).Name}}});File.WriteAllText(Path.Combine(root,"force-direct.txt"),"");File.WriteAllText(Path.Combine(root,"force-vpn.txt"),"");}
         void Progress(string phase)=>Storage.Write(Path.Combine(root,"progress.json"),new{phase,updatedUtc=DateTime.UtcNow});
         var info=new ProcessStartInfo(@"C:\CitaLab\Adaptive\browser\Cita.BrowserLab.exe"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};info.ArgumentList.Add(root);
         using var helper=Process.Start(info)??throw new IOException("Owned helper did not start.");var helperOut=helper.StandardOutput.ReadToEndAsync();var helperErr=helper.StandardError.ReadToEndAsync();
@@ -68,11 +72,29 @@ internal static class BrowserTunLab
             var ready=Storage.Read<JsonElement>(readyPath);control=ready.GetProperty("control").GetString()!;var uri=new Uri(control);Assert(uri.Host=="127.0.0.1"&&uri.Scheme=="http","Control must stay loopback.");
             string spki=ready.GetProperty("spki").GetString()!;
             await using var publisher=new PolicyPublisher(root,ports,Current);await publisher.Apply(desired,stop.Token);
+            PolicyWorker? worker=null;int ownTcpProbes=0;
+            if(feedback)
+            {
+                // Same two-probe selector as production; only the lab transport
+                // is substituted to pin its generated, owned certificate.
+                async Task<CalibrationResult> Calibrate(PolicyKey target,CancellationToken token)
+                {
+                    var selected=await PolicyTransport.Select(async(port,cancel)=>{
+                        using var client=new HttpClient(new SocketsHttpHandler{UseProxy=false,ConnectCallback=async(_,ct)=>{var socket=new Socket(AddressFamily.InterNetwork,SocketType.Stream,ProtocolType.Tcp);try{await socket.ConnectAsync(IPAddress.Loopback,port==ports.Direct?443:4443,ct);return new NetworkStream(socket,true);}catch{socket.Dispose();throw;}},SslOptions=new SslClientAuthenticationOptions{RemoteCertificateValidationCallback=(_,cert,_,errors)=>cert!=null&&(errors&~SslPolicyErrors.RemoteCertificateChainErrors)==SslPolicyErrors.None&&Convert.ToBase64String(SHA256.HashData(new X509Certificate2(cert).PublicKey.ExportSubjectPublicKeyInfo()))==spki}});
+                        using var request=new HttpRequestMessage(HttpMethod.Head,"https://"+Domain+"/"){Version=HttpVersion.Version11,VersionPolicy=HttpVersionPolicy.RequestVersionExact};
+                        using var response=await client.SendAsync(request,cancel);Interlocked.Increment(ref ownTcpProbes);return PolicyTransport.HttpResponse((int)response.StatusCode,1);
+                    },ports,token,avoidRoutes:worker!.AvoidedRoutes(target,DateTime.UtcNow));
+                    var at=DateTime.UtcNow;var d=selected.Route==null?null:new PolicyDecision(target,selected.Route,"Own fixture TLS probes",at,at.AddMinutes(5),selected.Milliseconds);
+                    return new(selected.Outcome,d,0,selected.Milliseconds,selected.Candidates);
+                }
+                worker=new PolicyWorker(root,session,new(){Mode="Auto",AllowListedDpi=true,ExperimentalBrowserFeedback=true},Calibrate);
+                await worker.AttachBrowserPublisher(publisher,stop.Token);
+            }
             var key=new PolicyKey("owned-web-test",Domain,BrowserPath,443);
             async Task<Browser> Open(string phase)
             {
                 Progress(phase);Assert(Current(),"Pilot changed; test abandoned.");
-                return await Browser.Open(BrowserPath,Path.Combine(root,"profiles",phase),spki,local,stop.Token);
+                return await Browser.Open(BrowserPath,Path.Combine(root,"profiles",phase),spki,local,stop.Token,feedback:worker);
             }
             async Task<JsonElement> Resource(Browser page,string kind)
             {
@@ -101,7 +123,18 @@ internal static class BrowserTunLab
             }
             await Ping();Progress("ControlledHttp3Fault");await local.GetStringAsync(control+"/fault",stop.Token);var fault=await FetchPair(browser);observations.Add(new{phase="controlled-http3-error",resources=fault});
             browserEvents.AddRange(browser.Events);await browser.DisposeAsync();browser=null;
-            desired["blocked"]=new[]{PolicyWebRouting.TcpFallback(key)};Progress("PublishingCompatibility");await publisher.Apply(desired,stop.Token);await Ping();
+            Progress("PublishingCompatibility");
+            if(worker!=null)
+            {
+                var until=Stopwatch.StartNew();
+                await worker.ApplyBrowserWork(stop.Token);
+                while(Storage.Read<JsonElement>(Path.Combine(root,"runtime/rules/auto-blocked.json")).GetProperty("rules").EnumerateArray().All(r=>!r.TryGetProperty("process_path",out _)))
+                {Assert(until.Elapsed<TimeSpan.FromSeconds(15),"Browser error did not produce an acknowledged compatibility rule.");await Task.Delay(50,stop.Token);await worker.ApplyBrowserWork(stop.Token);}
+                Assert(ownTcpProbes>=2,"Two own TCP/TLS probes must precede compatibility.");
+                observations.Add(new{phase="automatic-feedback-publication",ownTcpProbes,appliedVersion=publisher.Version,controllerProcessingMs=until.ElapsedMilliseconds});
+            }
+            else{desired["blocked"]=new[]{PolicyWebRouting.TcpFallback(key)};await publisher.Apply(desired,stop.Token);}
+            await Ping();
             // The fixture server closes its own failed QUIC connections. The
             // client never terminates another application's live connections.
             await local.GetStringAsync(control+"/close-quic",stop.Token);await local.GetStringAsync(control+"/healthy",stop.Token);
@@ -128,8 +161,26 @@ internal static class BrowserTunLab
                 catch(Exception ex)when(ex is IOException or SocketException or OperationCanceledException){Assert(i<15,"Manual rule never acknowledged.");await Task.Delay(75,stop.Token);}
             }
             browser=await Open("ManualQuic");var manualPair=await Warm(browser,true);Assert(Complete(manualPair[0],"image")&&Complete(manualPair[1],"file"),"Manual priority resource integrity.");observations.Add(new{phase="manual-priority",resources=manualPair});browserEvents.AddRange(browser.Events);await browser.DisposeAsync();browser=null;
-            Storage.Write(manual,new{version=3,rules=Array.Empty<JsonObject>()});desired["blocked"]=Array.Empty<JsonObject>();await publisher.Apply(desired,stop.Token);
+            Storage.Write(manual,new{version=3,rules=Array.Empty<JsonObject>()});
+            if(worker!=null){worker.Clear();await worker.ApplyBrowserWork(stop.Token);}else{desired["blocked"]=Array.Empty<JsonObject>();await publisher.Apply(desired,stop.Token);}
             browser=await Open("RestoredHttp3");var restored=await Warm(browser,true);Assert(Complete(restored[0],"image")&&Complete(restored[1],"file"),"Restored resource integrity.");await Ping();observations.Add(new{phase="restored",resources=restored});browserEvents.AddRange(browser.Events);await browser.DisposeAsync();browser=null;
+            if(worker!=null)
+            {
+                worker.Clear();await worker.ApplyBrowserWork(stop.Token);await local.GetStringAsync(control+"/body-tcp",stop.Token);
+                browser=await Open("BodyHealthyTcp");var healthy=await Warm(browser,false);Assert(Complete(healthy[0],"image")&&Complete(healthy[1],"file"),"Healthy TCP resources must complete before fault injection.");
+                async Task WaitRule(string route)
+                {
+                    var timer=Stopwatch.StartNew();
+                    while(true){await worker.ApplyBrowserWork(stop.Token);if(Storage.Read<JsonElement>(Path.Combine(root,"runtime/rules/auto-"+route+".json")).GetProperty("rules").EnumerateArray().Any(r=>r.TryGetProperty("process_path",out _)))break;Assert(timer.Elapsed<TimeSpan.FromSeconds(15),"Automatic resource rule was not acknowledged: "+route);await Task.Delay(50,stop.Token);}
+                }
+                await WaitRule("direct");await local.GetStringAsync(control+"/body-fault",stop.Token);
+                var brokenBody=await FetchPair(browser);await browser.Evaluate("true");observations.Add(new{phase="controlled-tcp-body-error",resources=brokenBody});
+                Assert(brokenBody.All(p=>!p.GetProperty("ok").GetBoolean()),"Both partial TCP resources must actually fail.");browserEvents.AddRange(browser.Events);await browser.DisposeAsync();browser=null;
+                var replacement=Stopwatch.StartNew();await WaitRule("dpi");
+                browser=await Open("BodyRecoveredTcp");var repaired=await Warm(browser,false);Assert(Complete(repaired[0],"image")&&Complete(repaired[1],"file"),"Alternative path must receive/decode both entire resources.");
+                observations.Add(new{phase="automatic-tcp-body-recovery",resources=repaired,ownTcpProbes,appliedVersion=publisher.Version,controllerAndBrowserMs=replacement.ElapsedMilliseconds});
+                browserEvents.AddRange(browser.Events);await browser.DisposeAsync();browser=null;await Ping();worker.Clear();await worker.ApplyBrowserWork(stop.Token);
+            }
             var state=JsonSerializer.Deserialize<JsonElement>(await local.GetStringAsync(control+"/status",stop.Token));
             Assert(state.GetProperty("events").EnumerateArray().Any(e=>e.GetProperty("broken").GetBoolean()),"The injected HTTP/3 fault must actually occur.");
             string log;using(var stream=new FileStream(routerLog,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete)){Assert(stream.Length<=4*1024*1024,"Owned router log exceeded the fixture budget.");using var logReader=new StreamReader(stream);log=await logReader.ReadToEndAsync(stop.Token);}
@@ -144,17 +195,19 @@ internal static class BrowserTunLab
             using var close=new CancellationTokenSource(12000);try{await helper.WaitForExitAsync(close.Token);}catch(OperationCanceledException){helper.Kill(true);await helper.WaitForExitAsync();}
             await Task.WhenAll(helperOut,helperErr);
         }
-        var report=new{success,failure,finishedUtc=DateTime.UtcNow,pilotPreserved=Current(),observations,browserEvents,automaticPublicCertificateFallbackVerified=false,scope="Owned VMware TUN /32 and generated HTTPS/HTTP3 resources; clean headless Chromium; healthy/manual/restored H3 use the synthetic-origin QUIC flag, TCP compatibility uses ordinary Alt-Svc attempts. This flag difference means automatic fallback with a publicly trusted certificate remains unverified. No default route/DNS/profile changes; server explicitly retires its own failed QUIC. Does not prove seamless recovery of existing QUIC streams or external WireSock routing"};
+        var report=new{success,failure,finishedUtc=DateTime.UtcNow,pilotPreserved=Current(),observations,browserEvents,browserFeedbackVerified=feedback&&success,automaticPublicCertificateFallbackVerified=false,scope="Owned VMware TUN /32 and generated HTTPS/HTTP3 resources; clean headless Chromium. Feedback mode wires actual CDP request failures to the production worker/selector/ack publisher using a pinned owned TLS probe transport; it does not provide a user-browser extension or external ingress. Healthy/manual/restored H3 use the synthetic-origin QUIC flag, TCP compatibility uses ordinary Alt-Svc attempts. Public certificate fallback is covered by the separate public lab. No default route/DNS/profile changes; server retires its own failed QUIC; no existing-stream migration claim"};
         Storage.Write(Path.Combine(root,"result.json"),report);Console.WriteLine(JsonSerializer.Serialize(new{success,root,failure}));if(!success)throw new IOException(failure);
     }
 
     internal sealed class Browser:IAsyncDisposable
     {
-        readonly Process _process;readonly ClientWebSocket _socket;readonly CancellationToken _stop;readonly string _phase,_domain;int _next;
+        readonly Process _process;readonly ClientWebSocket _socket;readonly CancellationToken _stop;readonly string _phase,_domain,_application;int _next;
+        readonly PolicyWorker? _feedback;
+        readonly Dictionary<string,string?> _requests=new();
         readonly Task<string> _error,_output;
         internal readonly List<object> Events=new();
-        Browser(Process process,ClientWebSocket socket,string phase,string domain,CancellationToken stop){_process=process;_socket=socket;_phase=phase;_domain=domain;_stop=stop;_error=process.StandardError.ReadToEndAsync();_output=process.StandardOutput.ReadToEndAsync();}
-        internal static async Task<Browser> Open(string exe,string profile,string? spki,HttpClient local,CancellationToken stop,string? publicDomain=null,string? publicAddress=null)
+        Browser(Process process,ClientWebSocket socket,string phase,string domain,string application,CancellationToken stop,PolicyWorker? feedback){_process=process;_socket=socket;_phase=phase;_domain=domain;_application=application;_stop=stop;_feedback=feedback;_error=process.StandardError.ReadToEndAsync();_output=process.StandardOutput.ReadToEndAsync();}
+        internal static async Task<Browser> Open(string exe,string profile,string? spki,HttpClient local,CancellationToken stop,string? publicDomain=null,string? publicAddress=null,PolicyWorker? feedback=null)
         {
             bool synthetic=publicDomain==null;string domain=publicDomain??Domain,address=publicAddress??Address;
             Assert(synthetic||(domain is "cloudflare-quic.com" or "www.cloudflare.com"&&IPAddress.TryParse(address,out var ip)&&ip.AddressFamily==AddressFamily.InterNetwork),"Only fixed public lab origins are allowed.");
@@ -163,12 +216,12 @@ internal static class BrowserTunLab
             // Force is needed to allow the synthetic QUIC root, but also
             // suppresses normal TCP fallback. Therefore do not claim this
             // fixture verifies automatic fallback with a publicly trusted cert.
-            if(synthetic){info.ArgumentList.Add("--ignore-certificate-errors-spki-list="+spki);if(Path.GetFileName(profile)!="CompatibilityTcp")info.ArgumentList.Add("--origin-to-force-quic-on="+Domain+":443");}
+            if(synthetic){info.ArgumentList.Add("--ignore-certificate-errors-spki-list="+spki);if(!Path.GetFileName(profile).EndsWith("Tcp",StringComparison.Ordinal))info.ArgumentList.Add("--origin-to-force-quic-on="+Domain+":443");}
             // Resolve only the fixture origin in this disposable profile.
             info.ArgumentList.Add("--no-proxy-server");
             info.ArgumentList.Add("--host-resolver-rules=MAP "+domain+" "+address+", MAP * ~NOTFOUND, EXCLUDE localhost");
             info.ArgumentList.Add("--log-net-log="+Path.Combine(profile,"netlog.json"));
-            var process=Process.Start(info)??throw new IOException("Pinned browser did not start.");var socket=new ClientWebSocket();var page=new Browser(process,socket,Path.GetFileName(profile),domain,stop);
+            var process=Process.Start(info)??throw new IOException("Pinned browser did not start.");var socket=new ClientWebSocket();var page=new Browser(process,socket,Path.GetFileName(profile),domain,exe,stop,feedback);
             try
             {
                 string portFile=Path.Combine(profile,"DevToolsActivePort");int port=0;
@@ -198,8 +251,22 @@ internal static class BrowserTunLab
                 using var json=JsonDocument.Parse(message.ToArray());var value=json.RootElement;
                 if(value.TryGetProperty("method",out var eventName)&&value.TryGetProperty("params",out var parameters))
                 {
+                    string? requestId=parameters.TryGetProperty("requestId",out var rid)?rid.GetString():null;
+                    if(_feedback!=null&&requestId!=null&&eventName.GetString()=="Network.requestWillBeSent")
+                    {
+                        if(_requests.Remove(requestId,out var previous))_feedback.FinishBrowserResource(previous);
+                        var request=parameters.GetProperty("request");
+                        if(_requests.Count<512&&Uri.TryCreate(request.GetProperty("url").GetString(),UriKind.Absolute,out var target)&&target.Scheme=="https"&&target.IdnHost==_domain&&target.Port==443&&target.UserInfo.Length==0)
+                            _requests[requestId]=_feedback.BeginBrowserResource(_domain,_application,request.GetProperty("method").GetString()??"",parameters.GetProperty("type").GetString()??"",DateTime.UtcNow);
+                    }
                     if(eventName.GetString()=="Network.responseReceived"){var r=parameters.GetProperty("response");if(Uri.TryCreate(r.GetProperty("url").GetString(),UriKind.Absolute,out var url)&&url.Host==_domain)Events.Add(new{phase=_phase,kind=url.AbsolutePath,protocol=r.GetProperty("protocol").GetString(),status=r.GetProperty("status").GetDouble(),tls=r.TryGetProperty("securityDetails",out var security)?security.GetProperty("protocol").GetString():null});}
-                    if(eventName.GetString()=="Network.loadingFailed")Events.Add(new{phase=_phase,error=parameters.GetProperty("errorText").GetString()});
+                    if(eventName.GetString()=="Network.loadingFailed")
+                    {
+                        string error=parameters.GetProperty("errorText").GetString()??"";bool accepted=false;
+                        if(requestId!=null&&_requests.Remove(requestId,out var ticket))accepted=_feedback?.ObserveBrowserFailure(ticket,error,parameters.TryGetProperty("canceled",out var cancelled)&&cancelled.GetBoolean(),DateTime.UtcNow)==true;
+                        Events.Add(new{phase=_phase,error,feedbackAccepted=accepted});
+                    }
+                    if(eventName.GetString()=="Network.loadingFinished"&&requestId!=null&&_requests.Remove(requestId,out var finished))_feedback?.FinishBrowserResource(finished);
                     if(Events.Count>96)Events.RemoveAt(0);
                 }
                 if(value.TryGetProperty("id",out var responseId)&&responseId.GetInt32()==id){if(value.TryGetProperty("error",out var error))throw new IOException("Owned browser command: "+error.GetProperty("message").GetString());return value.GetProperty("result").Clone();}
@@ -212,6 +279,7 @@ internal static class BrowserTunLab
         public async ValueTask DisposeAsync()
         {
             if(!_process.HasExited){try{await Call("Browser.close",new{});}catch{}using var close=new CancellationTokenSource(2000);try{await _process.WaitForExitAsync(close.Token);}catch(OperationCanceledException){_process.Kill(true);await _process.WaitForExitAsync();}}
+            foreach(var ticket in _requests.Values)_feedback?.FinishBrowserResource(ticket);_requests.Clear();
             await Task.WhenAll(_error,_output);_socket.Dispose();_process.Dispose();
         }
     }

@@ -11,7 +11,7 @@ namespace RoutePilot.Agent;
 public sealed record PolicyKey(string Epoch,string Domain,string Application,int Port,string Protocol="tcp",string Strategy=PolicyKey.CurrentStrategy)
 {public const string CurrentStrategy="tls-record-ipv4-v3";}
 public sealed record PolicyDecision(PolicyKey Key,string Route,string Reason,DateTime CheckedUtc,DateTime ExpiresUtc,long Milliseconds);
-public sealed class PolicyOptions {public string Mode{get;set;}="Lists";public bool AllowListedDpi{get;set;}public bool ExperimentalFastTcp{get;set;}}
+public sealed class PolicyOptions {public string Mode{get;set;}="Lists";public bool AllowListedDpi{get;set;}public bool ExperimentalFastTcp{get;set;}public bool ExperimentalBrowserFeedback{get;set;}}
 public sealed class PolicySession {public string Id{get;set;}="";public bool Running{get;set;}public int RouterPid{get;set;}public int BridgeGeneration{get;set;}}
 public sealed record CandidateResult(bool Reachable,bool Definitive,string Detail,long Milliseconds)
 {
@@ -247,7 +247,7 @@ public sealed partial class PolicyWorker
     {
         _generation++;foreach(var pendingStop in _pendingStops.Values)pendingStop.Cancel();
         _decisions.Clear();_failures.Clear();_seenFailures.Clear();_lastUse.Clear();_nextProbe.Clear();_queuedAt.Clear();_bindingStates.Clear();
-        _web.Clear();
+        _web.Clear();_browserFeedback.Clear();_browserPublished.Clear();
         _stability.Clear();
         lock(_events)_events.Clear();_dirty=true;
     }
@@ -267,7 +267,7 @@ public sealed partial class PolicyWorker
         // before a pause or wall-clock change as fresh post-resume evidence.
         _generation++;foreach(var stop in _pendingStops.Values)stop.Cancel();
         _stability.Clear();_nextProbe.Clear();_failures.Clear();_queuedAt.Clear();
-        _web.Clear();
+        _web.Clear();_browserFeedback.Clear();_browserPublished.Clear();
         _logFlows.Clear();_applications.Clear();_flowHealth.Clear();_earlyFlows.Clear();
         foreach(var key in _lastUse.Where(p=>p.Value>now).Select(p=>p.Key).ToArray())_lastUse[key]=now;
         Event("Пауза или изменение времени: незавершённые проверки сброшены; активные пути сохранены.");
@@ -303,6 +303,7 @@ public sealed partial class PolicyWorker
                     }
                 }
                 else {_stability.Remove(pair.Key);Event(pair.Key.Domain+": "+result.Outcome+"; неподтверждённая замена не применена.");}
+                if(_browserFeedback.Calibration(pair.Key,metadata.Started,result,accepted))_nextProbe.Remove(pair.Key);
                 _measurements.Insert(0,new(){Key=pair.Key,Trigger=metadata.Trigger,FirstSignalUtc=metadata.Queued,StartedUtc=metadata.Started,FinishedUtc=DateTime.UtcNow,QueueMilliseconds=Math.Max(0,(metadata.Started-metadata.Queued).TotalMilliseconds),Outcome=result.Outcome,Route=result.Decision?.Route,DnsMilliseconds=result.DnsMilliseconds,TotalMilliseconds=result.TotalMilliseconds,CandidateReadyMilliseconds=result.CandidateReadyMilliseconds,SelectionDecisionMilliseconds=result.SelectionDecisionMilliseconds,SelectionCompletionMilliseconds=result.SelectionCompletionMilliseconds,Candidates=result.Candidates,DecisionCheckedUtc=accepted?result.Decision?.CheckedUtc:null,Disposition=accepted?"Accepted":result.Decision!=null?"AwaitingStableReturn":"Unconfirmed"});
                 if(_measurements.Count>100)_measurements.RemoveAt(_measurements.Count-1);
                 Storage.Write(Path.Combine(_root,"data","policy-metrics.json"),new{epoch=_epoch,updatedUtc=DateTime.UtcNow,measurements=_measurements});
@@ -542,7 +543,7 @@ public sealed partial class PolicyWorker
         try
         {
             _decisions.TryGetValue(key,out var current);
-            var avoided=_web.Avoided(key,DateTime.UtcNow);
+            var avoided=AvoidedRoutes(key,DateTime.UtcNow);
             var resolved=await PolicyTransport.SelectResolved(key.Domain,_ports,budget.Token,failureTriggered,observeRoute:current?.Route,avoidRoutes:avoided);dnsMs=resolved.DnsMilliseconds;
             var chosen=resolved.Selection;
             CalibrationResult Result(ProbeOutcome outcome,PolicyDecision? decision)=>new(outcome,decision,dnsMs,timer.ElapsedMilliseconds,chosen.Candidates)
@@ -644,7 +645,7 @@ public sealed partial class PolicyWorker
         await _publisher!.Apply(Desired(),stop);
         if(!Current())throw new OperationCanceledException();
         Storage.Write(Runtime("policy-active.json"),new PolicyActiveSnapshot(_epoch,_options.Mode,_options.AllowListedDpi,_clearRequest,_decisions.Values.ToArray()){ExperimentalFastTcp=_options.ExperimentalFastTcp});
-        PersistCache();_dirty=false;
+        PersistCache();_dirty=false;BrowserPublication();
         var applied=DateTime.UtcNow;
         foreach(var measurement in _measurements.Where(m=>m.AppliedUtc==null && m.DecisionCheckedUtc!=null))
             if(_decisions.TryGetValue(measurement.Key,out var decision) && decision.CheckedUtc==measurement.DecisionCheckedUtc)measurement.ConfirmApplied(applied,_publisher.Version);
