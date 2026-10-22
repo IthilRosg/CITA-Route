@@ -115,7 +115,7 @@ public static class SystemRouter
             outbounds=new object[]{new{type="direct",tag="direct",bind_interface=nic},new{type="direct",tag="dpi",bind_interface=nic},new{type="socks",tag="vpn",server="127.0.0.1",server_port=20818,version="5"}},
             route=new{rules,rule_set=local,final="direct",default_domain_resolver="dns-direct",auto_detect_interface=true}
         })!;
-        PreserveTailscaleDns(generated);PolicyDns.Configure(generated);PreserveDirectDnsProbe(generated);Storage.Write(output,generated);
+        PreserveTailscaleDns(generated);PolicyDns.Configure(generated);PreserveDirectDnsProbe(generated);PolicyWebRouting.Configure(generated);Storage.Write(output,generated);
         return output;
     }
     static string PrepareTemplate(AgentConfig config,RunState state,string template)
@@ -160,6 +160,7 @@ public static class SystemRouter
         PreserveTailscaleDns(data);
         PolicyDns.Configure(data);
         PreserveDirectDnsProbe(data);
+        PolicyWebRouting.Configure(data);
         string path=Path.Combine(config.DataDirectory,"router-"+state.Id+".json");Storage.Write(path,data);return path;
     }
 }

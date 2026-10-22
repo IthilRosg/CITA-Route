@@ -19,7 +19,7 @@ internal sealed class PolicyStability
         {Remove(candidate.Key);return true;}
         // Two failed checks of the current route allow immediate recovery.
         // A cancelled or missing check is not evidence of a broken route.
-        if(evidence.Any(c=>c.Route==previous.Route && c.Outcome is ProbeOutcome.Unavailable or ProbeOutcome.DnsUnavailable or ProbeOutcome.HttpRestricted))
+        if(evidence.Any(c=>c.Route==previous.Route && c.Outcome is ProbeOutcome.Unavailable or ProbeOutcome.DnsUnavailable or ProbeOutcome.HttpRestricted or ProbeOutcome.ApplicationFailure))
         {Remove(candidate.Key);return true;}
         if(_returns.TryGetValue(candidate.Key,out var pending) && pending.Route==candidate.Route &&
             now>=pending.First && _clock()>=pending.Tick && _clock()-pending.Tick<=120000 && candidate.CheckedUtc>pending.Checked)

@@ -66,13 +66,14 @@ public static class PolicySafety
         catch(ArgumentException){return null;}
     }
     public static bool Matches(string domain,string suffix)=>domain==suffix || domain.EndsWith("."+suffix,StringComparison.Ordinal);
-    public static bool Pinned(string domain)=>new[]{"openai.com","chatgpt.com","oaiusercontent.com","oaistatic.com","sora.com","t.me","telegram.org","telegram.me","tdesktop.com"}.Any(s=>Matches(domain,s));
+    public static bool Pinned(string domain)=>new[]{"openai.com","chatgpt.com","oaiusercontent.com","oaistatic.com","sora.com","t.me","telegram.org","telegram.me","tdesktop.com","ts.net"}.Any(s=>Matches(domain,s));
+    internal static bool ManagedApplication(string application)=>new[]{"RoutePilot.Agent.exe","smart-router.exe","vpn-bridge.exe","tailscaled.exe","tailscale.exe","tailscale-ipn.exe","wiresock-connect-service.exe","wiresock-connect-app-service.exe"}.Contains(Path.GetFileName(application),StringComparer.OrdinalIgnoreCase);
     public static bool Valid(PolicyKey key)=>Domain(key.Domain)==key.Domain && key.Port==443 && key.Protocol=="tcp" && !string.IsNullOrWhiteSpace(key.Application) && Path.IsPathFullyQualified(key.Application);
     public static bool Live(PolicyDecision d,string epoch,DateTime now)=>d.Key.Epoch==epoch && d.ExpiresUtc>now && d.CheckedUtc<=now && d.ExpiresUtc-d.CheckedUtc<=TimeSpan.FromMinutes(16) && Valid(d.Key);
     public static bool Public(IPAddress ip)=>Quality.UdpQualityOptions.PublicIpv4(ip);
 }
 
-public sealed class PolicyWorker
+public sealed partial class PolicyWorker
 {
     internal const int DecisionLimit=256;
     readonly string _root,_epoch;
@@ -100,7 +101,7 @@ public sealed class PolicyWorker
     readonly Dictionary<string,long> _bytes=new(){{"direct",0},{"dpi",0},{"vpn",0}};
     readonly Dictionary<string,long> _connectionBytes=new();
     readonly Dictionary<string,(PolicyKey Key,DateTime Started,long Up,long Down)> _flowHealth=new();
-    readonly Dictionary<string,(string? Host,string? App,DateTime At)> _logFlows=new();
+    readonly Dictionary<string,(string? Host,string? App,DateTime At,string? Route,bool Datagram,string? Protocol)> _logFlows=new();
     CancellationToken _runStop;
     long _offset;string _partial="";int _switches;
     readonly string _fingerprint;
@@ -113,7 +114,7 @@ public sealed class PolicyWorker
     readonly HashSet<string> _listed=new(StringComparer.OrdinalIgnoreCase);
     string _listVersion="";
     internal PolicyWorker(string root,PolicySession session,PolicyOptions options,Func<PolicyKey,CancellationToken,Task<CalibrationResult>>? calibration=null)
-    {_root=root;_options=options;_ports=PolicyPorts.Read(root);_fingerprint=Fingerprint();_epoch=session.Id+":"+_fingerprint;_calibration=calibration;
+    {_root=root;_options=options;_ports=PolicyPorts.Read(root);_fingerprint=Fingerprint();_epoch=session.Id+":"+_fingerprint;_calibration=calibration;_quicCompatible=PolicyWebRouting.Supported(root);
         string clear=Runtime("clear-policy.request");if(File.Exists(clear))_clearRequest=File.ReadAllText(clear).Trim();}
     string Runtime(string name)=>Path.Combine(_root,"runtime",name);
     string Fingerprint()
@@ -246,6 +247,7 @@ public sealed class PolicyWorker
     {
         _generation++;foreach(var pendingStop in _pendingStops.Values)pendingStop.Cancel();
         _decisions.Clear();_failures.Clear();_seenFailures.Clear();_lastUse.Clear();_nextProbe.Clear();_queuedAt.Clear();_bindingStates.Clear();
+        _web.Clear();
         _stability.Clear();
         lock(_events)_events.Clear();_dirty=true;
     }
@@ -265,6 +267,8 @@ public sealed class PolicyWorker
         // before a pause or wall-clock change as fresh post-resume evidence.
         _generation++;foreach(var stop in _pendingStops.Values)stop.Cancel();
         _stability.Clear();_nextProbe.Clear();_failures.Clear();_queuedAt.Clear();
+        _web.Clear();
+        _logFlows.Clear();_applications.Clear();_flowHealth.Clear();_earlyFlows.Clear();
         foreach(var key in _lastUse.Where(p=>p.Value>now).Select(p=>p.Key).ToArray())_lastUse[key]=now;
         Event("Пауза или изменение времени: незавершённые проверки сброшены; активные пути сохранены.");
         return true;
@@ -331,6 +335,7 @@ public sealed class PolicyWorker
         }
         foreach(var key in _lastUse.Where(p=>DateTime.UtcNow-p.Value>TimeSpan.FromHours(1)).Select(p=>p.Key).ToArray())_lastUse.Remove(key);
         foreach(var key in _nextProbe.Where(p=>p.Value<DateTime.UtcNow.AddMinutes(-2) && !_decisions.ContainsKey(p.Key)).Select(p=>p.Key).ToArray())_nextProbe.Remove(key);
+        PruneWeb(DateTime.UtcNow);
     }
     bool Manual(string domain)
     {
@@ -377,7 +382,9 @@ public sealed class PolicyWorker
                 var meta=connection.GetProperty("metadata");
                 string Get(string name)=>meta.TryGetProperty(name,out var value)?value.ToString():"";
                 string? domain=PolicySafety.Domain(Get("host"));string app=Regex.Replace(Get("processPath"),@" \(\d+\)$","");
-                if(domain!=null && Path.IsPathFullyQualified(app) && !Path.GetFileName(app).Equals("RoutePilot.Agent.exe",StringComparison.OrdinalIgnoreCase) && int.TryParse(Get("destinationPort"),out int port) && port==443 && Get("network")=="tcp")
+                if(domain!=null&&Get("destinationPort")=="443"&&(!IPAddress.TryParse(Get("destinationIP"),out var family)||family.AddressFamily==System.Net.Sockets.AddressFamily.InterNetwork))
+                    ObserveDestination(new(_epoch,domain,app,443),Get("network"),Get("type")=="quic"?"quic":Get("protocol"),now);
+                if(domain!=null && Path.IsPathFullyQualified(app) && !PolicySafety.ManagedApplication(app) && int.TryParse(Get("destinationPort"),out int port) && port==443 && Get("network")=="tcp")
                 {
                     if(!_applications.TryGetValue((domain,port),out var apps))_applications[(domain,port)]=apps=new(StringComparer.OrdinalIgnoreCase);
                     apps[app]=now;
@@ -386,7 +393,7 @@ public sealed class PolicyWorker
                 long total=Math.Max(0,connection.GetProperty("upload").GetInt64())+Math.Max(0,connection.GetProperty("download").GetInt64());
                 string route=connection.GetProperty("chains").EnumerateArray().Select(c=>PolicyTcpBudget.CanonicalRoute(c.GetString())).FirstOrDefault(c=>c!=null)??"direct";
                 _bytes[route]+=Math.Max(0,total-(_connectionBytes.TryGetValue(id,out long previous)?previous:0));_connectionBytes[id]=total;
-                if(domain!=null && !Path.GetFileName(app).Equals("RoutePilot.Agent.exe",StringComparison.OrdinalIgnoreCase) && Path.IsPathFullyQualified(app) && Get("destinationPort")=="443" && Get("network")=="tcp")
+                if(domain!=null && !PolicySafety.ManagedApplication(app) && Path.IsPathFullyQualified(app) && Get("destinationPort")=="443" && Get("network")=="tcp")
                 {
                     if(IPAddress.TryParse(Get("destinationIP"),out var actual) && actual.AddressFamily!=System.Net.Sockets.AddressFamily.InterNetwork)continue;
                     var started=_flowHealth.TryGetValue(id,out var old)?old.Started:now;
@@ -451,27 +458,40 @@ public sealed class PolicyWorker
             if(flow.Success)
             {
                 string id=flow.Groups[1].Value;
-                var context=_logFlows.TryGetValue(id,out var existing)?existing:(Host:(string?)null,App:(string?)null,At:DateTime.UtcNow);
-                var destination=Regex.Match(line,@"(?:inbound|outbound) connection to ([a-zA-Z0-9.-]+):443$");
+                var context=_logFlows.TryGetValue(id,out var existing)?existing:(Host:(string?)null,App:(string?)null,At:DateTime.UtcNow,Route:(string?)null,Datagram:false,Protocol:(string?)null);
+                var destination=Regex.Match(line,@"(?:inbound|outbound) (?:packet )?connection to ([a-zA-Z0-9.-]+):443$");
                 // A FakeIP TUN inbound has no hostname. The subsequent outbound
                 // line carries it, including flows that die before an API poll.
                 // Resolver/IP-only lines must not erase an already known name.
                 if(destination.Success && PolicySafety.Domain(destination.Groups[1].Value) is {} name)context.Host=name;
                 var process=Regex.Match(line,@"router: found process path: (.+)$");
                 if(process.Success)context.App=Regex.Replace(process.Groups[1].Value.Trim(),@" \(\d+\)$","");
+                if(line.Contains("packet connection",StringComparison.Ordinal))context.Datagram=true;
+                if(line.Contains("sniffed protocol: quic",StringComparison.Ordinal))context.Protocol="quic";
+                var outbound=Regex.Match(line,@"outbound/(?:direct|socks)\[(direct(?:-auto)?|dpi(?:-auto)?|vpn)\]: outbound");
+                if(outbound.Success)context.Route=PolicyTcpBudget.CanonicalRoute(outbound.Groups[1].Value);
                 _logFlows[id]=context;
+                if(context.Host!=null&&context.App!=null&&DateTime.UtcNow>=context.At&&(DateTime.UtcNow-context.At).TotalSeconds<60)
+                    ObserveDestination(new(_epoch,context.Host,context.App,443),context.Datagram?"udp":"tcp",context.Protocol??"",DateTime.UtcNow);
             }
-            var match=Regex.Match(line,@"connection: open connection to ([a-zA-Z0-9.-]+):443 using outbound/(?:direct|socks)\[(direct(?:-auto)?|dpi(?:-auto)?|vpn)\]");
+            bool connectionError=line.Contains("connection:",StringComparison.Ordinal)||Regex.IsMatch(line,@"connection (?:upload|download) closed:");
+            if(!line.Contains("ERROR",StringComparison.Ordinal)||!connectionError||Regex.IsMatch(line,@"(?i)context cancel(?:ed|led)|operation (?:was )?cancel(?:ed|led)|use of closed network connection"))continue;
+            var match=Regex.Match(line,@"connection: open (?:packet )?connection to ([a-zA-Z0-9.-]+):443 using outbound/(?:direct|socks)\[(direct(?:-auto)?|dpi(?:-auto)?|vpn)\]");
+            // Read/write failures after response bytes carry the flow id, but
+            // may omit the destination. Use only that flow's observed identity.
+            if(!match.Success&&flow.Success&&_logFlows.TryGetValue(flow.Groups[1].Value,out var stream)&&stream.Host!=null&&stream.App!=null&&stream.Route!=null&&DateTime.UtcNow>=stream.At&&(DateTime.UtcNow-stream.At).TotalSeconds<60)
+            {ObserveFault(new(_epoch,stream.Host,stream.App,443),stream.Route,flow.Groups[1].Value,DateTime.UtcNow);continue;}
             string? host=match.Success?PolicySafety.Domain(match.Groups[1].Value):null;
             if(host==null || Manual(host) || !flow.Success)continue;
             string? app=null;
-            if(_logFlows.TryGetValue(flow.Groups[1].Value,out var known) && known.Host==host && (DateTime.UtcNow-known.At).TotalSeconds<60)app=known.App;
+            if(_logFlows.TryGetValue(flow.Groups[1].Value,out var known) && known.Host==host && DateTime.UtcNow>=known.At && (DateTime.UtcNow-known.At).TotalSeconds<60)app=known.App;
             if(app==null && _applications.TryGetValue((host,443),out var applications) && applications.Count==1)app=applications.Keys.Single();
-            if(app==null || !Path.IsPathFullyQualified(app) || Path.GetFileName(app).Equals("RoutePilot.Agent.exe",StringComparison.OrdinalIgnoreCase))continue;
+            if(app==null || !Path.IsPathFullyQualified(app) || PolicySafety.ManagedApplication(app))continue;
             var key=new PolicyKey(_epoch,host,app,443);
+            if(_web.Fault(key,PolicyTcpBudget.CanonicalRoute(match.Groups[2].Value)??"direct",flow.Groups[1].Value,DateTime.UtcNow))_nextProbe.Remove(key);
             RegisterFailure(key,"log:"+flow.Groups[1].Value,cancellation);
         }
-        foreach(var id in _logFlows.Where(p=>(DateTime.UtcNow-p.Value.At).TotalSeconds>60).Select(p=>p.Key).ToArray())_logFlows.Remove(id);
+        foreach(var id in _logFlows.Where(p=>DateTime.UtcNow<p.Value.At||(DateTime.UtcNow-p.Value.At).TotalSeconds>60).Select(p=>p.Key).ToArray())_logFlows.Remove(id);
         while(_logFlows.Count>1024)_logFlows.Remove(_logFlows.Keys.First());
         while(_failures.Count>256)_failures.Remove(_failures.Keys.First());
     }
@@ -479,7 +499,7 @@ public sealed class PolicyWorker
     {
         if(Manual(key.Domain) || _pending.ContainsKey(key) || !PolicySafety.Valid(key) ||
             (_nextProbe.TryGetValue(key,out var next) && DateTime.UtcNow<next) ||
-            (_decisions.TryGetValue(key,out var cached) && (DateTime.UtcNow-cached.CheckedUtc).TotalSeconds<10) || !_seenFailures.Add(key.Application+":"+key.Domain+":"+flow))return;
+            (_decisions.TryGetValue(key,out var cached) && (DateTime.UtcNow-cached.CheckedUtc).TotalSeconds<10&&_web.Avoided(key,DateTime.UtcNow).Count==0) || !_seenFailures.Add(key.Application+":"+key.Domain+":"+flow))return;
         // API and log may describe the SAME flow. They coalesce into one hint,
         // never two confirmations. Only the independent TLS probes decide.
         _failures[key]=(1,DateTime.UtcNow);
@@ -500,15 +520,17 @@ public sealed class PolicyWorker
         {
             var failures=_failures.Where(p=>now-p.Value.At<TimeSpan.FromMinutes(2) && !_pending.ContainsKey(p.Key) && !Manual(p.Key.Domain) && (!_nextProbe.TryGetValue(p.Key,out var next) || next<=now)).OrderBy(p=>p.Value.At).ToArray();
             bool background=refresh.Count>0 && (failures.Length==0 || _foregroundSinceRefresh>=4);
-            if(!background && failures.Length==0)break;
-            PolicyKey key=background?refresh[0].Key:failures[0].Key;
-            if(background){refresh.RemoveAt(0);_foregroundSinceRefresh=0;}else{_failures.Remove(key);_foregroundSinceRefresh++;refresh.RemoveAll(d=>d.Key==key);}
+            bool discovery=!background&&failures.Length==0;
+            var discovered=discovery?_web.Take(k=>!_pending.ContainsKey(k)&&!Manual(k.Domain)&&(!_nextProbe.TryGetValue(k,out var next)||next<=now)&&(!_decisions.TryGetValue(k,out var old)||!PolicySafety.Live(old,_epoch,now)),now):null;
+            if(discovery&&discovered==null)break;
+            PolicyKey key=discovered??(background?refresh[0].Key:failures[0].Key);
+            if(background){refresh.RemoveAt(0);_foregroundSinceRefresh=0;}else if(!discovery){_failures.Remove(key);_foregroundSinceRefresh++;refresh.RemoveAll(d=>d.Key==key);}
             _queuedAt.Remove(key,out var queued);
             var linked=CancellationTokenSource.CreateLinkedTokenSource(cancellation);_pendingStops[key]=linked;
-            _jobMetadata[key]=(queued==default?now:queued,now,background?"refresh":"connection-hint");
+            _jobMetadata[key]=(queued==default?now:queued,now,background?"refresh":discovery?"first-use":"connection-hint");
             _pendingGeneration[key]=_generation;
             // Keep the active binding while a replacement is being measured.
-            _pending[key]=_calibration?.Invoke(key,linked.Token)??Calibrate(key,linked.Token,!background);
+            _pending[key]=_calibration?.Invoke(key,linked.Token)??Calibrate(key,linked.Token,!background&&!discovery);
         }
         foreach(var key in _failures.Where(p=>now-p.Value.At>=TimeSpan.FromMinutes(2)).Select(p=>p.Key).ToArray()){_failures.Remove(key);_queuedAt.Remove(key);}
     }
@@ -520,13 +542,14 @@ public sealed class PolicyWorker
         try
         {
             _decisions.TryGetValue(key,out var current);
-            var resolved=await PolicyTransport.SelectResolved(key.Domain,_ports,budget.Token,failureTriggered,observeRoute:current?.Route);dnsMs=resolved.DnsMilliseconds;
+            var avoided=_web.Avoided(key,DateTime.UtcNow);
+            var resolved=await PolicyTransport.SelectResolved(key.Domain,_ports,budget.Token,failureTriggered,observeRoute:current?.Route,avoidRoutes:avoided);dnsMs=resolved.DnsMilliseconds;
             var chosen=resolved.Selection;
             CalibrationResult Result(ProbeOutcome outcome,PolicyDecision? decision)=>new(outcome,decision,dnsMs,timer.ElapsedMilliseconds,chosen.Candidates)
             {CandidateReadyMilliseconds=chosen.Route==null?null:chosen.Milliseconds,SelectionDecisionMilliseconds=chosen.DecisionMilliseconds,SelectionCompletionMilliseconds=chosen.CompletionMilliseconds};
             if(chosen.Route==null)return Result(chosen.Outcome,null);
             var now=DateTime.UtcNow;
-            bool temporary=PolicyTransport.UnstablePreferred(chosen)||chosen.Candidates.TakeWhile(c=>c.Route!=chosen.Route).Any(c=>c.Outcome==ProbeOutcome.DnsUnavailable);
+            bool temporary=PolicyTransport.UnstablePreferred(chosen)||chosen.Candidates.Any(c=>c.Outcome==ProbeOutcome.ApplicationFailure)||chosen.Candidates.TakeWhile(c=>c.Route!=chosen.Route).Any(c=>c.Outcome==ProbeOutcome.DnsUnavailable);
             var reason=chosen.Route=="direct"?"Две прямые TLS-пробы успешны.":temporary?"Подтверждён временный путь; прямой доступ или его DNS требуют перепроверки.":"Две TLS-пробы выбранного пути успешны; более приоритетные пути проверены.";
             var decision=new PolicyDecision(key,chosen.Route,reason,now,now.AddSeconds(temporary?60:900),chosen.Milliseconds);
             return Result(ProbeOutcome.Reachable,decision);
@@ -607,7 +630,9 @@ public sealed class PolicyWorker
     Dictionary<string,System.Text.Json.Nodes.JsonObject[]> Desired()
     {
         var now=DateTime.UtcNow;
-        return PolicyPublisher.Routes.ToDictionary(route=>route,route=>_decisions.Values.Where(d=>PolicySafety.Valid(d.Key) && Binding(d,now)==route).Select(d=>PolicyPublisher.Rule(d.Key)).ToArray());
+        var desired=PolicyPublisher.Routes.ToDictionary(route=>route,route=>_decisions.Values.Where(d=>PolicySafety.Valid(d.Key) && Binding(d,now)==route).Select(d=>PolicyPublisher.Rule(d.Key)).ToArray());
+        desired["blocked"]=desired["blocked"].Concat(WebFallbacks(now).Select(PolicyWebRouting.TcpFallback)).ToArray();
+        return desired;
     }
     void PersistCache()
     {
@@ -642,6 +667,6 @@ public sealed class PolicyWorker
     internal void Status(string phase)
     {
         string[] events;lock(_events)events=_events.ToArray();
-        Storage.Write(Runtime("policy-state.json"),new{phase,version=typeof(PolicyWorker).Assembly.GetName().Version!.ToString(3),epoch=_epoch,updatedUtc=DateTime.UtcNow,strategy="TLS record / TCP IPv4; bounded parallel probes",pending=_pending.Count,queued=_failures.Count,switches=_switches,bytes=_bytes,decisions=_decisions.Values.ToArray(),stale=_decisions.Values.Count(d=>!PolicySafety.Live(d,_epoch,DateTime.UtcNow)),blocked=_decisions.Values.Count(d=>Binding(d,DateTime.UtcNow)=="blocked"),publication=new{phase=_publisher?.Phase??"Offline",version=_publisher?.Version??0,milliseconds=_publisher?.Milliseconds??0},measurements=_measurements.Take(5).ToArray(),events,limits="IPv4 TCP/443; TLS reachability, not account/region access; no UDP or request replay; sampled active-flow byte counters"});
+        Storage.Write(Runtime("policy-state.json"),new{phase,version=typeof(PolicyWorker).Assembly.GetName().Version!.ToString(3),epoch=_epoch,updatedUtc=DateTime.UtcNow,strategy="TLS record / TCP IPv4; bounded parallel probes",pending=_pending.Count,queued=_failures.Count,discoveryQueued=_web.Queued,quicCompatibility=_quicCompatible,webFaults=_web.Snapshot(DateTime.UtcNow),switches=_switches,bytes=_bytes,decisions=_decisions.Values.ToArray(),stale=_decisions.Values.Count(d=>!PolicySafety.Live(d,_epoch,DateTime.UtcNow)),blocked=_decisions.Values.Count(d=>Binding(d,DateTime.UtcNow)=="blocked"),publication=new{phase=_publisher?.Phase??"Offline",version=_publisher?.Version??0,milliseconds=_publisher?.Milliseconds??0},measurements=_measurements.Take(5).ToArray(),events,limits="IPv4 TCP/443; own HTTPS and repeated transport faults, not whole-application proof; scoped browser QUIC-to-TCP compatibility on supported topology; no user request replay"});
     }
 }

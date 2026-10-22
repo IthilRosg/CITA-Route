@@ -23,4 +23,5 @@
   <ItemGroup><Compile Include="..\agent\StartupState.cs" Link="StartupState.cs" /></ItemGroup>
   <ItemGroup><Compile Include="..\agent\SessionEvidence.cs" Link="SessionEvidence.cs" /></ItemGroup>
   <ItemGroup><Compile Include="..\agent\SessionEvidence.Journals.cs" Link="SessionEvidence.Journals.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="..\agent\SessionEvidence.Web.cs" Link="SessionEvidence.Web.cs" /></ItemGroup>
 </Project>

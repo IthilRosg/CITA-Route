@@ -34,6 +34,8 @@ internal static class SessionEvidenceTests
             File.WriteAllText(Path.Combine(root,"runtime","controller-token.txt"),"DO-NOT-COLLECT-TOKEN");
             File.WriteAllText(Path.Combine(root,"logs","watch-error.log"),"PrivateKey = "+secret+"\nAuthorization: Bearer private\nhttps://example.org/?token=private\nopaque "+secret+"\n",Encoding.UTF8);
             File.WriteAllText(Path.Combine(root,"logs","last-action.log"),new string('X',150000)+"\nPresharedKey = "+secret,Encoding.Unicode);
+            File.WriteAllText(Path.Combine(root,"logs","resource-check-last.json"),JsonSerializer.Serialize(new{domain="cdn.example.com",pathHash="0123456789AB",sessionId=id,bridgeGeneration=1,finishedUtc=now,
+                PrivateKey="DO-NOT-COLLECT-RESOURCE-SECRET",url="https://example.com/private?token=private",attempts=new[]{new{route="vpn",status=200,bytes=123,complete=true,token="DO-NOT-COLLECT-ATTEMPT-SECRET"}}}));
             File.AppendAllText(history,"{\"observedUtc\":\""+now.ToString("O")+"\",\"source\":\"ordinary\",\"PrivateKey\":\"DO-NOT-COLLECT-JOURNAL-SECRET\"}\n{incomplete");
             string destination=Path.Combine(root,"report.zip");SessionEvidence.Export(root,destination,service);
             using(var zip=ZipFile.OpenRead(destination))
@@ -42,6 +44,7 @@ internal static class SessionEvidenceTests
                 Check(!all.Contains("DO-NOT-COLLECT")&&!all.Contains(secret)&&!all.Contains("Bearer private")&&!all.Contains("token=private"),"The diagnostic archive disclosed private configuration, tokens or an unprojected journal.");
                 Check(zip.Entries.All(e=>!e.FullName.Contains("private/")&&!e.FullName.Contains("controller")),"Private files must never be enumerated into the archive.");
                 Check(zip.Entries.Any(e=>e.FullName=="history/ordinary.json"),"Export lost persisted observations.");
+                Check(zip.Entries.Any(e=>e.FullName=="checks/resource.json"),"Export lost the projected resource-body diagnostic.");
                 Check(zip.Entries.All(e=>e.Length<1500000),"Export entries must be bounded snapshots.");
             }
             bool overwrite=false;try{SessionEvidence.Export(root,destination,service);}catch(IOException){overwrite=true;}

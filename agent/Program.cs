@@ -23,6 +23,7 @@ public static class Program
                 Console.WriteLine("PASS: offline control diagnostics, incidents, ownership and resource history.");return 0;
             }
             if(args.Length==2 && args[0]=="--policy-timing-lab"){await PolicyTimingLab.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==2 && args[0]=="--web-routing-lab"){await PolicyWebEngineLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--dns-integration"){await PolicyDnsEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--tcp-budget-lab"){await PolicyTcpBudgetLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--resilience-lab"){await PolicyResilienceLab.Run(Path.GetFullPath(args[1]));return 0;}
@@ -69,6 +70,7 @@ public static class Program
             }
             if(args.Length==2 && args[0]=="--network-signature"){Console.WriteLine(PolicyNetwork.Signature(Path.GetFullPath(args[1])));return 0;}
             if(args.Length==3 && args[0]=="--check-site"){await PolicyLiveCheck.Site(Path.GetFullPath(args[1]),args[2]);return 0;}
+            if(args.Length==3 && args[0]=="--check-web-resource"){await PolicyResourceCheck.Run(Path.GetFullPath(args[1]),args[2]);return 0;}
             if(args.Length==2 && args[0]=="--prepare-policy"){PolicyWorker.Prepare(args[1]);return 0;}
             if(args.Length==2 && args[0]=="--integration-policy"){await PolicyIntegration.Run(args[1]);return 0;}
             if(args.Length==2 && args[0]=="--optimization-integration"){await PolicyEngineTests.Run(Path.GetFullPath(args[1]));return 0;}

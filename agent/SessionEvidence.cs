@@ -197,6 +197,7 @@ public static partial class SessionEvidence
             retention="Latest 2048 session observations per source within 48 hours; 4 MiB session journals. Up to 1536 minute resource samples / 8 MiB. Eight incidents per source / 1 MiB. Log tails: 128 KiB per file.",
             ordinary=Snapshot(root,"ordinary",now),startup=Snapshot(Cita.Startup.StartupPaths.Client,"startup",now),resources=ResourceSummary(Read(Path.Combine(directory,"resource-state.json"))),network=NetworkSummary()},new JsonSerializerOptions{WriteIndented=true}));
         ExportJournals(Entry,root,directory,now);
+        ExportWebChecks(Entry,root);
         foreach(string source in new[]{"ordinary","startup"})
         {
             var history=History(Path.Combine(directory,"session-evidence-"+source+".jsonl"),now);

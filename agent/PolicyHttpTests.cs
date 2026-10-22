@@ -51,8 +51,8 @@ internal static class PolicyHttpTests
 
             """);
         worker.Failures(log,CancellationToken.None);worker.DrainFailures(CancellationToken.None);
-        Assert(scheduled.Count==1&&scheduled[0].Domain=="quick.example.com"&&scheduled[0].Application==@"C:\Browser\browser.exe",
-            "A short FakeIP flow must trigger calibration without an API snapshot; mismatched flow names and diagnostic-agent traffic must not.");
+        Assert(scheduled.Count==2&&scheduled.Any(k=>k.Domain=="quick.example.com"&&k.Application==@"C:\Browser\browser.exe")&&scheduled.All(k=>k.Domain is "quick.example.com" or "unrelated.example.com"),
+            "Short FakeIP and first-use flows must trigger calibration without an API snapshot; a mismatched failure target and diagnostic-agent traffic must not.");
         await worker.CompletePending();
         worker.Status("Auto");
         string epoch=Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("epoch").GetString()!;

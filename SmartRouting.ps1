@@ -332,7 +332,10 @@ function Prepare-Configuration {
         $routeRules += @{ rule_set=@('telegram');action='route';outbound='vpn' }
         $routeRules += @{ rule_set=@('russia-inside','discord');network='udp';action='route';outbound='vpn' }
     }
-    $routeRules += @{type='logical';mode='and';rules=@(@{rule_set=@('auto-blocked')},@{ip_version=6;invert=$true});action='reject'}
+    # A browser compatibility entry can match UDP/443, but only recognized
+    # QUIC may be rejected. Other UDP (games/voice) must remain independent.
+    $webProtocolGuard=@{type='logical';mode='or';rules=@(@{network='tcp'},@{protocol='quic'})}
+    $routeRules += @{type='logical';mode='and';rules=@(@{rule_set=@('auto-blocked')},@{ip_version=6;invert=$true},$webProtocolGuard);action='reject';no_drop=$true}
     foreach($autoRoute in @('direct','vpn','dpi')){
         # A CONNECT/SOCKS hostname initially has IP version 0. Resolve ONLY
         # these unknown-family flows to A before applying the IPv4 decision.
