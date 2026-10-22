@@ -13,6 +13,15 @@ public static class Program
         try
         {
             if(args.Length==1 && args[0]=="--self-test"){await AgentTests.Run();return 0;}
+            if(args.Length==2&&args[0]=="--diagnostics-journal-benchmark"){DiagnosticEvidenceLab.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==3&&args[0]=="--diagnostics-replay"){DiagnosticEvidenceLab.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]));return 0;}
+            if(args.Length is 1 or 2 && args[0]=="--diagnostics-self-test")
+            {
+                string? fixtureParent=args.Length==2?Path.GetFullPath(args[1]):null;
+                try{SessionEvidenceTests.Run(fixtureParent);DiagnosticJournalTests.Run(fixtureParent);await ControlTraceTests.Run();}
+                catch(Exception error){Console.Error.WriteLine(error.GetType().Name+"\n"+error.StackTrace);return 1;}
+                Console.WriteLine("PASS: offline control diagnostics, incidents, ownership and resource history.");return 0;
+            }
             if(args.Length==2 && args[0]=="--policy-timing-lab"){await PolicyTimingLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--dns-integration"){await PolicyDnsEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--tcp-budget-lab"){await PolicyTcpBudgetLab.Run(Path.GetFullPath(args[1]));return 0;}
@@ -35,7 +44,7 @@ public static class Program
                 BootRouting.Configure(Path.GetFullPath(args[1]),args[2]!="off",args[2]=="refresh",owner,handle);return 0;
             }
             if(args.Length==1 && args[0]=="--configure-service-recovery"){ServiceRecovery.Configure();return 0;}
-            if(args.Length==1 && args[0]=="--session-health"){var health=await NetworkProbe.CheckEgressDetailed();Console.WriteLine(JsonSerializer.Serialize(new{schema=2,healthy=health.Verified,code=health.Code,message=health.Message}));return 0;}
+            if(args.Length==1 && args[0]=="--session-health"){var health=await NetworkProbe.CheckEgressDetailed();Console.WriteLine(JsonSerializer.Serialize(new{schema=2,healthy=health.Verified,code=health.Code,message=health.Message,attempts=health.Attempts}));return 0;}
             if(args.Length==1 && args[0]=="--wiresock-statistics")
             {
                 string installed=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"RoutePilot","Agent","agent-config.json");

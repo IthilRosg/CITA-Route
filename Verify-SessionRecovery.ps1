@@ -12,6 +12,14 @@ try {
     $oldProbe=@{sessionId='same';bridgeGeneration=1;startedUtc=$gapNow.AddSeconds(-21)}
     $live=@{id='same';bridgeGeneration=1;running=$true;bridgeReady=$true}
     if(-not (Complete-SessionHealthProbe $oldProbe $live).discarded -or $script:stoppedOldProbe -ne 1){throw 'Even a completed pre-sleep probe must be discarded.'}
+    $healthOutput=New-Object 'Threading.Tasks.TaskCompletionSource[string]';$healthError=New-Object 'Threading.Tasks.TaskCompletionSource[string]'
+    $healthOutput.SetResult('{"healthy":false,"code":"ControlHttpsUnavailable","attempts":[{"Provider":"Cloudflare","Stage":"TLS","Outcome":"Failed","Milliseconds":23,"Error":"SecureConnectionError","PrivateKey":"fixture-not-evidence"}]}');$healthError.SetResult('')
+    $probe=@{sessionId='same';bridgeGeneration=1;startedUtc=[datetime]::UtcNow;process=@{HasExited=$true;ExitCode=0};output=$healthOutput.Task;errorOutput=$healthError.Task}
+    $completed=Complete-SessionHealthProbe $probe $live
+    if($completed.healthy -or $completed.code -ne 'ControlHttpsUnavailable' -or $completed.attempts.Count -ne 1 -or $completed.attempts[0].Stage -ne 'TLS' -or $completed.attempts[0].PSObject.Properties.Name -contains 'PrivateKey'){throw 'Health completion must preserve bounded per-control evidence without arbitrary fields.'}
+    $legacyOutput=New-Object 'Threading.Tasks.TaskCompletionSource[string]';$legacyOutput.SetResult('{"healthy":true,"code":"Verified"}');$probe.output=$legacyOutput.Task
+    $completed=Complete-SessionHealthProbe $probe $live
+    if(-not $completed.healthy -or $completed.attempts.Count -ne 0){throw 'An old agent without attempt details must remain compatible.'}
     function Get-NetIPConfiguration {param($ErrorAction) @([pscustomobject]@{NetAdapter=@{HardwareInterface=$true;Status='Disconnected'};IPv4DefaultGateway='fixture'})}
     if(Test-RecoveryNetworkAvailable){throw 'A down physical interface cannot spend reconnect attempts.'}
     function Get-NetIPConfiguration {param($ErrorAction) @([pscustomobject]@{NetAdapter=@{HardwareInterface=$false;Status='Up'};IPv4DefaultGateway='fixture'})}
@@ -70,6 +78,9 @@ try {
     $state=Read-JsonFile $path
     if(-not $state.recovering -or $state.bridgeReady -or $state.mode -ne 'ProxyOnly'){throw 'Recovering state did not preserve session identity/mode.'}
     $self=Get-Process -Id $PID
+    $watchSessionId=[guid]::NewGuid().ToString('N');Write-WatchProcessIdentity @{id=$watchSessionId}
+    $watchIdentity=Read-JsonFile (Join-Path $runtime 'watch-process.json')
+    if($watchIdentity.Pid -ne $PID -or $watchIdentity.Path -ne $self.Path -or $watchIdentity.SessionId -ne $watchSessionId -or [math]::Abs((([datetime]$watchIdentity.StartedUtc).ToUniversalTime()-$self.StartTime.ToUniversalTime()).TotalMilliseconds) -ge 100){throw 'Watcher diagnostic counters require an exact PID/start/image/session identity.'}
     $identity=@{Pid=$PID;Path=$self.Path;StartedUtc=$self.StartTime.ToUniversalTime().ToString('o')}
     Write-JsonFile (Join-Path $runtime 'policy-process.json') $identity
     if(Test-PolicyProcess){throw 'An arbitrary executable was accepted as the protected controller.'}

@@ -34,6 +34,8 @@ public sealed class WindowsResourceSampler
     sealed record Layout(PortRange? Range,bool ReservationsKnown,bool[] Reserved);
     readonly Dictionary<int,Layout> _layouts=new();
     readonly HashSet<string> _owned;
+    readonly string[] _watchRoots;
+    readonly Dictionary<int,WatchResourceIdentity.Identity> _watchers=new();
     readonly ResourceProcessTracker _identities=new();
     List<ResourceProcess> _processes=new();
     readonly List<string> _processUnavailable=new();
@@ -50,6 +52,7 @@ public sealed class WindowsResourceSampler
     [DllImport("psapi.dll",SetLastError=true)][return:MarshalAs(UnmanagedType.Bool)]static extern bool GetPerformanceInfo(ref PerformanceInfo value,uint size);
     public WindowsResourceSampler(string appRoot)
     {
+        _watchRoots=new[]{Path.GetFullPath(appRoot),Path.GetFullPath(Cita.Startup.StartupPaths.Client)}.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         string protectedRoot=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"RoutePilot","Agent");
         _owned=new(StringComparer.OrdinalIgnoreCase){Path.Combine(appRoot,"RoutePilot.exe"),Path.Combine(appRoot,"runtime","app-build","RoutePilot.exe"),
             Path.Combine(appRoot,"runtime","smart-router.exe"),Path.Combine(Cita.Startup.StartupPaths.Client,"runtime","smart-router.exe"),Path.Combine(protectedRoot,"RoutePilot.Agent.exe"),Path.Combine(protectedRoot,"vpn-bridge.exe"),
@@ -180,13 +183,17 @@ public sealed class WindowsResourceSampler
             string name=process.ProcessName;
             name=new string(name.Where(c=>!char.IsControl(c)).Take(55).ToArray());
             bool owned=false;
-            if(name is "RoutePilot" or "RoutePilot.Agent" or "smart-router" or "vpn-bridge")
+            if(name is "RoutePilot" or "RoutePilot.Agent" or "smart-router" or "vpn-bridge"||(name=="powershell"&&_watchers.ContainsKey(pid)))
             {
                 using var handle=OpenProcess(0x1000,false,pid);
                 var image=new StringBuilder(32768);int size=image.Capacity;
-                owned=!handle.IsInvalid&&QueryFullProcessImageName(handle,0,image,ref size)&&_owned.Contains(image.ToString());
+                if(!handle.IsInvalid&&QueryFullProcessImageName(handle,0,image,ref size))
+                    owned=_owned.Contains(image.ToString())||(_watchers.TryGetValue(pid,out var watcher)&&WatchResourceIdentity.Matches(watcher,pid,started,image.ToString()));
             }
-            return new(){Pid=pid,StartedUtc=started,Name=name,PrivateBytes=Math.Max(0,process.PrivateMemorySize64),Handles=Math.Max(0,process.HandleCount),CitaComponent=owned,UdpPorts=udp};
+            long? cpu=null,working=null;
+            if(owned){try{cpu=Math.Max(0,(long)process.TotalProcessorTime.TotalMilliseconds);working=Math.Max(0,process.WorkingSet64);}catch(System.ComponentModel.Win32Exception){}}
+            return new(){Pid=pid,StartedUtc=started,Name=name,PrivateBytes=Math.Max(0,process.PrivateMemorySize64),Handles=Math.Max(0,process.HandleCount),CitaComponent=owned,UdpPorts=udp,
+                ObservedUtc=snapshot,WorkingSetBytes=working,CpuTotalMilliseconds=cpu};
         }
         catch(Exception ex)when(ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException){return null;}
     }
@@ -194,6 +201,13 @@ public sealed class WindowsResourceSampler
     {
         var timer=Stopwatch.StartNew();var now=DateTime.UtcNow;
         var sample=new ResourceSample{ObservedUtc=now};
+        _watchers.Clear();
+        foreach(string root in _watchRoots)
+        {
+            var watcher=WatchResourceIdentity.Load(root,out bool limited);
+            if(watcher!=null)_watchers[watcher.Pid]=watcher;
+            if(limited&&!sample.Unavailable.Contains("CitaProcessCoverage"))sample.Unavailable.Add("CitaProcessCoverage");
+        }
         if(now-_layoutAt>TimeSpan.FromMinutes(15))
         {
             foreach(int family in new[]{2,23})
@@ -250,7 +264,7 @@ public sealed class WindowsResourceSampler
             _processes=all.Where(p=>p.CitaComponent).Concat(all.OrderByDescending(p=>p.PrivateBytes).Take(5)).Concat(all.OrderByDescending(p=>p.Handles).Take(5)).DistinctBy(p=>p.Pid).Take(16).ToList();
             _processesAt=now;
         }
-        sample.Unavailable.AddRange(_processUnavailable);
+        foreach(string unavailable in _processUnavailable)if(!sample.Unavailable.Contains(unavailable))sample.Unavailable.Add(unavailable);
         var selected=_processes.ToDictionary(p=>p.Pid,p=>p);
         var owners=rows.Where(r=>r.Pid>0).GroupBy(r=>r.Pid).Select(g=>(Pid:g.Key,Count:g.Select(x=>(x.Family,x.Port)).Distinct().Count())).OrderByDescending(x=>x.Count).Take(8);
         foreach(var owner in owners)

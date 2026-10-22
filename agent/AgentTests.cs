@@ -13,6 +13,8 @@ public static class AgentTests
         ComponentLivenessTests.Run();
         SystemRouterTests.Run();
         SessionEvidenceTests.Run();
+        DiagnosticJournalTests.Run();
+        await ControlTraceTests.Run();
         await EgressReferenceTests.Run();
         await PolicyStartupTests.Run();
         await PolicyPublicationTests.Run();

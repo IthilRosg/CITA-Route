@@ -156,11 +156,11 @@ function Complete-SessionHealthProbe($Probe,$Session) {
     if(Test-WatchObservationGap $Probe.startedUtc ([DateTime]::UtcNow)){Stop-SessionHealthProbe $Probe;return @{discarded=$true}}
     if(-not $Probe.process.HasExited -and ([DateTime]::UtcNow-$Probe.startedUtc).TotalSeconds -lt 20){return $null}
     try {
-        $healthy=$false;$code='Unverified'
+        $healthy=$false;$code='Unverified';$result=$null
         if($Probe.process.HasExited -and $Probe.process.ExitCode -eq 0 -and $Probe.output.IsCompleted -and $Probe.errorOutput.IsCompleted){
             try{$result=$Probe.output.GetAwaiter().GetResult() | ConvertFrom-Json;$healthy=$result.healthy -eq $true;if($result.code -in @('Verified','StatusUnavailable','ProfileNotConnected','ProfileChanged','MissingExpectedEgress','EgressMismatch','ControlHttpsUnavailable','InvalidConfiguration')){$code=$result.code}}catch{}
         }
-        return @{discarded=$false;sessionId=$Session.id;bridgeGeneration=$Session.bridgeGeneration;healthy=$healthy;code=$code;message=$(if($healthy){'Managed VPN HTTPS verified.'}else{'VPN HTTPS could not be verified; no full network restart requested.'});updatedUtc=[DateTime]::UtcNow.ToString('o')}
+        return @{discarded=$false;sessionId=$Session.id;bridgeGeneration=$Session.bridgeGeneration;healthy=$healthy;code=$code;attempts=@($result.attempts|Select-Object -First 2 -Property Provider,Stage,Outcome,Milliseconds,Deadline,HttpStatus,SocketError,Error);message=$(if($healthy){'Managed VPN HTTPS verified.'}else{'VPN HTTPS could not be verified; no full network restart requested.'});updatedUtc=[DateTime]::UtcNow.ToString('o')}
     }finally{Stop-SessionHealthProbe $Probe}
 }
 
@@ -179,12 +179,21 @@ function Set-UnsafeVpnHold($Health) {
     }finally{if($held){$held.Dispose()};if($leased){Invoke-AgentCoordinator 'end-operation'}}
 }
 
+function Write-WatchProcessIdentity($Session) {
+    # Diagnostic counter attribution only. Existing process-stop checks are unchanged.
+    try{
+        $watchSelf=Get-Process -Id $PID
+        try{Write-JsonFile (Join-Path $runtime 'watch-process.json') @{schema=1;Pid=$PID;Path=$watchSelf.Path;StartedUtc=$watchSelf.StartTime.ToUniversalTime().ToString('o');SessionId=$Session.id}}finally{$watchSelf.Dispose()}
+    }catch{}
+}
+
 function Watch-Session([string]$WatchScript) {
     # Only one watcher may own per-session retry budgets and event history.
     try{$watchOwner=[IO.File]::Open((Join-Path $runtime 'watch-control.lock'),'OpenOrCreate','ReadWrite','None')}catch{return}
     try {
     [IO.File]::WriteAllText((Join-Path $runtime 'watch.pid'),[string]$PID)
     $watchedSession=Read-JsonFile (Join-Path $runtime 'session.json')
+    Write-WatchProcessIdentity $watchedSession
     $budgetPath=Join-Path $runtime 'component-recovery.json'
     $budget=@{sessionId=$watchedSession.id;Reconnect=0;RepairVpn=0;Bridge=0;Policy=0}
     try {
@@ -214,6 +223,7 @@ function Watch-Session([string]$WatchScript) {
             if($session.id -ne $watchedSession.id){
                 if($session.recoveryParentId -ne $watchedSession.id){break}
                 $watchedSession=$session;$budget=@{sessionId=$session.id;Reconnect=0;RepairVpn=0;Bridge=0;Policy=0}
+                Write-WatchProcessIdentity $watchedSession
                 $healthFailures=0;$disconnected=0;$networkMismatch=0;$healthySince=$null;$policyStaleSamples=0
                 Stop-SessionHealthProbe $probe;$probe=$null
                 $nextHealth=[DateTime]::UtcNow.AddSeconds(10)

@@ -14,7 +14,7 @@ namespace Cita.Diagnostics;
 
 // Shared by the service and the UI. Never read connection configuration or
 // serialize arbitrary runtime objects: this is an explicit diagnostic allowlist.
-public static class SessionEvidence
+public static partial class SessionEvidence
 {
     const int MaxHistory=2048,MaxJson=262144,LogTail=131072;
     static readonly JsonSerializerOptions Json=new(){PropertyNameCaseInsensitive=true};
@@ -55,11 +55,28 @@ public static class SessionEvidence
     static string Line(JsonElement value,string key,string root)
     {string clean=Redact(Text(value,key),root);return clean[..Math.Min(512,clean.Length)];}
     static bool TryInt(this JsonElement value,out int n){n=0;return value.ValueKind==JsonValueKind.Number&&value.TryGetInt32(out n);}
-    static bool ProcessMatches(int pid,string path,DateTime? started)
+    internal sealed record ProcessOwnership(string Status,string Reason,int? Error=null)
     {
-        if(pid<=0||started==null)return false;
-        try{using var p=Process.GetProcessById(pid);return !p.HasExited&&p.MainModule?.FileName?.Equals(path,StringComparison.OrdinalIgnoreCase)==true&&Math.Abs((p.StartTime.ToUniversalTime()-started.Value).TotalMilliseconds)<100;}
-        catch(Exception ex)when(ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException){return false;}
+        public bool? Owned=>Status=="Matched"?true:Status=="Mismatch"?false:null;
+    }
+    internal static ProcessOwnership InspectProcess(int pid,string path,DateTime? started,Func<(string? Path,DateTime StartedUtc,bool Exited)>? inspect=null)
+    {
+        if(pid<=0||started==null)return new("Unavailable","MissingIdentity");
+        try
+        {
+            (string? Path,DateTime StartedUtc,bool Exited) value;
+            if(inspect!=null)value=inspect();
+            else{using var p=Process.GetProcessById(pid);value=(p.MainModule?.FileName,p.StartTime.ToUniversalTime(),p.HasExited);}
+            if(value.Exited)return new("Mismatch","Exited");
+            if(value.Path==null)return new("Unavailable","ImageUnavailable");
+            if(!value.Path.Equals(path,StringComparison.OrdinalIgnoreCase))return new("Mismatch","ImageMismatch");
+            return Math.Abs((value.StartedUtc-started.Value).TotalMilliseconds)<100?new("Matched","Verified"):new("Mismatch","StartMismatch");
+        }
+        catch(System.ComponentModel.Win32Exception error){return new("Unavailable",error.NativeErrorCode==5?"AccessDenied":"ReadFailed",error.NativeErrorCode);}
+        catch(UnauthorizedAccessException){return new("Unavailable","AccessDenied");}
+        catch(ArgumentException){return new("Mismatch","Exited");}
+        catch(InvalidOperationException){return new("Unavailable","ProcessChanged");}
+        catch(NotSupportedException){return new("Unavailable","Unsupported");}
     }
     public static object Snapshot(string root,string source,DateTime now)
         =>Snapshot(root,source,now,true);
@@ -76,13 +93,14 @@ public static class SessionEvidence
         bool listener=false;try{listener=IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(p=>p.Address.Equals(System.Net.IPAddress.Loopback)&&p.Port==20808);}catch(NetworkInformationException){}
         var current=Read(Runtime("session.json"));bool consistent=Id(current,"id")==id&&Number(current,"bridgeGeneration")==generation&&Flag(current,"running")==Flag(session,"running");
         if(!consistent&&retrySnapshot)return Snapshot(root,source,now,false);
+        var routerOwnership=InspectProcess(Number(session,"routerPid"),Path.Combine(root,"runtime","smart-router.exe"),At(session,"routerStartedUtc"));
+        var bridgeOwnership=InspectProcess(Number(session,"bridgePid"),Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"RoutePilot","Agent","vpn-bridge.exe"),At(session,"bridgeStartedUtc"));
         return new{source,observedUtc=now,consistent,version=typeof(SessionEvidence).Assembly.GetName().Version?.ToString(3),sessionId=id,running=Flag(session,"running"),recovering=Flag(session,"recovering"),bridgeGeneration=generation,
             bridgeReady=Flag(session,"bridgeReady"),stopReason=Code(session,"stopReason"),routerPid=Number(session,"routerPid"),bridgePid=Number(session,"bridgePid"),
-            routerOwned=ProcessMatches(Number(session,"routerPid"),Path.Combine(root,"runtime","smart-router.exe"),At(session,"routerStartedUtc")),
-            bridgeOwned=ProcessMatches(Number(session,"bridgePid"),Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"RoutePilot","Agent","vpn-bridge.exe"),At(session,"bridgeStartedUtc")),
+            routerOwned=routerOwnership.Owned,bridgeOwned=bridgeOwnership.Owned,routerOwnership,bridgeOwnership,
             loopbackBridgeListener=listener,startedUtc=At(session,"startedUtc"),stoppedUtc=At(session,"stoppedUtc"),
             watch=new{matchesSession=sameWatch,fresh=sameWatch&&Fresh(At(watch,"updatedUtc"),now,25),phase=Code(watch,"phase"),reason=Line(watch,"reason",root),wireSockState=Code(watch,"wireSockState"),updatedUtc=At(watch,"updatedUtc")},
-            health=new{matchesGeneration=sameHealth,fresh=sameHealth&&Fresh(At(health,"updatedUtc"),now,90),healthy=consistent&&Flag(session,"running")&&Flag(session,"bridgeReady")&&sameHealth&&Fresh(At(health,"updatedUtc"),now,90)&&Flag(health,"healthy")&&!held,code=Code(health,"code"),updatedUtc=At(health,"updatedUtc")},
+            health=new{matchesGeneration=sameHealth,fresh=sameHealth&&Fresh(At(health,"updatedUtc"),now,90),healthy=consistent&&Flag(session,"running")&&Flag(session,"bridgeReady")&&sameHealth&&Fresh(At(health,"updatedUtc"),now,90)&&Flag(health,"healthy")&&!held,code=Code(health,"code"),updatedUtc=At(health,"updatedUtc"),attempts=SafeAttempts(Get(health,"attempts"))},
             safety=new{hold=held,code=held?Code(hold,"code"):""},
             policy=new{phase=Code(policy,"phase"),fresh=Fresh(At(policy,"updatedUtc"),now,45),pending=Number(policy,"pending"),queued=Number(policy,"queued"),switches=Number(policy,"switches")},
             retry=new{sessionId=Id(retry,"sessionId"),reconnect=Number(retry,"Reconnect"),repairVpn=Number(retry,"RepairVpn"),bridge=Number(retry,"Bridge"),policy=Number(retry,"Policy")}};
@@ -106,6 +124,8 @@ public static class SessionEvidence
         string fingerprint=Fingerprint(snapshot);
         lock(Last)
         {
+            try{ObserveIncident(root,source,directory,snapshot,now);}
+            catch(Exception error)when(error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException){}
             if(Last.TryGetValue(path,out var last)&&last.Fingerprint==fingerprint&&last.At<=now&&now-last.At<TimeSpan.FromSeconds(60))return;
             Directory.CreateDirectory(directory);
             if(File.Exists(path)&&new FileInfo(path).Length>4*1024*1024)
@@ -174,8 +194,9 @@ public static class SessionEvidence
         var now=DateTime.UtcNow;
         Entry("report.json",JsonSerializer.Serialize(new{schema=1,version=typeof(SessionEvidence).Assembly.GetName().Version?.ToString(3),createdUtc=now,
             installedAgentVersion=AgentVersion(),
-            retention="Export: latest 2048 observations per source within 48 hours; local journal capped near 4 MiB per source. Log tails: 128 KiB per file.",
+            retention="Latest 2048 session observations per source within 48 hours; 4 MiB session journals. Up to 1536 minute resource samples / 8 MiB. Eight incidents per source / 1 MiB. Log tails: 128 KiB per file.",
             ordinary=Snapshot(root,"ordinary",now),startup=Snapshot(Cita.Startup.StartupPaths.Client,"startup",now),resources=ResourceSummary(Read(Path.Combine(directory,"resource-state.json"))),network=NetworkSummary()},new JsonSerializerOptions{WriteIndented=true}));
+        ExportJournals(Entry,root,directory,now);
         foreach(string source in new[]{"ordinary","startup"})
         {
             var history=History(Path.Combine(directory,"session-evidence-"+source+".jsonl"),now);
@@ -202,9 +223,10 @@ public static class SessionEvidence
     {
         // Re-project every field on export; never trust a saved journal wholesale.
         var watch=Get(item,"watch");var health=Get(item,"health");var safety=Get(item,"safety");var policy=Get(item,"policy");var retry=Get(item,"retry");
-        return new{source=Code(item,"source"),observedUtc=At(item,"observedUtc"),consistent=Flag(item,"consistent"),version=Version.TryParse(Text(item,"version"),out var version)?version.ToString():"",sessionId=Id(item,"sessionId"),running=Flag(item,"running"),recovering=Flag(item,"recovering"),bridgeGeneration=Number(item,"bridgeGeneration"),bridgeReady=Flag(item,"bridgeReady"),stopReason=Code(item,"stopReason"),routerPid=Number(item,"routerPid"),bridgePid=Number(item,"bridgePid"),routerOwned=Flag(item,"routerOwned"),bridgeOwned=Flag(item,"bridgeOwned"),loopbackBridgeListener=Flag(item,"loopbackBridgeListener"),startedUtc=At(item,"startedUtc"),stoppedUtc=At(item,"stoppedUtc"),
+        var routerOwnership=SafeOwnership(item,"routerOwnership","routerOwned");var bridgeOwnership=SafeOwnership(item,"bridgeOwnership","bridgeOwned");
+        return new{source=Code(item,"source"),observedUtc=At(item,"observedUtc"),consistent=Flag(item,"consistent"),version=Version.TryParse(Text(item,"version"),out var version)?version.ToString():"",sessionId=Id(item,"sessionId"),running=Flag(item,"running"),recovering=Flag(item,"recovering"),bridgeGeneration=Number(item,"bridgeGeneration"),bridgeReady=Flag(item,"bridgeReady"),stopReason=Code(item,"stopReason"),routerPid=Number(item,"routerPid"),bridgePid=Number(item,"bridgePid"),routerOwned=routerOwnership.Owned,bridgeOwned=bridgeOwnership.Owned,routerOwnership,bridgeOwnership,loopbackBridgeListener=Flag(item,"loopbackBridgeListener"),startedUtc=At(item,"startedUtc"),stoppedUtc=At(item,"stoppedUtc"),
             watch=new{matchesSession=Flag(watch,"matchesSession"),fresh=Flag(watch,"fresh"),phase=Code(watch,"phase"),reason=Line(watch,"reason",""),wireSockState=Code(watch,"wireSockState"),updatedUtc=At(watch,"updatedUtc")},
-            health=new{matchesGeneration=Flag(health,"matchesGeneration"),fresh=Flag(health,"fresh"),healthy=Flag(health,"healthy"),code=Code(health,"code"),updatedUtc=At(health,"updatedUtc")},
+            health=new{matchesGeneration=Flag(health,"matchesGeneration"),fresh=Flag(health,"fresh"),healthy=Flag(health,"healthy"),code=Code(health,"code"),updatedUtc=At(health,"updatedUtc"),attempts=SafeAttempts(Get(health,"attempts"))},
             safety=new{hold=Flag(safety,"hold"),code=Code(safety,"code")},policy=new{phase=Code(policy,"phase"),fresh=Flag(policy,"fresh"),pending=Number(policy,"pending"),queued=Number(policy,"queued"),switches=Number(policy,"switches")},retry=new{sessionId=Id(retry,"sessionId"),reconnect=Number(retry,"reconnect"),repairVpn=Number(retry,"repairVpn"),bridge=Number(retry,"bridge"),policy=Number(retry,"policy")}};
     }
     static object ResourceSummary(JsonElement value)
@@ -212,7 +234,7 @@ public static class SessionEvidence
         long Long(JsonElement item,string key)=>Get(item,key).ValueKind==JsonValueKind.Number&&Get(item,key).TryGetInt64(out long number)?number:0;
         var sample=Get(value,"sample");var processes=Get(sample,"processes");
         return new{updatedUtc=At(value,"updatedUtc"),memoryAvailable=Flag(sample,"memoryAvailable"),physicalAvailable=Long(sample,"physicalAvailable"),commitTotal=Long(sample,"commitTotal"),commitLimit=Long(sample,"commitLimit"),
-            components=processes.ValueKind==JsonValueKind.Array?processes.EnumerateArray().Where(p=>Flag(p,"citaComponent")).Take(16).Select(p=>new{pid=Number(p,"pid"),startedUtc=At(p,"startedUtc"),privateBytes=Long(p,"privateBytes"),handles=Number(p,"handles"),udpPorts=Number(p,"udpPorts")}).ToArray():null};
+            components=processes.ValueKind==JsonValueKind.Array?processes.EnumerateArray().Where(p=>Flag(p,"citaComponent")).Take(16).Select(p=>new{role=ResourceRole(Text(p,"name")),pid=Number(p,"pid"),startedUtc=At(p,"startedUtc"),observedUtc=At(p,"observedUtc"),privateBytes=Long(p,"privateBytes"),workingSetBytes=OptionalLong(p,"workingSetBytes"),cpuTotalMilliseconds=OptionalLong(p,"cpuTotalMilliseconds"),handles=Number(p,"handles"),udpPorts=Number(p,"udpPorts")}).ToArray():null};
     }
     static string AgentVersion()
     {

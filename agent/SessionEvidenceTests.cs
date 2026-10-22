@@ -7,10 +7,10 @@ namespace RoutePilot.Agent;
 
 internal static class SessionEvidenceTests
 {
-    internal static void Run()
+    internal static void Run(string? fixtureParent=null)
     {
         void Check(bool ok,string reason){if(!ok)throw new Exception(reason);}
-        string root=Path.Combine(Path.GetTempPath(),"CitaEvidence-"+Guid.NewGuid().ToString("N"));
+        string root=Path.Combine(fixtureParent??Path.GetTempPath(),"CitaEvidence-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(root,"runtime"));Directory.CreateDirectory(Path.Combine(root,"logs"));Directory.CreateDirectory(Path.Combine(root,"private"));
         string service=Path.Combine(root,"service");Directory.CreateDirectory(service);
         string sessionPath=Path.Combine(root,"runtime","session.json"),healthPath=Path.Combine(root,"runtime","session-health.json");
@@ -50,6 +50,11 @@ internal static class SessionEvidenceTests
             Session(next,2);SessionEvidence.Observe(root,"ordinary",service,now.AddSeconds(25));
             Check(new FileInfo(history).Length<4*1024*1024,"Oversized or corrupted history must remain bounded after the next append.");
         }
-        finally{Directory.Delete(root,true);}
+        finally
+        {
+            string parent=Path.GetFullPath(fixtureParent??Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar)+Path.DirectorySeparatorChar;
+            if(!Path.GetFullPath(root).StartsWith(parent,StringComparison.OrdinalIgnoreCase))throw new IOException("Unsafe diagnostic fixture cleanup.");
+            Directory.Delete(root,true);
+        }
     }
 }

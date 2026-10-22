@@ -15,6 +15,9 @@ public sealed class ResourceProcess
     public int Handles{get;set;}
     public int UdpPorts{get;set;}
     public bool CitaComponent{get;set;}
+    public DateTime ObservedUtc{get;set;}
+    public long? WorkingSetBytes{get;set;}
+    public long? CpuTotalMilliseconds{get;set;}
 }
 public sealed class ResourcePool
 {

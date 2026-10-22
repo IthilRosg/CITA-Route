@@ -15,6 +15,7 @@ public sealed record EgressHealth(bool Verified,string Code,string Message)
 {
     // Kept internal: health IPC and diagnostic exports must not expose the exit.
     internal string? VerifiedExit{get;init;}
+    public ControlAttempt[] Attempts{get;init;}=Array.Empty<ControlAttempt>();
 }
 
 public static class NetworkProbe
@@ -25,14 +26,16 @@ public static class NetworkProbe
     }
     public static async Task<EgressHealth> CheckEgressDetailed(CancellationToken cancellation=default)
     {
+        var attempts=new System.Collections.Generic.List<ControlAttempt>();
         try
         {
             string config=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"RoutePilot","Agent","agent-config.json");
             string reference=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"RoutePilot","egress-reference.json");
-            return await EgressReference.Verify(config,reference,image=>ReadWireSockStatus(image,cancellation),async()=>(await Trace("socks5://127.0.0.1:20808",cancellation:cancellation)).Ip,cancellation);
+            var result=await EgressReference.Verify(config,reference,image=>ReadWireSockStatus(image,cancellation),async()=>(await Trace("socks5://127.0.0.1:20808",cancellation:cancellation,observe:attempts.Add)).Ip,cancellation);
+            return result with{Attempts=attempts.ToArray()};
         }
         catch(OperationCanceledException)when(cancellation.IsCancellationRequested){throw;}
-        catch(Exception){return new(false,"InvalidConfiguration","Проверь настройку выбранного подключения.");}
+        catch(Exception){return new(false,"InvalidConfiguration","Проверь настройку выбранного подключения."){Attempts=attempts.ToArray()};}
     }
     internal static async Task<(bool Verified,string Message)> VerifyConfiguredEgress(System.Text.Json.JsonElement values,Func<string,Task<string>> readStatus,Func<Task<IPAddress>> trace)
     {
@@ -104,9 +107,8 @@ public static class NetworkProbe
         using var document=System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
         return document.RootElement.TryGetProperty("flutter.auto_connect",out var value) && value.ValueKind==System.Text.Json.JsonValueKind.True;
     }
-    public static async Task<(IPAddress Ip,long Milliseconds)> Trace(string? proxy=null,NetworkInterface? bind=null,CancellationToken cancellation=default,string[]? urls=null)
+    public static async Task<(IPAddress Ip,long Milliseconds)> Trace(string? proxy=null,NetworkInterface? bind=null,CancellationToken cancellation=default,string[]? urls=null,Action<ControlAttempt>? observe=null)
     {
-        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(cancellation);timeout.CancelAfter(TimeSpan.FromSeconds(8));
         using var handler=new SocketsHttpHandler{UseProxy=proxy!=null,Proxy=proxy==null?null:new WebProxy(proxy),ConnectTimeout=TimeSpan.FromSeconds(5),AllowAutoRedirect=false};
         if(bind!=null)
         {
@@ -131,24 +133,6 @@ public static class NetworkProbe
             };
         }
         using var client=new HttpClient(handler){Timeout=Timeout.InfiniteTimeSpan};
-        var timer=Stopwatch.StartNew();
-        Exception? failure=null;
-        foreach(string url in urls??new[]{"https://www.cloudflare.com/cdn-cgi/trace","https://api.ipify.org"})
-        {
-            using var attempt=CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);attempt.CancelAfter(TimeSpan.FromSeconds(4));
-            try
-            {
-                using var response=await client.GetAsync(url,HttpCompletionOption.ResponseHeadersRead,attempt.Token);response.EnsureSuccessStatusCode();
-                using var stream=await response.Content.ReadAsStreamAsync(attempt.Token);byte[] bytes=new byte[8193];int used=0,read;
-                while(used<bytes.Length && (read=await stream.ReadAsync(bytes.AsMemory(used),attempt.Token))>0)used+=read;
-                if(used==bytes.Length)throw new InvalidDataException("Unexpected trace response size.");
-                string text=System.Text.Encoding.UTF8.GetString(bytes,0,used);
-                string? value=url.Contains("ipify")?text.Trim():text.Split('\n').FirstOrDefault(line=>line.StartsWith("ip=",StringComparison.Ordinal))?[3..].Trim();
-                if(!IPAddress.TryParse(value,out var ip) || ip.AddressFamily!=AddressFamily.InterNetwork)throw new InvalidDataException("Trace did not return a comparable IPv4 source.");
-                return(ip,timer.ElapsedMilliseconds);
-            }
-            catch(Exception ex)when(ex is HttpRequestException or IOException or OperationCanceledException){failure=ex;if(timeout.IsCancellationRequested)break;}
-        }
-        throw new IOException("The control HTTPS probes failed.",failure);
+        return await ControlTrace.Run(client,urls??new[]{"https://www.cloudflare.com/cdn-cgi/trace","https://api.ipify.org"},cancellation,observe);
     }
 }

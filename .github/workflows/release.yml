@@ -60,6 +60,7 @@ jobs:
           ./Verify-ConnectionHandoff.ps1
           ./Verify-InstallationGuard.ps1
           ./Verify-InstallationTransaction.ps1
+          ./Verify-SessionRecovery.ps1
           ./Verify-Storage.ps1
           ./Verify-Lifecycle.ps1
           ./Verify-WireSockRecovery.ps1

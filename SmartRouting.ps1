@@ -683,7 +683,7 @@ if($occupied.Count){throw ('Local routing ports are already in use: '+(($occupie
     # session identity for diagnosis; no addresses, keys or raw CLI output.
     try{Write-JsonFile (Join-Path $root 'logs\connection-health-last.json') @{schema=1;sessionId=$startedSession.id;bridgeGeneration=$startedSession.bridgeGeneration;healthy=[bool]$health.healthy;code=$healthCode;attempts=$healthAttempts;updatedUtc=[DateTime]::UtcNow.ToString('o')}}catch{}
     if(-not $health.healthy){throw ('The AWG2 data path did not pass HTTPS verification. ['+$healthCode+']')}
-    Write-JsonFile (Join-Path $runtime 'session-health.json') @{sessionId=$startedSession.id;bridgeGeneration=$startedSession.bridgeGeneration;healthy=$true;code='Verified';message=$health.message;updatedUtc=[DateTime]::UtcNow.ToString('o')}
+    Write-JsonFile (Join-Path $runtime 'session-health.json') @{sessionId=$startedSession.id;bridgeGeneration=$startedSession.bridgeGeneration;healthy=$true;code='Verified';message=$health.message;attempts=@($health.attempts|Select-Object -First 2 -Property Provider,Stage,Outcome,Milliseconds,Deadline,HttpStatus,SocketError,Error);updatedUtc=[DateTime]::UtcNow.ToString('o')}
     $startedSession.recovering=$false;$startedSession.bridgeReady=$true
     Write-JsonFile (Join-Path $runtime 'session.json') $startedSession
     Write-ConnectionEvidence $root $(if($Action -eq 'Reconnect'){'ReconnectVerified'}else{'StartVerified'}) $startedSession
