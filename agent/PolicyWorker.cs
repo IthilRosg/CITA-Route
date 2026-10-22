@@ -462,8 +462,9 @@ public sealed partial class PolicyWorker
         if(file.Length-_offset>65536){_offset=file.Length-65536;_partial="";}
         file.Position=_offset;using var reader=new StreamReader(file);string added=reader.ReadToEnd();_offset=file.Position;
         string[] lines=(_partial+added).Split('\n');_partial=lines[^1];
-        foreach(string line in lines[..^1])
+        foreach(string rawLine in lines[..^1])
         {
+            string line=rawLine.EndsWith('\r')?rawLine[..^1]:rawLine;
             var flow=Regex.Match(line,@"\[(\d+)\s+[^\]]+\]");
             if(flow.Success)
             {

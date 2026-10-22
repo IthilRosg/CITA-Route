@@ -34,9 +34,9 @@ internal static class PolicyHttpTests
         Storage.Write(Path.Combine(root,"runtime/session.json"),session);
         File.WriteAllText(Path.Combine(root,"force-direct.txt"),"");File.WriteAllText(Path.Combine(root,"force-vpn.txt"),"");
         var options=new PolicyOptions{Mode="Auto",AllowListedDpi=true};var scheduled=new List<PolicyKey>();
-        var worker=new PolicyWorker(root,session,options,(candidate,_)=>{scheduled.Add(candidate);return Task.FromResult(new CalibrationResult(ProbeOutcome.Unavailable,null,0,0,Array.Empty<CandidateTiming>()));});
+        PolicyWorker worker=null!;
         string log=Path.Combine(root,"logs/router.log");
-        File.WriteAllText(log,"""
+        string fixture="""
             INFO [10001 0ms] inbound/tun[system-tun]: inbound connection to 198.18.1.12:443
             INFO [10001 0ms] router: found process path: C:\Browser\browser.exe
             INFO [10001 1ms] outbound/direct[direct]: outbound connection to quick.example.com:443
@@ -49,11 +49,17 @@ internal static class PolicyHttpTests
             INFO [10003 1ms] outbound/direct[direct]: outbound connection to agent.example.com:443
             ERROR [10003 25ms] connection: open connection to agent.example.com:443 using outbound/direct[direct]: fixture agent
 
-            """);
-        worker.Failures(log,CancellationToken.None);worker.DrainFailures(CancellationToken.None);
-        Assert(scheduled.Count==2&&scheduled.Any(k=>k.Domain=="quick.example.com"&&k.Application==@"C:\Browser\browser.exe")&&scheduled.All(k=>k.Domain is "quick.example.com" or "unrelated.example.com"),
-            "Short FakeIP and first-use flows must trigger calibration without an API snapshot; a mismatched failure target and diagnostic-agent traffic must not.");
-        await worker.CompletePending();
+            """;
+        foreach(string newline in new[]{"\n","\r\n"})
+        {
+            scheduled.Clear();
+            worker=new PolicyWorker(root,session,options,(candidate,_)=>{scheduled.Add(candidate);return Task.FromResult(new CalibrationResult(ProbeOutcome.Unavailable,null,0,0,Array.Empty<CandidateTiming>()));});
+            File.WriteAllText(log,fixture.ReplaceLineEndings(newline));
+            worker.Failures(log,CancellationToken.None);worker.DrainFailures(CancellationToken.None);
+            Assert(scheduled.Count==2&&scheduled.Any(k=>k.Domain=="quick.example.com"&&k.Application==@"C:\Browser\browser.exe")&&scheduled.All(k=>k.Domain is "quick.example.com" or "unrelated.example.com"),
+                $"Short FakeIP/first-use flows must trigger exactly their calibrations; unrelated failures/agent traffic must not. Newline={(newline.Length==2?"CRLF":"LF")}, scheduled={scheduled.Count}.");
+            await worker.CompletePending();
+        }
         worker.Status("Auto");
         string epoch=Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("epoch").GetString()!;
         worker.StoreDecision(new(new(epoch,"cached.example.com",Environment.ProcessPath!,443),"direct","fixture",now,now.AddMinutes(5),1));worker.Publish();
@@ -64,6 +70,6 @@ internal static class PolicyHttpTests
             "The old TLS-only strategy must not certify cached direct routes after HTTP restriction semantics change.");
         File.WriteAllText(cache,fresh);var current=new PolicyWorker(root,session,options);current.LoadCache();current.Status("Auto");
         Assert(Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("decisions").GetArrayLength()==1,"Current-strategy cache remains reusable.");
-        Console.WriteLine("PASS: HTTP 451 fallback, generic 403 neutrality, TLS refusal, mixed-response uncertainty, short FakeIP flow evidence and cache strategy migration.");
+        Console.WriteLine("PASS: HTTP 451 fallback, generic 403 neutrality, TLS refusal, mixed-response uncertainty, LF/CRLF short FakeIP flow evidence and cache strategy migration.");
     }
 }
