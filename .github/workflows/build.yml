@@ -107,6 +107,13 @@ jobs:
         run: |
           & ./runtime/agent-build/RoutePilot.Agent.exe --udp-integration $PWD.Path
           if($LASTEXITCODE -ne 0){throw 'UDP engine integration failed.'}
+      - name: Verify closed UDP association resource cleanup
+        shell: powershell
+        run: |
+          dotnet publish tools/udp-lifecycle-lab/Cita.UdpLifecycleLab.csproj -c Release -r win-x64 --self-contained false -o runtime/udp-lifecycle-lab
+          if($LASTEXITCODE -ne 0){throw 'UDP lifecycle lab build failed.'}
+          & ./runtime/udp-lifecycle-lab/Cita.UdpLifecycleLab.exe $PWD.Path (Join-Path $PWD.Path 'runtime/udp-lifecycle-result.json') 10
+          if($LASTEXITCODE -ne 0){throw 'UDP association resource cleanup failed.'}
       - name: Build framework package
         shell: powershell
         run: ./Build-Portable.ps1 -FrameworkDependent
@@ -139,4 +146,5 @@ jobs:
             logs/optimization-check-last.json
             runtime/optimization-check-*/optimization-integration.log
             runtime/optimization-*/result.json
+            runtime/udp-lifecycle-result.json
           if-no-files-found: ignore
