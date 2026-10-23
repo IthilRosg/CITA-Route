@@ -114,6 +114,13 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'UDP lifecycle lab build failed.'}
           & ./runtime/udp-lifecycle-lab/Cita.UdpLifecycleLab.exe $PWD.Path (Join-Path $PWD.Path 'runtime/udp-lifecycle-result.json') 10
           if($LASTEXITCODE -ne 0){throw 'UDP association resource cleanup failed.'}
+          $env:CITA_UDP_TUN_LAB='1'
+          try {
+            & ./runtime/udp-lifecycle-lab/Cita.UdpLifecycleLab.exe $PWD.Path (Join-Path $PWD.Path 'runtime/udp-native-lifecycle-result.json') 20 tun-fast
+            if($LASTEXITCODE -ne 0){throw 'Native UDP deadline/lifecycle regression failed.'}
+          } finally {$env:CITA_UDP_TUN_LAB=$null}
+          if(Get-Process smart-router,vpn-bridge -ErrorAction SilentlyContinue){throw 'UDP fixture left an engine running.'}
+          if(Get-NetRoute -DestinationPrefix '203.0.113.77/32' -ErrorAction SilentlyContinue){throw 'UDP fixture left its test route.'}
       - name: Build framework package
         shell: powershell
         run: ./Build-Portable.ps1 -FrameworkDependent
@@ -147,4 +154,5 @@ jobs:
             runtime/optimization-check-*/optimization-integration.log
             runtime/optimization-*/result.json
             runtime/udp-lifecycle-result.json
+            runtime/udp-native-lifecycle-result.json
           if-no-files-found: ignore

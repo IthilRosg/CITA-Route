@@ -1,15 +1,10 @@
 # CITA routing core
 
-This is a separately branded derivative, without upstream affiliation. The
-unmodified VPN bridge remains the verified official binary. Only the router
-receives the Windows DNS compatibility modification.
+Both runtime roles are CITA routing core **1.14.3-cita.5**, separately branded derivatives without upstream affiliation. The same verified binary is published as `smart-router.exe` and `vpn-bridge.exe`; each receives its role-specific configuration. First-use gating remains off by default.
 
-Build inputs are the SHA-256-pinned 1.14.3 source archive, the checksum-pinned
-sing-tun module at `bca4bf029237`, Go **1.26.3**, and these two Go files.
-`Build-RouterEngine.ps1` verifies its patch contexts and runs the adapter boundary
-tests. It stages the compiled router independently of a potentially running
-workspace router. `Bootstrap.ps1` explicitly publishes it into the runtime;
-the portable builder validates the separate build receipt before packaging.
+Build inputs are SHA-256-pinned sing-box 1.14.3 sources, checksum-pinned sing-tun `bca4bf029237` and sing `0ad23b637bd4`, Go **1.26.3**, and the patches/tests in this directory. `Build-RouterEngine.ps1` verifies patch contexts, runs native TCP/UDP deadline retry and adapter boundary regressions, and stages the binary independently of a running installation. `Bootstrap.ps1` publishes both runtime roles. The portable builder checks both binaries and the complete corresponding source archive against the current build receipt.
+
+`cita_windows_read_fix.ps1` resets readiness state before each Windows scalar TCP, vector TCP and UDP RawConn.Read. A timeout must not leave the next read in a synchronous receive without a readiness wait. `cita_windows_read_test.go` expires and retries deadlines on real local sockets, ten repetitions per reader. The unpatched versions fail these cases. See [resource investigation](../docs/UDP-LIFETIME-20261023.md) for reproduction and limitations.
 
 The added permit stays inside the original dynamic WFP session and sublayer.
 All three conditions must match: an active Tailscale interface LUID, destination
@@ -27,4 +22,4 @@ runs the native fixture. Neither fixture establishes a real tailnet connection.
 
 The distribution includes the original license and both original and modified
 source archives, including a build recipe. The narrow module replacement is
-relative, so the extracted core and TUN source directories remain buildable together.
+relative, so the extracted core, TUN and socket source directories remain buildable together.

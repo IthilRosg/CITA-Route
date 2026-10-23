@@ -4,12 +4,14 @@ using System.Net.Sockets;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using RoutePilot.Agent;
 
 // Real shipped binaries, loopback only. Does not load the user's configuration,
 // start WireSock, create a TUN or modify any service, firewall or system route.
 if(args.Length is not (3 or 4))throw new ArgumentException("Usage: client-root result-json idle-seconds [bound|tun]");
-bool tun=args.Length==4&&args[3]=="tun";
+bool fast=args.Length==4&&args[3]=="tun-fast";
+bool tun=args.Length==4&&args[3] is "tun" or "tun-fast";
 if(tun&&(Environment.GetEnvironmentVariable("CITA_UDP_TUN_LAB")!="1"||Process.GetProcessesByName("smart-router").Length!=0))throw new IOException("TUN mode requires explicit isolated-VM opt-in and no existing engine.");
 string root=Path.GetFullPath(args[0]), result=Path.GetFullPath(args[1]);
 int idle=int.Parse(args[2]);if(idle is < 10 or > 390)throw new ArgumentException("Idle must be 10..390 seconds.");
@@ -29,7 +31,12 @@ var echoTask=Task.Run(async()=>
         {
             // Windows reports late ICMP from deliberately aborted UDP clients to
             // the echo socket. Keep the fixture alive; count rather than hide it.
-            try{var p=await echo.ReceiveAsync(deadline.Token);await echo.SendAsync(p.Buffer,p.RemoteEndPoint,deadline.Token);}
+            try
+            {
+                var p=await echo.ReceiveAsync(deadline.Token);
+                if(fast&&p.Buffer.AsSpan().StartsWith("CITA"u8))await Task.Delay(75,deadline.Token);
+                await echo.SendAsync(p.Buffer,p.RemoteEndPoint,deadline.Token);
+            }
             catch(SocketException e)when(e.SocketErrorCode is SocketError.ConnectionReset or SocketError.ConnectionRefused){Interlocked.Increment(ref echoIcmpErrors);}
         }
     }
@@ -37,16 +44,30 @@ var echoTask=Task.Run(async()=>
 });
 int Port(){var l=new TcpListener(IPAddress.Loopback,0);l.Start();try{return ((IPEndPoint)l.LocalEndpoint).Port;}finally{l.Stop();}}
 int bridgePort=Port(),routerPort=Port();while(routerPort==bridgePort)routerPort=Port();
+int bridgeDebug=Port(),routerDebug=Port();
 void Write(string path,object value)=>File.WriteAllText(path,JsonSerializer.Serialize(value,new JsonSerializerOptions{WriteIndented=true}));
-void Save(string phase,bool? success=null,string? error=null)=>Write(result,new{phase,success,error,boundInterface=adapter!=null,tun,echoIcmpErrors,scope=tun?"Isolated VM: one test /32 TUN route to own local echo, no WireSock/default route/service changes":"Local-machine SOCKS UDP lifecycle; own echo only; no TUN/WireSock/system network changes",observations});
+void Save(string phase,bool? success=null,string? error=null)=>Write(result,new{phase,success,error,boundInterface=adapter!=null,tun,fast,echoIcmpErrors,scope=tun?"Isolated VM: one test /32 TUN route to own local echo, no WireSock/default route/service changes":"Local-machine SOCKS UDP lifecycle; own echo only; no TUN/WireSock/system network changes",observations});
 object Inbound(int port)=>new{type="mixed",listen="127.0.0.1",listen_port=port};
 Process Start(string name,object config)
 {
-    string path=Path.Combine(folder,name+".json");Write(path,config);
+    string path=Path.Combine(folder,name+".json");
+    var node=JsonSerializer.SerializeToNode(config)!;
+    if(fast)node["experimental"]=new JsonObject{["debug"]=new JsonObject{["listen"]="127.0.0.1:"+(name=="vpn-bridge"?bridgeDebug:routerDebug)}};
+    if(fast)foreach(var item in node["inbounds"]!.AsArray())
+        if(item?["type"]?.GetValue<string>()=="tun")item["udp_timeout"]="8s";
+        else if(name=="vpn-bridge")item!["udp_timeout"]="5s";
+    Write(path,node);
     var info=new ProcessStartInfo(Path.Combine(root,"runtime",name+".exe")){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
     foreach(string arg in new[]{"run","-c",path,"--disable-color"})info.ArgumentList.Add(arg);
     var p=Process.Start(info)!;owned.Add(p);
     _=p.StandardOutput.ReadToEndAsync();_=p.StandardError.ReadToEndAsync();return p;
+}
+async Task DumpStacks()
+{
+    if(!fast)return;
+    using var client=new HttpClient{Timeout=TimeSpan.FromSeconds(3),MaxResponseContentBufferSize=2*1024*1024};
+    foreach(var pair in new[]{(Name:"bridge",Port:bridgeDebug),(Name:"router",Port:routerDebug)})
+        try{await File.WriteAllTextAsync(result+"."+pair.Name+"-goroutines.txt",await client.GetStringAsync("http://127.0.0.1:"+pair.Port+"/debug/pprof/goroutine?debug=2"));}catch(HttpRequestException){}catch(TaskCanceledException){}
 }
 object Sample(Process p){p.Refresh();return new{pid=p.Id,privateBytes=p.PrivateMemorySize64,handles=p.HandleCount,udp=UdpTable.Count(p.Id),exited=p.HasExited};}
 Process? bridge=null,router=null;
@@ -77,7 +98,7 @@ var fakeTarget=new IPEndPoint(IPAddress.Parse("203.0.113.77"),target.Port);
 async Task NativePulse(UdpClient u)
 {
     using var pulse=CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);pulse.CancelAfter(3000);
-    var payload=new byte[64];Random.Shared.NextBytes(payload);await u.SendAsync(payload,fakeTarget,pulse.Token);
+    var payload=new byte[64];Random.Shared.NextBytes(payload);"CITA"u8.CopyTo(payload);await u.SendAsync(payload,fakeTarget,pulse.Token);
     var response=await u.ReceiveAsync(pulse.Token);if(!response.Buffer.AsSpan().SequenceEqual(payload))throw new IOException("Native echo mismatch");
 }
 try
@@ -119,7 +140,7 @@ try
             for(int wave=0;wave<3;wave++)
             {
                 for(int i=0;i<32;i++){using var client=new UdpClient(AddressFamily.InterNetwork);await NativePulse(client);}
-                await NativePulse(nativeActive!);Observe("tun-short-wave-"+wave);
+                await NativePulse(nativeActive!);await Pulse(active);Observe("tun-short-wave-"+wave);
             }
         }
         var clock=Stopwatch.StartNew();int pulses=0;
@@ -135,7 +156,7 @@ try
     if(UdpTable.Count(bridge.Id)>(tun?2:0))throw new IOException("Closed control connections retain bridge sockets.");
     Save("Finished",true);
 }
-catch(Exception error){Save("Failed",false,error.GetType().Name+": "+error.Message);Environment.ExitCode=1;}
+catch(Exception error){await DumpStacks();Save("Failed",false,error.GetType().Name+": "+error.Message);Environment.ExitCode=1;}
 finally
 {
     deadline.Cancel();echo.Dispose();

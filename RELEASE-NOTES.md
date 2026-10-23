@@ -1,4 +1,6 @@
-CITA Route 0.6.4 — resource delivery, Mini Apps and WireSock discovery.
+CITA Route 0.6.4 — socket resource cleanup, resource delivery, Mini Apps and WireSock discovery.
+
+- Fix Windows TCP/UDP readiness state after a read deadline in both router and bridge. Closed or expired associations can release their sockets without periodically restarting active traffic. Includes corrected source and regression tests.
 
 - Distinguish stalled HTTP bodies from reachable headers; retain bounded startup hints without extending route TTL.
 - Route Telegram Mini App domains through the Telegram rules and migrate older IP-only Telegram lists. Include WebView2 in transport discovery.

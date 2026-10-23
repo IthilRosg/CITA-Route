@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param([string]$DownloadProxy='')
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
@@ -14,22 +14,6 @@ function Download([string]$Url,[string]$Path,[string]$Hash=''){
         if($Hash -and (Get-FileHash -LiteralPath $temporary).Hash -ne $Hash){throw 'Dependency SHA-256 differs from the pinned release.'}
         Move-Item -LiteralPath $temporary -Destination $Path -Force
     }finally{Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue}
-}
-$archive=Join-Path $root 'downloads\sing-box-1.14.3-windows-amd64.zip'
-Download 'https://github.com/SagerNet/sing-box/releases/download/v1.14.3/sing-box-1.14.3-windows-amd64.zip' $archive 'D8B86EF58936DBA9230EC6A57FFA4243933F3C14EF4809828B6C553440ED1518'
-$extract=Join-Path $root ('downloads\engine-'+[guid]::NewGuid().ToString('N'))
-try{
-    Expand-Archive -LiteralPath $archive -DestinationPath $extract
-    $binary=@(Get-ChildItem -LiteralPath $extract -Recurse -Filter sing-box.exe -File)
-    if($binary.Count -ne 1 -or (Get-FileHash -LiteralPath $binary[0].FullName).Hash -ne '5C19BB3F8C12D4E85B3D47FE63123A7624B314B58DD7A8E32F51004F1C4D2FAF'){throw 'Engine binary differs from the pinned release.'}
-    foreach($name in @('vpn-bridge.exe')){
-        $target=Join-Path $root ('runtime\'+$name)
-        if(-not(Test-Path -LiteralPath $target) -or (Get-FileHash -LiteralPath $target).Hash -ne (Get-FileHash -LiteralPath $binary[0].FullName).Hash){Copy-Item -LiteralPath $binary[0].FullName -Destination $target -Force}
-    }
-}finally{
-    $prefix=[IO.Path]::GetFullPath((Join-Path $root 'downloads\engine-'))
-    if(-not [IO.Path]::GetFullPath($extract).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe extraction cleanup.'}
-    Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue
 }
 foreach($name in @('russia_inside','discord')){
     $target=Join-Path $root ('runtime\rules\'+$name+'.srs')

@@ -83,6 +83,17 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Native TUN acceptance client build failed.'}
           & ./runtime/agent-build/RoutePilot.Agent.exe --udp-integration $PWD.Path
           if($LASTEXITCODE -ne 0){throw 'UDP engine integration failed.'}
+          dotnet publish tools/udp-lifecycle-lab/Cita.UdpLifecycleLab.csproj -c Release -r win-x64 --self-contained false -o runtime/udp-lifecycle-lab
+          if($LASTEXITCODE -ne 0){throw 'UDP lifecycle lab build failed.'}
+          & ./runtime/udp-lifecycle-lab/Cita.UdpLifecycleLab.exe $PWD.Path (Join-Path $PWD.Path 'runtime/udp-lifecycle-result.json') 10
+          if($LASTEXITCODE -ne 0){throw 'UDP association resource cleanup failed.'}
+          $env:CITA_UDP_TUN_LAB='1'
+          try {
+            & ./runtime/udp-lifecycle-lab/Cita.UdpLifecycleLab.exe $PWD.Path (Join-Path $PWD.Path 'runtime/udp-native-lifecycle-result.json') 20 tun-fast
+            if($LASTEXITCODE -ne 0){throw 'Native UDP deadline/lifecycle regression failed.'}
+          } finally {$env:CITA_UDP_TUN_LAB=$null}
+          if(Get-Process smart-router,vpn-bridge -ErrorAction SilentlyContinue){throw 'UDP fixture left an engine running.'}
+          if(Get-NetRoute -DestinationPrefix '203.0.113.77/32' -ErrorAction SilentlyContinue){throw 'UDP fixture left its test route.'}
           ./Build-Portable.ps1 -FrameworkDependent
       - name: Verify final archive
         shell: powershell
