@@ -93,14 +93,16 @@ throw 'Controlled fixture end before any network or elevation operation.'
     function Stop-Process {param([Parameter(ValueFromPipeline)]$InputObject,[switch]$Force) process {throw 'An already exited fixture must not be killed or another process stopped.'}}
     foreach($script:case in @('late-ready','unknown-error','collision','cancel-retry','always-collision')){
         $root=Join-Path $base ('helper-'+$script:case);$runtime=Join-Path $root 'runtime'
-        New-Item -ItemType Directory -Path $runtime,(Join-Path $root 'logs') -Force|Out-Null
+        New-Item -ItemType Directory -Path $runtime,(Join-Path $root 'logs'),(Join-Path $root 'data') -Force|Out-Null
+        # Start-Helper reads the policy before launching, just as a prepared client does.
+        Write-JsonFile (Join-Path $root 'data\routing-policy.json') @{Mode='Auto';FirstUseGate=$false;VerifyBody=$true}
         $routerExe=Join-Path $runtime 'smart-router.exe';$script:fake=$null;$script:starts=0
         $config=Join-Path $runtime 'router.json'
         Write-JsonFile $config @{inbounds=@(@{type='mixed';listen='127.0.0.1';listen_port=20830},@{type='tun';interface_name='SmartRouting';address=@('172.30.125.1/30')})}
         $script:collision=$collision
-        $failed=$false;$result=$null;try{$result=Start-Helper $routerExe $config}catch{$failed=$true}
+        $failed=$false;$result=$null;$failureReason='';try{$result=Start-Helper $routerExe $config}catch{$failed=$true;$failureReason=$_.Exception.Message}
         $expectedStarts=if($script:case -in @('collision','always-collision')){2}else{1}
-        Assert ($script:starts -eq $expectedStarts) ('Unexpected helper restart count: '+$script:case)
+        Assert ($script:starts -eq $expectedStarts) ('Unexpected helper restart count: '+$script:case+'; expected='+$expectedStarts+'; observed='+$script:starts+'; error='+$failureReason)
         Assert ($failed -eq ($script:case -in @('unknown-error','cancel-retry','always-collision'))) ('False helper readiness: '+$script:case)
         if(-not $failed){Assert ($result.Ticks -ge 3 -and -not $result.HasExited) 'An early local listener was treated as a fully ready tunnel.'}
     }

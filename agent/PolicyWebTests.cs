@@ -14,11 +14,16 @@ internal static class PolicyWebTests
         {bool refused=false;try{PolicyResourceCheck.Target(invalid);}catch(ArgumentException){refused=true;}Assert(refused,"Resource diagnostics must reject local, credential-bearing and unsupported URLs.");}
         Assert(PolicyResourceCheck.Target("https://cdn.example.com/image.jpg").IdnHost=="cdn.example.com","An explicit public credential-free resource is allowed.");
         var signals=new PolicyWebSignals(()=>tick);var app=@"C:\Browser\msedge.exe";
+        Assert(PolicyWebSignals.WebClient(@"C:\WebView\msedgewebview2.exe")&&!PolicyWebSignals.Browser(@"C:\WebView\msedgewebview2.exe"),"Embedded WebView receives transport adaptation, without browser-extension identity privileges.");
         PolicyKey Key(string name)=>new("epoch",name,app,443);
         for(int i=0;i<100;i++)signals.Discover(Key($"cdn{i}.example.com"),now);
         Assert(signals.Queued==64,"Discovery queue must be bounded independently of failure hints.");
         int taken=0;for(int i=0;i<10;i++)if(signals.Take(_=>true,now)!=null)taken++;
         Assert(taken==4,"First-use discovery is limited to a four-host burst.");
+        var reserved=new PolicyWebSignals(()=>tick);
+        for(int i=0;i<5;i++)reserved.Discover(Key($"reserved{i}.example.com"),now);
+        int ordinary=0;for(int i=0;i<5;i++)if(reserved.Take(_=>true,now,reserve:true)!=null)ordinary++;
+        Assert(ordinary==3&&reserved.TakeSpecific(Key("reserved4.example.com"))&&!reserved.TakeSpecific(Key("reserved3.example.com")),"Gate reserves one token from the SAME four-host budget, without increasing network load.");
         tick=3000;Assert(signals.Take(_=>true,now)!=null&&signals.Take(_=>true,now)==null,"Discovery refills at most 20 hosts/minute after its bounded burst.");
         tick=9000;Assert(signals.Take(_=>true,now.AddMinutes(3))==null&&signals.Queued==0,"Old queued destinations must expire without probes.");
         var key=Key("asset.example.com");

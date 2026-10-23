@@ -23,6 +23,20 @@ public sealed class WatchState
 }
 public static class SessionHealthCache
 {
+    public static (string Label,string Detail,bool Connected) Presentation(EngineSession session,WatchState? watch,SessionHealthState? health,bool wireSockConnected,bool verified,DateTime now)
+    {
+        if(!session.Running)return("Отключено","Маршрутизатор остановлен.",false);
+        bool currentWatch=watch!=null&&watch.SessionId==session.Id&&Fresh(watch.UpdatedUtc,now,25);
+        if(!string.IsNullOrEmpty(session.VpnHoldReason))return("Проверь подключение","Безопасность VPN не подтверждена. Проверь профиль и журнал.",false);
+        if(currentWatch&&watch!.Phase=="WaitingForNetwork")return("Ожидание сети","Ожидаем доступную сеть. Подключение восстановится автоматически.",false);
+        if(currentWatch&&watch!.Phase=="NeedsAttention")return("Требуется внимание",Attention(watch.Reason),false);
+        if(session.Recovering||currentWatch&&watch!.Phase=="Recovering"||!wireSockConnected||!session.BridgeReady)
+            return("Восстановление туннеля","Восстанавливаем VPN. «Отключить» отменит восстановление.",false);
+        if(health!=null&&Matches(session,health,now)&&!health.Healthy)
+            return("Передача не подтверждена","Туннель подключён, но контрольный HTTPS-запрос не прошёл. Повторяем проверку.",false);
+        if(verified)return("Подключено","Контрольный HTTPS/IPv4 через VPN проверен. Доступность всех сайтов этим не подтверждается.",true);
+        return("Проверка подключения","Туннель подключён. Ожидаем подтверждение передачи через VPN.",false);
+    }
     sealed class SafetyHold {public int Schema{get;set;}public string SessionId{get;set;}="";public bool Hold{get;set;}public string Code{get;set;}="";}
     public static string Hold(string root,EngineSession session)
     {

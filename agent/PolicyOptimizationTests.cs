@@ -65,10 +65,10 @@ internal static class PolicyOptimizationTests
         Assert(Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("decisions").GetArrayLength()==0,"Clear must reject an old task even when that task ignores cancellation.");
         Assert(worker.Binding(old with{ExpiresUtc=now.AddSeconds(-1)},now)=="vpn" && worker.Binding(old with{ExpiresUtc=now.AddMinutes(-3)},now)=="vpn","Expired confidence must retain the active protected direction instead of blocking or silently directing the site.");
         Assert(worker.Binding(old with{CheckedUtc=now.AddMinutes(1),ExpiresUtc=now.AddMinutes(16)},now)=="vpn","Clock rollback cannot silently turn a same-epoch active VPN binding into direct.");
-        Storage.Write(Path.Combine(root,"runtime/policy-active.json"),new PolicyActiveSnapshot(epoch,options.Mode,options.AllowListedDpi,"",new[]{old with{CheckedUtc=now.AddMinutes(-20),ExpiresUtc=now.AddMinutes(-5)}}));
+        Storage.Write(Path.Combine(root,"runtime/policy-active.json"),new PolicyActiveSnapshot(epoch,options.Mode,options.AllowListedDpi,"",new[]{old with{CheckedUtc=now.AddMinutes(-20),ExpiresUtc=now.AddMinutes(-5)}}){BodyProbes=true});
         var recovered=new PolicyWorker(root,session,options);recovered.LoadActiveBindings();recovered.Status("Auto");
         Assert(Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json")).GetProperty("decisions").GetArrayLength()==1,"A worker restart inside the SAME epoch must retain its expired protected direction without extending confidence.");
-        Storage.Write(Path.Combine(root,"runtime/policy-active.json"),new PolicyActiveSnapshot(epoch,options.Mode,options.AllowListedDpi,"",new[]{old with{CheckedUtc=now.AddMinutes(1),ExpiresUtc=now.AddMinutes(16)}}));
+        Storage.Write(Path.Combine(root,"runtime/policy-active.json"),new PolicyActiveSnapshot(epoch,options.Mode,options.AllowListedDpi,"",new[]{old with{CheckedUtc=now.AddMinutes(1),ExpiresUtc=now.AddMinutes(16)}}){BodyProbes=true});
         var afterClock=new PolicyWorker(root,session,options);afterClock.LoadActiveBindings();afterClock.Status("Auto");
         var clockState=Storage.Read<JsonElement>(Path.Combine(root,"runtime/policy-state.json"));
         Assert(clockState.GetProperty("decisions").GetArrayLength()==1 && clockState.GetProperty("stale").GetInt32()==1,"A same-epoch restart after clock rollback retains direction as stale, never as confirmed confidence.");

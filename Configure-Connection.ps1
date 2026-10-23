@@ -18,14 +18,16 @@ if($Action -eq 'CompleteHandoff' -or ($Action -eq 'RestoreHandoff' -and -not(Tes
     exit 0
 }
 $settings=Get-ConnectionSettings $root
-$cli=Find-WireSockCli $(if($CliPath){$CliPath}else{$settings.CliPath})
+$installation=Get-WireSockInstallation $(if($CliPath){$CliPath}else{$settings.CliPath})
+$cli=$installation.CliPath
 if($Action -eq 'Discover'){
-    $profiles=@();$message='';$version=''
+    $profiles=@();$message='';$version=$installation.Version
     if($cli){
-        $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($cli).FileVersion
-        try{$profiles=@(Get-WireSockProfileNames)}catch{$message='Не удалось прочитать профили. Проверь, что служба WireSock запущена.'}
-    }else{$message='WireSock Secure Connect не найден. Установи его или укажи CLI вручную.'}
-    @{CliPath=$cli;Version=$version;Profiles=$profiles;SelectedProfile=$settings.SourceProfile;ExpectedEgressIp=$settings.ExpectedEgressIp;Message=$message} | ConvertTo-Json -Compress
+        try{Assert-ProtectedWireSockCli $cli;$profiles=@(Get-WireSockProfileNames)}catch{$message='WireSock найден, но список профилей недоступен. Проверь службу WireSock и установку в Program Files с действительной цифровой подписью.'}
+    }elseif($installation.Kind -eq 'LegacyClient'){$message='Найден WireSock с другим интерфейсом команд (wiresock-client.exe). Эта редакция пока не поддерживает управление профилями в CITA Route. Нужна редакция Secure Connect с wiresock-connect-cli.exe; последняя версия не обязательна.'}
+    elseif($installation.Kind -eq 'ApplicationOnly'){$message='Приложение WireSock найдено, но совместимый командный интерфейс wiresock-connect-cli.exe отсутствует. Выбери папку полной установки или установи редакцию с этим интерфейсом.'}
+    else{$message='WireSock не найден. Укажи исполняемый файл WireSock вручную.'}
+    @{CliPath=$cli;ExecutablePath=$installation.ExecutablePath;Kind=$installation.Kind;Version=$version;Profiles=$profiles;ProfileDirectories=@(Get-WireSockProfileDirectories);SelectedProfile=$settings.SourceProfile;ExpectedEgressIp=$settings.ExpectedEgressIp;Message=$message} | ConvertTo-Json -Compress
     exit 0
 }
 if(-not $cli){throw 'WireSock Secure Connect CLI was not found.'}

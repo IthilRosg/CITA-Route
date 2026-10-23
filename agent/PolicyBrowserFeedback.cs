@@ -4,33 +4,57 @@ namespace RoutePilot.Agent;
 // Do not pass URLs, cookies, headers or payloads across this boundary.
 internal sealed class PolicyBrowserFeedback
 {
-    internal sealed record Ticket(PolicyKey Key,string? Route,long Revision,int Generation,DateTime StartedUtc);
+    internal sealed record Ticket(PolicyKey Key,string? Route,long Revision,int Generation,DateTime StartedUtc,string ParentDomain="",string ContextId="",string Resource="");
     internal sealed record Failure(PolicyKey Key,string? Route,string Kind,DateTime At);
     readonly Dictionary<string,Ticket> _tickets=new();
     readonly Dictionary<PolicyKey,DateTime> _quic=new();
     readonly Dictionary<PolicyKey,DateTime> _proof=new();
+    internal sealed record Delivery(PolicyKey Key,string PublishedRoute,long Revision,int Generation,int Completed,int Failed,DateTime UpdatedUtc);
+    readonly Dictionary<(PolicyKey Key,string Route,long Revision,int Generation),Delivery> _delivery=new();
     readonly PolicyWebSignals _body=new();
+    internal readonly BrowserDependencies Dependencies=new();
     readonly Func<long> _clock;
     long _refill;
     double _tokens=8;
     internal PolicyBrowserFeedback(Func<long>? clock=null){_clock=clock??(()=>Environment.TickCount64);_refill=_clock();}
     internal int Pending=>_tickets.Count;
+    internal static bool Resource(string value)=>value is "Image" or "Media" or "Fetch" or "XHR" or "Document" or "Script" or "Stylesheet" or "Font";
+    void Record(Ticket ticket,bool completed,DateTime now)
+    {
+        // Publication is not per-flow attestation (H2/H3 may reuse an older
+        // socket). Keep this evidence separate from route-selection proof.
+        if(ticket.Route is not ("direct" or "dpi" or "vpn"))return;
+        foreach(var old in _delivery.Where(p=>now<p.Value.UpdatedUtc||now-p.Value.UpdatedUtc>=TimeSpan.FromMinutes(5)).Select(p=>p.Key).ToArray())_delivery.Remove(old);
+        var index=(ticket.Key,ticket.Route,ticket.Revision,ticket.Generation);
+        var previous=_delivery.GetValueOrDefault(index);
+        _delivery[index]=new(ticket.Key,ticket.Route,ticket.Revision,ticket.Generation,
+            Math.Min(1000000,(previous?.Completed??0)+(completed?1:0)),Math.Min(1000000,(previous?.Failed??0)+(completed?0:1)),now);
+        while(_delivery.Count>256)_delivery.Remove(_delivery.MinBy(p=>p.Value.UpdatedUtc).Key);
+    }
+    internal Delivery[] Deliveries(DateTime now)=>_delivery.Values.Where(p=>now>=p.UpdatedUtc&&now-p.UpdatedUtc<TimeSpan.FromMinutes(5)).OrderByDescending(p=>p.UpdatedUtc).Take(32).ToArray();
+    internal bool Complete(string token,long revision,int generation,DateTime now)
+    {
+        if(!_tickets.Remove(token,out var ticket)||ticket.Generation!=generation||ticket.Revision!=revision||now<ticket.StartedUtc||now-ticket.StartedUtc>=TimeSpan.FromSeconds(90))return false;
+        Record(ticket,true,now);Dependencies.Observe(ticket.ContextId,ticket.ParentDomain,ticket.Key,ticket.Resource,now,true);return true;
+    }
     internal static string? Classify(string error,bool cancelled=false)
     {
         if(cancelled)return null;
         if(error.StartsWith("net::",StringComparison.Ordinal))error=error[5..];
         return error switch{
             "ERR_QUIC_PROTOCOL_ERROR" or "ERR_QUIC_HANDSHAKE_FAILED"=>"quic",
+            "ERR_NAME_NOT_RESOLVED" or "ERR_NAME_RESOLUTION_FAILED" or "ERR_DNS_TIMED_OUT"=>"dns",
             "ERR_CONNECTION_CLOSED" or "ERR_CONNECTION_RESET" or "ERR_TIMED_OUT" or
             "ERR_CONTENT_LENGTH_MISMATCH" or "ERR_INCOMPLETE_CHUNKED_ENCODING" or "ERR_HTTP2_PROTOCOL_ERROR"=>"body",
             _=>null};
     }
-    internal string? Begin(PolicyKey key,string method,string resource,string? route,long revision,int generation,DateTime now)
+    internal string? Begin(PolicyKey key,string method,string resource,string? route,long revision,int generation,DateTime now,string parentDomain="",string contextId="")
     {
-        if(!PolicySafety.Valid(key)||!PolicyWebSignals.Browser(key.Application)||method!="GET"||resource is not ("Image" or "Media" or "Fetch" or "XHR"))return null;
+        if(!PolicySafety.Valid(key)||!PolicyWebSignals.Browser(key.Application)||method!="GET"||!Resource(resource))return null;
         foreach(string old in _tickets.Where(p=>now<p.Value.StartedUtc||now-p.Value.StartedUtc>=TimeSpan.FromSeconds(90)).Select(p=>p.Key).ToArray())_tickets.Remove(old);
         if(_tickets.Count>=512)return null;
-        string id=Guid.NewGuid().ToString("N");_tickets[id]=new(key,route,revision,generation,now);return id;
+        string id=Guid.NewGuid().ToString("N");_tickets[id]=new(key,route,revision,generation,now,parentDomain,contextId,resource);
+        Dependencies.Observe(contextId,parentDomain,key,resource,now);return id;
     }
     internal Failure? Fail(string token,string error,bool cancelled,long revision,int generation,DateTime now)
     {
@@ -39,6 +63,8 @@ internal sealed class PolicyBrowserFeedback
         long tick=_clock();
         if(tick<_refill){_tokens=0;_refill=tick;}else{_tokens=Math.Min(8,_tokens+(tick-_refill)/3000d);_refill=tick;}
         if(_tokens<1)return null;_tokens--;
+        Record(ticket,false,now);
+        Dependencies.Observe(ticket.ContextId,ticket.ParentDomain,ticket.Key,ticket.Resource,now,false);
         if(kind=="quic")
         {
             _quic[ticket.Key]=now;_proof.Remove(ticket.Key);
@@ -46,7 +72,7 @@ internal sealed class PolicyBrowserFeedback
         }
         // Separate provenance: one transport failure reported both by the
         // engine and browser must not become two independent confirmations.
-        else if(ticket.Route is "direct" or "dpi" or "vpn")_body.Fault(ticket.Key,ticket.Route,token,now);
+        else if(kind=="body"&&(ticket.Route is "direct" or "dpi" or "vpn"))_body.Fault(ticket.Key,ticket.Route,token,now);
         return new(ticket.Key,ticket.Route,kind,now);
     }
     internal void Finish(string? token){if(token!=null)_tickets.Remove(token);}
@@ -66,14 +92,19 @@ internal sealed class PolicyBrowserFeedback
     internal bool Confirmed(PolicyDecision decision,DateTime now)=>
         _quic.TryGetValue(decision.Key,out var at)&&now>=at&&now-at<TimeSpan.FromMinutes(3)&&
         _proof.TryGetValue(decision.Key,out var proof)&&proof==decision.CheckedUtc;
-    internal void Clear(){_tickets.Clear();_quic.Clear();_proof.Clear();_body.Clear();_tokens=8;_refill=_clock();}
+    internal void Clear(){_tickets.Clear();_quic.Clear();_proof.Clear();_body.Clear();_delivery.Clear();Dependencies.Clear();_tokens=8;_refill=_clock();}
 }
 
-internal sealed record BrowserFeedbackWatch(PolicyKey Key,string? PreviousRoute,int Generation,DateTime At,long Version,bool Quic);
+internal sealed record BrowserFeedbackWatch(PolicyKey Key,string? PreviousRoute,int Generation,DateTime At,long Version,bool Quic)
+{
+    internal DateTime ResourceStartedUtc{get;init;}
+    internal long AttemptedRevision{get;init;}=-1;
+}
 
 public sealed partial class PolicyWorker
 {
     readonly PolicyBrowserFeedback _browserFeedback=new();
+    internal BrowserDependencies.Edge[] BrowserDependencySnapshot(DateTime now)=>_browserFeedback.Dependencies.Snapshot(now);
     readonly Dictionary<PolicyKey,(string Route,long Revision)> _browserPublished=new();
     long _browserRevision;
     readonly HashSet<PolicyKey> _browserFallbackPublished=new();
@@ -91,16 +122,24 @@ public sealed partial class PolicyWorker
         }
         long now=Environment.TickCount64;if(_browserGuardTick==long.MinValue||now<_browserGuardTick||now-_browserGuardTick>=200){_browserGuardTick=now;_browserGuard=Current();}return _browserGuard;
     }
-    internal string? BeginBrowserResource(string domain,string application,string method,string resource,DateTime now)
+    internal string? BeginBrowserResource(string domain,string application,string method,string resource,DateTime now,string parentDomain="",string contextId="")
     {
         if(!_options.ExperimentalBrowserFeedback||_options.Mode!="Auto"||(_publisher!=null&&_publisher.Phase!="Applied")||Manual(domain)||!BrowserCurrent())return null;
         var key=new PolicyKey(_epoch,domain,application,443);
-        if(!PolicySafety.Valid(key)||!PolicyWebSignals.Browser(application)||method!="GET"||resource is not ("Image" or "Media" or "Fetch" or "XHR"))return null;
+        if(!PolicySafety.Valid(key)||!PolicyWebSignals.Browser(application)||method!="GET"||!PolicyBrowserFeedback.Resource(resource))return null;
         ObserveDestination(key,"tcp","tls",now);
         var published=_browserPublished.GetValueOrDefault(key);
-        return _browserFeedback.Begin(key,method,resource,published.Route,published.Revision,_browserTicketGeneration,now);
+        return _browserFeedback.Begin(key,method,resource,published.Route,published.Revision,_browserTicketGeneration,now,parentDomain,contextId);
     }
     internal void FinishBrowserResource(string? token)=>_browserFeedback.Finish(token);
+    internal bool CompleteBrowserResource(string? token,DateTime now)
+    {
+        if(token==null||!_options.ExperimentalBrowserFeedback||_options.Mode!="Auto"||(_publisher!=null&&_publisher.Phase!="Applied")||!BrowserCurrent())return false;
+        var ticket=_browserFeedback.Find(token);
+        if(ticket==null||Manual(ticket.Key.Domain)){_browserFeedback.Finish(token);return false;}
+        var published=_browserPublished.GetValueOrDefault(ticket.Key);
+        return _browserFeedback.Complete(token,published.Revision,_browserTicketGeneration,now);
+    }
     internal bool ObserveBrowserFailure(string? token,string error,bool cancelled,DateTime now)
     {
         if(token==null||!_options.ExperimentalBrowserFeedback||_options.Mode!="Auto"||(_publisher!=null&&_publisher.Phase!="Applied")||!BrowserCurrent())return false;
@@ -108,6 +147,9 @@ public sealed partial class PolicyWorker
         if(ticket==null||Manual(ticket.Key.Domain)){_browserFeedback.Finish(token);return false;}
         var published=_browserPublished.GetValueOrDefault(ticket.Key);
         var failure=_browserFeedback.Fail(token,error,cancelled,published.Revision,_browserTicketGeneration,now);if(failure==null)return false;
+        // Only reorder already observed, queued discoveries. Never manufacture
+        // probes for unvisited siblings, force a route, or inherit quarantine.
+        foreach(var sibling in _browserFeedback.Dependencies.Related(ticket.ContextId,ticket.ParentDomain,ticket.Key,now))_web.Prioritize(sibling);
         if(failure.Kind=="quic")_web.Quic(failure.Key,now);
         // Preserve a queued signal even if another calibration is in flight.
         _failures[failure.Key]=(1,now);_queuedAt.TryAdd(failure.Key,now);_nextProbe.Remove(failure.Key);Touch(failure.Key,now);
@@ -126,12 +168,28 @@ public sealed partial class PolicyWorker
     internal BrowserFeedbackWatch? WatchBrowserFailure(string token,string error,bool cancelled,DateTime now)
     {
         var ticket=_browserFeedback.Find(token);long version=_publisher?.Version??0;
-        return ticket!=null&&ObserveBrowserFailure(token,error,cancelled,now)?new(ticket.Key,ticket.Route,_browserTicketGeneration,now,version,PolicyBrowserFeedback.Classify(error,cancelled)=="quic"):null;
+        // The old request can fail AFTER a verified replacement was applied.
+        // Do not attribute that failure to the new route or quarantine it; only
+        // acknowledge the already-proven repair for the exact failed image.
+        if(ticket!=null&&ticket.Resource=="Image"&&PolicyBrowserFeedback.Classify(error,cancelled)!=null&&
+            _options.ExperimentalBrowserFeedback&&_options.Mode=="Auto"&&BrowserCurrent()&&ticket.Generation==_browserTicketGeneration&&
+            now>=ticket.StartedUtc&&now-ticket.StartedUtc<TimeSpan.FromSeconds(90)&&!Manual(ticket.Key.Domain)&&
+            _publisher?.Phase=="Applied"&&_decisions.TryGetValue(ticket.Key,out var proven)&&PolicySafety.Live(proven,_epoch,now)&&
+            _browserPublished.TryGetValue(ticket.Key,out var publication)&&NewBodyPublication(proven,ticket.Revision,publication.Revision,ticket.StartedUtc))
+        {
+            _browserFeedback.Finish(token);
+            return new(ticket.Key,ticket.Route,_browserTicketGeneration,now,version,false){ResourceStartedUtc=ticket.StartedUtc,AttemptedRevision=ticket.Revision};
+        }
+        return ticket!=null&&ObserveBrowserFailure(token,error,cancelled,now)?new(ticket.Key,ticket.Route,_browserTicketGeneration,now,version,PolicyBrowserFeedback.Classify(error,cancelled)=="quic"){ResourceStartedUtc=ticket.StartedUtc,AttemptedRevision=ticket.Revision}:null;
     }
+    internal static bool NewBodyPublication(PolicyDecision decision,long attemptedRevision,long currentRevision,DateTime started)=>
+        attemptedRevision>=0&&currentRevision>attemptedRevision&&decision.CheckedUtc>=started&&decision.Evidence is "BodyComplete" or "BodySample";
     internal bool BrowserRepairReady(BrowserFeedbackWatch watch,DateTime now)=>
         _options.ExperimentalBrowserFeedback&&_options.Mode=="Auto"&&BrowserCurrent()&&_browserTicketGeneration==watch.Generation&&now>=watch.At&&now-watch.At<TimeSpan.FromSeconds(20)&&!Manual(watch.Key.Domain)&&
-        _publisher?.Phase=="Applied"&&_publisher.Version>watch.Version&&_decisions.TryGetValue(watch.Key,out var decision)&&PolicySafety.Live(decision,_epoch,now)&&decision.CheckedUtc>=watch.At&&
-        (watch.Quic?_browserFallbackPublished.Contains(watch.Key):watch.PreviousRoute!=null&&_browserPublished.TryGetValue(watch.Key,out var applied)&&applied.Route!=watch.PreviousRoute);
+        _publisher?.Phase=="Applied"&&_decisions.TryGetValue(watch.Key,out var decision)&&PolicySafety.Live(decision,_epoch,now)&&
+        ((_browserPublished.TryGetValue(watch.Key,out var body)&&NewBodyPublication(decision,watch.AttemptedRevision,body.Revision,watch.ResourceStartedUtc))||
+         (_publisher.Version>watch.Version&&decision.CheckedUtc>=watch.At&&
+          (watch.Quic?_browserFallbackPublished.Contains(watch.Key):watch.PreviousRoute!=null&&_browserPublished.TryGetValue(watch.Key,out var applied)&&applied.Route!=watch.PreviousRoute)));
     internal async Task AttachBrowserPublisher(PolicyPublisher publisher,CancellationToken stop)
     {if(_publisher!=null)throw new InvalidOperationException("A publisher is already attached.");_publisher=publisher;await PublishAsync(stop);}
     internal async Task ApplyBrowserWork(CancellationToken stop)

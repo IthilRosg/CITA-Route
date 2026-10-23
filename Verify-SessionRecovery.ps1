@@ -5,10 +5,28 @@ $fixture=Join-Path $PSScriptRoot ('runtime\session-tests-'+[guid]::NewGuid().ToS
 New-Item -ItemType Directory -Path $fixture | Out-Null
 $runtime=$fixture
 try {
+    if((Get-WatchRecoveryAction $true 0 'Disconnected' 2) -ne 'Observe' -or (Get-WatchRecoveryAction $true 0 'Disconnected' 3) -ne 'RepairVpn'){throw 'An explicit disconnect retains three-poll confirmation.'}
+    if((Get-WatchRecoveryAction $true 0 'Connected' 99) -ne 'Observe'){throw 'Connected packet loss must not become a disconnect repair.'}
+    Write-JsonFile (Join-Path $runtime 'session.json') @{id='timing';running=$true;bridgeGeneration=4}
+    foreach($i in 1..20){Write-RecoveryStageTiming 'timing' 'ConnectWireSock' $i}
+    $timings=Read-JsonFile (Join-Path $runtime 'recovery-timing.json')
+    if($timings.events.Count -ne 16 -or $timings.events[-1].milliseconds -ne 20){throw 'Recovery timings must remain bounded and preserve the last completed stage.'}
+    Write-RecoveryStageTiming 'old-session' 'ResumeBridge' 99
+    Write-RecoveryStageTiming 'timing' 'Unsupported' 99
+    $timings=Read-JsonFile (Join-Path $runtime 'recovery-timing.json')
+    if($timings.events.Count -ne 16 -or $timings.events[-1].milliseconds -ne 20){throw 'Timing cannot attribute old-session or arbitrary stages to current repair.'}
     $gapNow=[datetime]::UtcNow
     if((Test-WatchObservationGap $gapNow $gapNow.AddSeconds(20)) -or -not(Test-WatchObservationGap $gapNow $gapNow.AddSeconds(21)) -or -not(Test-WatchObservationGap $gapNow $gapNow.AddSeconds(-1))){throw 'Observation gaps and clock rollback must invalidate prior samples.'}
     $script:stoppedOldProbe=0
     function Stop-SessionHealthProbe($Probe){$script:stoppedOldProbe++}
+    $context=@{epoch='same:1';probe=@{old=$true};failures=3;next=$gapNow.AddSeconds(30)}
+    $afterRepair=@{id='same';bridgeGeneration=2;running=$true;bridgeReady=$true}
+    if(-not(Reset-SessionHealthContext $context $afterRepair $gapNow) -or $context.epoch -ne 'same:2' -or $context.probe -or $context.failures -ne 0 -or $context.next -ne $gapNow -or $script:stoppedOldProbe -ne 1){throw 'A new bridge must cancel stale HTTPS, reset failures and verify immediately without touching the route.'}
+    $context.failures=1;$context.next=$gapNow.AddSeconds(5)
+    if((Reset-SessionHealthContext $context $afterRepair $gapNow.AddSeconds(1)) -or $context.failures -ne 1 -or $context.next -ne $gapNow.AddSeconds(5)){throw 'Unchanged bridge generations must retain health backoff instead of busy probing.'}
+    $afterRepair.id='new'
+    if(-not(Reset-SessionHealthContext $context $afterRepair $gapNow) -or $context.epoch -ne 'new:2'){throw 'Session identity is part of health ownership.'}
+    $script:stoppedOldProbe=0
     $oldProbe=@{sessionId='same';bridgeGeneration=1;startedUtc=$gapNow.AddSeconds(-21)}
     $live=@{id='same';bridgeGeneration=1;running=$true;bridgeReady=$true}
     if(-not (Complete-SessionHealthProbe $oldProbe $live).discarded -or $script:stoppedOldProbe -ne 1){throw 'Even a completed pre-sleep probe must be discarded.'}

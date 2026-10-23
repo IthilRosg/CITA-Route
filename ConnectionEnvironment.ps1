@@ -22,25 +22,77 @@ function Get-StartupRouteState([string]$Root,[string]$StateFile='') {
     return $null
 }
 
-function Find-WireSockCli([string]$Preferred='') {
-    $candidates=New-Object 'System.Collections.Generic.List[string]'
-    if($Preferred){$candidates.Add($Preferred)}
+function Get-WireSockInstallHints([string]$Preferred='',[switch]$StandardOnly) {
+    if($Preferred){$Preferred}
     foreach($base in @($env:ProgramW6432,$env:ProgramFiles,${env:ProgramFiles(x86)})){
-        if($base){$candidates.Add((Join-Path $base 'WireSock Secure Connect\command-line\wiresock-connect-cli.exe'))}
+        if($base){foreach($name in @('WireSock Secure Connect','WireSock Foundation\WireSock Secure Connect','WireSock VPN Client','WireSock')){Join-Path $base $name}}
     }
-    foreach($key in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')){
+    if($StandardOnly){return}
+    foreach($key in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')){
         foreach($entry in @(Get-ItemProperty $key -ErrorAction SilentlyContinue | Where-Object {$_.DisplayName -like 'WireSock*'})){
-            if($entry.InstallLocation){$candidates.Add((Join-Path $entry.InstallLocation 'command-line\wiresock-connect-cli.exe'))}
+            if($entry.InstallLocation){[string]$entry.InstallLocation}
+            if($entry.DisplayIcon){Get-WireSockImagePath ([string]$entry.DisplayIcon)}
         }
     }
-    foreach($path in @($candidates | Select-Object -Unique)){
-        if(Test-Path -LiteralPath $path -PathType Leaf){
-            $full=[IO.Path]::GetFullPath($path)
-            if([IO.Path]::GetFileName($full) -ine 'wiresock-connect-cli.exe'){continue}
-            return $full
+    foreach($entry in @(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\*' -ErrorAction SilentlyContinue | Where-Object {$_.PSChildName -like '*wiresock*'})){
+        if($entry.ImagePath){Get-WireSockImagePath ([string]$entry.ImagePath)}
+    }
+    foreach($name in @('WireSockConnect','wiresock-connect-cli','wiresock-connect-service','wiresock-client','WireSockUI')){
+        foreach($process in @(Get-Process -Name $name -ErrorAction SilentlyContinue)){
+            try{if($process.Path){[string]$process.Path}}catch{}finally{$process.Dispose()}
         }
     }
-    return ''
+    foreach($hive in @('HKLM:','HKCU:')){foreach($name in @('WireSockConnect.exe','wiresock-connect-cli.exe','wiresock-client.exe')){
+        $entry=Get-ItemProperty ($hive+'\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\'+$name) -ErrorAction SilentlyContinue
+        if($entry -and $entry.'(default)'){Get-WireSockImagePath ([string]$entry.'(default)')}
+    }}
+}
+
+function Get-WireSockImagePath([string]$Text) {
+    $text=[Environment]::ExpandEnvironmentVariables($Text.Trim())
+    $match=[regex]::Match($text,'^(?:"(?<image>[^"]+\.exe)"|(?<image>.+?\.exe))(?=\s|,|$)','IgnoreCase')
+    if($match.Success){$match.Groups['image'].Value}
+}
+
+function Resolve-WireSockInstallationHints([string[]]$Hints) {
+    $paths=New-Object 'System.Collections.Generic.List[string]'
+    foreach($hint in @($Hints | Select-Object -Unique)){
+        try{
+            $hint=[Environment]::ExpandEnvironmentVariables(([string]$hint).Trim().Trim('"'))
+            if(-not [IO.Path]::IsPathRooted($hint)){continue}
+            $hint=[IO.Path]::GetFullPath($hint)
+            if([IO.Path]::GetExtension($hint) -ieq '.exe'){$paths.Add($hint);$folder=Split-Path -LiteralPath $hint}
+            else{$folder=$hint}
+            $folders=@($folder)
+            if((Split-Path $folder -Leaf) -in @('bin','service','command-line','cli','commandline')){$folders+=Split-Path $folder -Parent}
+            foreach($base in $folders){foreach($relative in @('command-line\wiresock-connect-cli.exe','wiresock-connect-cli.exe','cli\wiresock-connect-cli.exe','bin\wiresock-connect-cli.exe','bin\WireSockConnect.exe','WireSockConnect.exe','wiresock-client.exe','bin\wiresock-client.exe','WireSockUI.exe')){
+                $paths.Add((Join-Path $base $relative))
+            }}
+        }catch [ArgumentException]{}catch [System.Management.Automation.ParameterBindingException]{}
+    }
+    $fallback=$null
+    foreach($path in @($paths|Select-Object -Unique)){
+        if(-not(Test-Path -LiteralPath $path -PathType Leaf)){continue}
+        $name=[IO.Path]::GetFileName($path)
+        if($name -notin @('wiresock-connect-cli.exe','WireSockConnect.exe','wiresock-client.exe','WireSockUI.exe')){continue}
+        $version='';try{$version=[Diagnostics.FileVersionInfo]::GetVersionInfo($path).FileVersion}catch{}
+        if($name -ieq 'wiresock-connect-cli.exe'){return [pscustomobject]@{CliPath=$path;ExecutablePath=$path;Kind='SecureConnectCli';Version=$version}}
+        if(-not $fallback){$fallback=[pscustomobject]@{CliPath='';ExecutablePath=$path;Kind=$(if($name -ieq 'wiresock-client.exe'){'LegacyClient'}else{'ApplicationOnly'});Version=$version}}
+    }
+    if($fallback){return $fallback}
+    return [pscustomobject]@{CliPath='';ExecutablePath='';Kind='NotFound';Version=''}
+}
+
+function Get-WireSockInstallation([string]$Preferred='') {
+    $standard=Resolve-WireSockInstallationHints @(Get-WireSockInstallHints $Preferred -StandardOnly)
+    if($standard.CliPath){return $standard}
+    $discovered=Resolve-WireSockInstallationHints @(Get-WireSockInstallHints $Preferred)
+    if($discovered.Kind -ne 'NotFound'){return $discovered}
+    return $standard
+}
+
+function Find-WireSockCli([string]$Preferred='') {
+    return (Get-WireSockInstallation $Preferred).CliPath
 }
 
 function Assert-ProtectedWireSockCli([string]$Path) {
@@ -57,8 +109,16 @@ function Assert-ProtectedWireSockCli([string]$Path) {
     if((Get-AuthenticodeSignature -LiteralPath $full).Status -ne 'Valid'){throw 'WireSock CLI digital signature could not be verified.'}
 }
 
+function Get-WireSockProfileDirectories {
+    $userLocal=if($env:USERPROFILE){Join-Path $env:USERPROFILE 'AppData\Local'}else{''}
+    @(@($env:ProgramData,$env:LOCALAPPDATA,$userLocal)|Where-Object {$_}|ForEach-Object {
+        $path=Join-Path $_ 'WireSock Foundation\WireSock Secure Connect\Profiles'
+        if(Test-Path -LiteralPath $path -PathType Container){[IO.Path]::GetFullPath($path)}
+    }|Select-Object -Unique)
+}
+
 function Get-WireSockProfileNames {
-    @(Invoke-WireSock @('list') | ForEach-Object {if($_ -match '^\s*-\s+(.+?)\s*$'){$Matches[1]}} |
+    @((Read-HelperOutput $cli 'list') -split '\r?\n' | ForEach-Object {if($_ -match '^\s*-\s+(.+?)\s*$'){$Matches[1]}} |
         Where-Object {$_ -ne 'SmartRouting-AWG2' -and $_ -notlike 'RoutePilot-Probe-*'} | Sort-Object -Unique)
 }
 

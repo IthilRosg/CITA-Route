@@ -202,7 +202,17 @@ internal static class BrowserTunLab
                     observations.Add(new{phase="native-extension-image-retry",nativeBroker!.AcceptedErrors,nativeBroker.ReadyResults,nativeBroker.TrustedConnections,nativeBroker.TrustedResources,noCdpFeedback=true});
                 }
                 else browser=await Open("BodyRecoveredTcp");
+                int completionsBeforeRepair=nativeBroker?.AcceptedCompletions??0;
                 var repaired=await Warm(browser!,false);Assert(Complete(repaired[0],"image")&&Complete(repaired[1],"file"),"Alternative path must receive/decode both entire resources.");
+                if(nativeBroker!=null)
+                {
+                    var completionWait=Stopwatch.StartNew();
+                    while(nativeBroker.AcceptedCompletions<completionsBeforeRepair+2){nativeBroker.Pump();Assert(completionWait.Elapsed<TimeSpan.FromSeconds(5),"Native adapter did not deliver new network completions after recovery.");await Task.Delay(25,stop.Token);}
+                    observations.Add(new{phase="native-network-completion",nativeBroker.AcceptedCompletions,newCompletions=nativeBroker.AcceptedCompletions-completionsBeforeRepair,scope="Browser network delivery; not decoded-content or per-flow route proof"});
+                    var dependencies=worker!.BrowserDependencySnapshot(DateTime.UtcNow);
+                    observations.Add(new{phase="native-document-dependencies",edges=dependencies.Length,completed=dependencies.Sum(e=>e.Completed),failed=dependencies.Sum(e=>e.Failed),scope="Observed initiator documents, not global CDN ownership"});
+                    Assert(dependencies.Any(e=>e.Completed>0)&&dependencies.Any(e=>e.Failed>0),"Native browser document dependencies must record actual completions and failures.");
+                }
                 observations.Add(new{phase="automatic-tcp-body-recovery",resources=repaired,ownTcpProbes,appliedVersion=publisher.Version,controllerAndBrowserMs=replacement.ElapsedMilliseconds});
                 if(nativeBroker!=null)
                 {
@@ -241,15 +251,21 @@ internal static class BrowserTunLab
         readonly PolicyWorker? _feedback;readonly Action? _pump;
         bool _retain;
         readonly Dictionary<string,string?> _requests=new();
+        readonly Dictionary<string,string> _auditRequests=new();
+        readonly Dictionary<string,(string Type,long Started,long Bytes)> _auditProgress=new();
+        internal object[] PendingAudit()=>_auditRequests.GroupBy(p=>p.Value).Take(32).Select(g=>(object)new{domain=g.Key,requests=g.Count(),types=g.Select(p=>_auditProgress.GetValueOrDefault(p.Key).Type).Distinct().ToArray(),ageMs=g.Select(p=>Math.Max(0,Environment.TickCount64-_auditProgress.GetValueOrDefault(p.Key).Started)).DefaultIfEmpty().Max(),receivedBytes=g.Sum(p=>_auditProgress.GetValueOrDefault(p.Key).Bytes)}).ToArray();
+        bool _audit;
         readonly Task<string> _error,_output;int _debugPort;
         internal readonly List<object> Events=new();
         internal int Integrity=>BrowserIntegrityLab.Level(_process);
         internal ProcessIdentity RetainForUpdate(){_retain=true;return ProcessIdentity.From(_process);}
         Browser(Process process,ClientWebSocket socket,string phase,string domain,string application,CancellationToken stop,PolicyWorker? feedback,Action? pump,bool redirected=true){_process=process;_socket=socket;_phase=phase;_domain=domain;_application=application;_stop=stop;_feedback=feedback;_pump=pump;_error=redirected?process.StandardError.ReadToEndAsync():Task.FromResult("");_output=redirected?process.StandardOutput.ReadToEndAsync():Task.FromResult("");}
-        internal static async Task<Browser> Open(string exe,string profile,string? spki,HttpClient local,CancellationToken stop,string? publicDomain=null,string? publicAddress=null,PolicyWorker? feedback=null,bool nativeExtension=false,Action? pump=null,bool mediumBrowser=false)
+        internal static async Task<Browser> Open(string exe,string profile,string? spki,HttpClient local,CancellationToken stop,string? publicDomain=null,string? publicAddress=null,PolicyWorker? feedback=null,bool nativeExtension=false,Action? pump=null,bool mediumBrowser=false,string? auditUrl=null)
         {
-            bool synthetic=publicDomain==null;string domain=publicDomain??Domain,address=publicAddress??Address;
-            Assert(synthetic||(domain is "cloudflare-quic.com" or "www.cloudflare.com"&&IPAddress.TryParse(address,out var ip)&&ip.AddressFamily==AddressFamily.InterNetwork),"Only fixed public lab origins are allowed.");
+            bool audit=auditUrl!=null;
+            Assert(!audit||PublicResourceAudit.Allowed(auditUrl!),"Only fixed audit pages are allowed.");
+            bool synthetic=!audit&&publicDomain==null;string domain=audit?new Uri(auditUrl!).Host:publicDomain??Domain,address=publicAddress??Address;
+            Assert(audit||synthetic||(domain is "cloudflare-quic.com" or "www.cloudflare.com"&&IPAddress.TryParse(address,out var ip)&&ip.AddressFamily==AddressFamily.InterNetwork),"Only fixed public lab origins are allowed.");
             Directory.CreateDirectory(profile);var info=new ProcessStartInfo(exe){UseShellExecute=false,CreateNoWindow=true,RedirectStandardError=true,RedirectStandardOutput=true};
             foreach(string arg in new[]{"--headless","--disable-gpu","--no-first-run","--no-default-browser-check","--disable-background-networking","--disable-component-update","--disable-sync","--disable-domain-reliability","--disable-features=MediaRouter,OptimizationHints,AutofillServerCommunication,UseDnsHttpsSvcbAlpn","--remote-debugging-port=0","--user-data-dir="+profile,"about:blank"})info.ArgumentList.Add(arg);
             // Force is needed to allow the synthetic QUIC root, but also
@@ -258,10 +274,9 @@ internal static class BrowserTunLab
             if(synthetic){info.ArgumentList.Add("--ignore-certificate-errors-spki-list="+spki);if(!Path.GetFileName(profile).EndsWith("Tcp",StringComparison.Ordinal))info.ArgumentList.Add("--origin-to-force-quic-on="+Domain+":443");}
             // Resolve only the fixture origin in this disposable profile.
             info.ArgumentList.Add("--no-proxy-server");
-            info.ArgumentList.Add("--host-resolver-rules=MAP "+domain+" "+address+", MAP * ~NOTFOUND, EXCLUDE localhost");
-            info.ArgumentList.Add("--log-net-log="+Path.Combine(profile,"netlog.json"));
+            if(!audit){info.ArgumentList.Add("--host-resolver-rules=MAP "+domain+" "+address+", MAP * ~NOTFOUND, EXCLUDE localhost");info.ArgumentList.Add("--log-net-log="+Path.Combine(profile,"netlog.json"));}
             if(nativeExtension){info.ArgumentList.Add(@"--load-extension=C:\CitaLab\BrowserFeedback");info.ArgumentList.Add(@"--disable-extensions-except=C:\CitaLab\BrowserFeedback");}
-            var process=mediumBrowser?BrowserIntegrityLab.Start(info):Process.Start(info)??throw new IOException("Pinned browser did not start.");var socket=new ClientWebSocket();var page=new Browser(process,socket,Path.GetFileName(profile),domain,exe,stop,feedback,pump,!mediumBrowser);
+            var process=mediumBrowser?BrowserIntegrityLab.Start(info,audit):Process.Start(info)??throw new IOException("Pinned browser did not start.");var socket=new ClientWebSocket();var page=new Browser(process,socket,Path.GetFileName(profile),domain,exe,stop,feedback,pump,!mediumBrowser){_audit=audit};
             try
             {
                 string portFile=Path.Combine(profile,"DevToolsActivePort");int port=0;
@@ -275,8 +290,36 @@ internal static class BrowserTunLab
                 using var request=new HttpRequestMessage(HttpMethod.Put,"http://127.0.0.1:"+port+"/json/new?about:blank");using var response=await local.SendAsync(request,stop);response.EnsureSuccessStatusCode();
                 var tab=JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync(stop));var endpoint=new Uri(tab.GetProperty("webSocketDebuggerUrl").GetString()!);Assert(endpoint.Host=="127.0.0.1"||endpoint.Host=="localhost","Browser debugger must stay loopback.");
                 page._debugPort=port; // Native fixture opt-in is an explicit test-only bootstrap, not a debugger command.
-                await socket.ConnectAsync(endpoint,stop);await page.Call("Page.enable",new{});await page.Call("Network.enable",new{});await page.Call("Page.navigate",new{url="https://"+domain+(synthetic?"/":"/cdn-cgi/trace")});
+                await socket.ConnectAsync(endpoint,stop);await page.Call("Page.enable",new{});await page.Call("Network.enable",new{});
+                if(audit)await page.Call("Browser.setDownloadBehavior",new{behavior="deny"});
+                if(audit&&nativeExtension)
+                {
+                    // Wait for the explicit lab opt-in to be observed before
+                    // the first document. Never enable a user's extension here.
+                    bool enabled=false;
+                    for(int i=0;i<40;i++)
+                    {
+                        try
+                        {
+                            var state=await page.ExtensionState();
+                            if(state.TryGetProperty("enabled",out var value)&&value.ValueKind==JsonValueKind.True){enabled=true;break;}
+                        }
+                        catch(IOException)when(i<39){} // Popup/worker may still be starting; no page request is replayed.
+                        await Task.Delay(100,stop);
+                    }
+                    Assert(enabled,"Audit extension opt-in readiness deadline.");
+                    // ExtensionState opens its popup as another tab. Restore
+                    // the measured document before navigation so lazy loading
+                    // and image decoding are not measured in a hidden tab.
+                }
+                if(audit)await page.Call("Page.bringToFront",new{});
+                // Public navigation may still be waiting for the initial HTTP
+                // response when the short fixture command deadline expires.
+                // Keep a bounded audit-only allowance; the whole audit token
+                // still limits all work and no request is replayed here.
+                await page.Call("Page.navigate",new{url=auditUrl??("https://"+domain+(synthetic?"/":"/cdn-cgi/trace"))},audit?45000:12000);
                 for(int i=0;i<80;i++){var state=await page.Evaluate("document.readyState==='complete' && location.hostname==='"+domain+"'");if(state.ValueKind==JsonValueKind.True)return page;await Task.Delay(100,stop);}
+                if(audit)return page; // Preserve failed-page evidence; no availability claim.
                 throw new IOException("Owned browser page did not load.");
             }
             catch{await page.DisposeAsync();throw;}
@@ -303,9 +346,10 @@ internal static class BrowserTunLab
             using var timeout=CancellationTokenSource.CreateLinkedTokenSource(stop);timeout.CancelAfter(6000);
             while(true){using var message=new MemoryStream();byte[] block=new byte[8192];WebSocketReceiveResult frame;do{frame=await socket.ReceiveAsync(block,timeout.Token);Assert(frame.MessageType!=WebSocketMessageType.Close,"Extension debugger closed during startup.");message.Write(block,0,frame.Count);Assert(message.Length<=1024*1024,"Extension debugger message too large.");}while(!frame.EndOfMessage);var value=JsonSerializer.Deserialize<JsonElement>(message.ToArray());if(value.TryGetProperty("id",out var id)&&id.GetInt32()==1){if(value.TryGetProperty("error",out var error))throw new IOException("Extension command: "+error.GetProperty("message").GetString());if(value.GetProperty("result").TryGetProperty("exceptionDetails",out var details)){string reason=details.TryGetProperty("exception",out var exception)&&exception.TryGetProperty("description",out var description)?description.GetString()??"Uncaught":details.GetProperty("text").GetString()??"Uncaught";throw new IOException("Extension opt-in failed: "+reason.Split('\n')[0][..Math.Min(240,reason.Split('\n')[0].Length)]);}return value.GetProperty("result").GetProperty("result").GetProperty("value").Clone();}}
         }
-        async Task<JsonElement> Call(string method,object args)
+        async Task<JsonElement> Call(string method,object args,int timeoutMs=12000)
         {
-            int id=++_next;using var deadline=CancellationTokenSource.CreateLinkedTokenSource(_stop);deadline.CancelAfter(12000);
+            int id=++_next;using var deadline=CancellationTokenSource.CreateLinkedTokenSource(_stop);deadline.CancelAfter(timeoutMs);
+            try {
             await _socket.SendAsync(JsonSerializer.SerializeToUtf8Bytes(new{id,method,@params=args}),WebSocketMessageType.Text,true,deadline.Token);
             while(true)
             {
@@ -315,6 +359,16 @@ internal static class BrowserTunLab
                 if(value.TryGetProperty("method",out var eventName)&&value.TryGetProperty("params",out var parameters))
                 {
                     string? requestId=parameters.TryGetProperty("requestId",out var rid)?rid.GetString():null;
+                    if(_audit&&requestId!=null&&eventName.GetString()=="Network.requestWillBeSent")
+                    {
+                        _auditRequests.Remove(requestId);
+                        _auditProgress.Remove(requestId);
+                        var request=parameters.GetProperty("request");
+                        if(_auditRequests.Count<512&&Uri.TryCreate(request.GetProperty("url").GetString(),UriKind.Absolute,out var destination)&&destination.Scheme=="https"&&destination.Port==443&&destination.UserInfo.Length==0&&PolicySafety.Domain(destination.IdnHost) is string host)
+                        {_auditRequests[requestId]=host;_auditProgress[requestId]=(parameters.TryGetProperty("type",out var resource)?resource.GetString()??"Unknown":"Unknown",Environment.TickCount64,0);}
+                    }
+                    if(_audit&&requestId!=null&&eventName.GetString()=="Network.dataReceived"&&_auditProgress.TryGetValue(requestId,out var progress))
+                        _auditProgress[requestId]=progress with{Bytes=Math.Min(1L<<40,progress.Bytes+parameters.GetProperty("dataLength").GetInt64())};
                     if(_feedback!=null&&requestId!=null&&eventName.GetString()=="Network.requestWillBeSent")
                     {
                         if(_requests.Remove(requestId,out var previous))_feedback.FinishBrowserResource(previous);
@@ -322,18 +376,22 @@ internal static class BrowserTunLab
                         if(_requests.Count<512&&Uri.TryCreate(request.GetProperty("url").GetString(),UriKind.Absolute,out var target)&&target.Scheme=="https"&&target.IdnHost==_domain&&target.Port==443&&target.UserInfo.Length==0)
                             _requests[requestId]=_feedback.BeginBrowserResource(_domain,_application,request.GetProperty("method").GetString()??"",parameters.GetProperty("type").GetString()??"",DateTime.UtcNow);
                     }
-                    if(eventName.GetString()=="Network.responseReceived"){var r=parameters.GetProperty("response");if(Uri.TryCreate(r.GetProperty("url").GetString(),UriKind.Absolute,out var url)&&url.Host==_domain)Events.Add(new{phase=_phase,kind=url.AbsolutePath,protocol=r.GetProperty("protocol").GetString(),status=r.GetProperty("status").GetDouble(),tls=r.TryGetProperty("securityDetails",out var security)?security.GetProperty("protocol").GetString():null});}
+                    if(eventName.GetString()=="Network.responseReceived"){var r=parameters.GetProperty("response");if(Uri.TryCreate(r.GetProperty("url").GetString(),UriKind.Absolute,out var url)&&(url.Host==_domain||(_audit&&url.Scheme=="https"&&PolicySafety.Domain(url.IdnHost)!=null)))Events.Add(new{phase=_phase,domain=url.IdnHost,kind=_audit?"response":url.AbsolutePath,protocol=r.GetProperty("protocol").GetString(),status=r.GetProperty("status").GetDouble(),tls=r.TryGetProperty("securityDetails",out var security)?security.GetProperty("protocol").GetString():null});}
                     if(eventName.GetString()=="Network.loadingFailed")
                     {
                         string error=parameters.GetProperty("errorText").GetString()??"";bool accepted=false;
                         if(requestId!=null&&_requests.Remove(requestId,out var ticket))accepted=_feedback?.ObserveBrowserFailure(ticket,error,parameters.TryGetProperty("canceled",out var cancelled)&&cancelled.GetBoolean(),DateTime.UtcNow)==true;
-                        Events.Add(new{phase=_phase,error,feedbackAccepted=accepted});
+                        string? failedDomain=null;if(requestId!=null)_auditRequests.Remove(requestId,out failedDomain);
+                        if(requestId!=null)_auditProgress.Remove(requestId);
+                        Events.Add(new{phase=_phase,domain=failedDomain,error,feedbackAccepted=accepted});
                     }
                     if(eventName.GetString()=="Network.loadingFinished"&&requestId!=null&&_requests.Remove(requestId,out var finished))_feedback?.FinishBrowserResource(finished);
+                    if(eventName.GetString()=="Network.loadingFinished"&&requestId!=null){_auditRequests.Remove(requestId);_auditProgress.Remove(requestId);}
                     if(Events.Count>96)Events.RemoveAt(0);
                 }
                 if(value.TryGetProperty("id",out var responseId)&&responseId.GetInt32()==id){if(value.TryGetProperty("error",out var error))throw new IOException("Owned browser command: "+error.GetProperty("message").GetString());return value.GetProperty("result").Clone();}
             }
+            }catch(OperationCanceledException)when(!_stop.IsCancellationRequested){throw new IOException("Owned browser command deadline: "+method);}
         }
         internal async Task<JsonElement> Evaluate(string expression)
         {

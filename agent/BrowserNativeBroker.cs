@@ -19,6 +19,7 @@ internal sealed class BrowserNativeBroker:IAsyncDisposable
     readonly Channel<Work> _queue=Channel.CreateBounded<Work>(new BoundedChannelOptions(16){SingleReader=true,SingleWriter=false,FullMode=BoundedChannelFullMode.Wait});
     readonly Task[] _servers;Task? _signal;
     internal int AcceptedErrors{get;private set;}
+    internal int AcceptedCompletions{get;private set;}
     internal int ReadyResults{get;private set;}
     int _connections;
     internal int TrustedConnections=>Volatile.Read(ref _connections);
@@ -136,12 +137,17 @@ internal sealed class BrowserNativeBroker:IAsyncDisposable
                 if(item.Kind=="begin")
                 {
                     if(client.Links.Remove(item.Id,out var old))_worker.FinishBrowserResource(old.Ticket);
-                    string? ticket=client.Links.Count<256?_worker.BeginBrowserResource(item.Domain,client.Browser,item.Method,item.Resource,DateTime.UtcNow):null;
+                    string? ticket=client.Links.Count<256?_worker.BeginBrowserResource(item.Domain,client.Browser,item.Method,item.Resource,DateTime.UtcNow,item.ParentDomain,item.ContextId):null;
                     if(ticket!=null){client.Links[item.Id]=new(){Ticket=ticket,Started=Environment.TickCount64};TrustedResources++;}
                     entries.Add(new(item.Id,ticket==null?"ignored":"watching"));continue;
                 }
                 if(!client.Links.TryGetValue(item.Id,out var link)){entries.Add(new(item.Id,"expired"));continue;}
                 if(item.Kind=="finish"){_worker.FinishBrowserResource(link.Ticket);client.Links.Remove(item.Id);entries.Add(new(item.Id,"finished"));continue;}
+                if(item.Kind=="complete")
+                {
+                    if(_worker.CompleteBrowserResource(link.Ticket,DateTime.UtcNow))AcceptedCompletions++;
+                    _worker.FinishBrowserResource(link.Ticket);client.Links.Remove(item.Id);entries.Add(new(item.Id,"finished"));continue;
+                }
                 if(item.Kind=="fail")
                 {
                     if(link.Watch!=null){entries.Add(new(item.Id,"checking"));continue;}

@@ -16,6 +16,7 @@ public static class Program
             if(args.Length==2&&args[0]=="--register-browser-feedback"){BrowserNativeHost.Register(Path.GetFullPath(args[1]),true);return 0;}
             if(args.Length==2&&args[0]=="--unregister-browser-feedback"){BrowserNativeHost.Unregister(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==1 && args[0]=="--self-test"){await AgentTests.Run();return 0;}
+            if(args.Length==1 && args[0]=="--browser-feedback-logic-test"){await PolicyBrowserFeedbackTests.Run(false);return 0;}
             if(args.Length==2&&args[0]=="--diagnostics-journal-benchmark"){DiagnosticEvidenceLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==3&&args[0]=="--diagnostics-replay"){DiagnosticEvidenceLab.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]));return 0;}
             if(args.Length is 1 or 2 && args[0]=="--diagnostics-self-test")
@@ -34,6 +35,9 @@ public static class Program
             if(args.Length==2 && args[0]=="--browser-native-update-lab"){await BrowserTunLab.Run(Path.GetFullPath(args[1]),true,true,true,true);return 0;}
             if(args.Length==3 && args[0]=="--browser-native-peer-lab"){await BrowserIntegrityLab.Probe(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]));return 0;}
             if(args.Length==2 && args[0]=="--public-browser-tun-lab"){await PublicBrowserTunLab.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==2 && args[0]=="--public-resource-audit"){await PublicResourceAudit.Run(Path.GetFullPath(args[1]));return 0;}
+            if(args.Length==3 && args[0]=="--public-resource-auto-audit"){await PublicResourceAudit.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]));return 0;}
+            if(args.Length==3 && args[0]=="--public-resource-focus-audit"){await PublicResourceAudit.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]),true);return 0;}
             if(args.Length==2 && args[0]=="--dns-integration"){await PolicyDnsEngineTests.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--tcp-budget-lab"){await PolicyTcpBudgetLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==2 && args[0]=="--resilience-lab"){await PolicyResilienceLab.Run(Path.GetFullPath(args[1]));return 0;}

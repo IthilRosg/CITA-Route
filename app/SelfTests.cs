@@ -14,6 +14,18 @@ public static class SelfTests
         Task.Run(()=>RuntimePrerequisiteTests.Run(root)).GetAwaiter().GetResult();
         UdpQualityTests.Run();
         NativeStatisticsPresentationTests.Run();
+        var presentationNow=DateTime.UtcNow;
+        var presentationSession=new EngineSession{Running=true,Id="presentation",BridgeReady=true,BridgeGeneration=2};
+        var presentationHealth=new SessionHealthState{SessionId="presentation",BridgeGeneration=2,Healthy=false,UpdatedUtc=presentationNow};
+        var presentationWatch=new WatchState{SessionId="presentation",Phase="Recovering",UpdatedUtc=presentationNow};
+        Assert(SessionHealthCache.Presentation(presentationSession,null,presentationHealth,true,false,presentationNow).Label=="Передача не подтверждена","Failed HTTPS must not pretend the tunnel is reconnecting.");
+        Assert(SessionHealthCache.Presentation(presentationSession,presentationWatch,null,true,true,presentationNow).Label=="Восстановление туннеля","Current repair must override an earlier success.");
+        presentationWatch.SessionId="old";
+        Assert(SessionHealthCache.Presentation(presentationSession,presentationWatch,null,true,true,presentationNow).Connected,"Old recovery cannot override current connectivity.");
+        presentationHealth.BridgeGeneration=1;
+        Assert(SessionHealthCache.Presentation(presentationSession,null,presentationHealth,true,false,presentationNow).Label=="Проверка подключения","Old generation failure cannot describe current transport.");
+        presentationSession.Running=false;
+        Assert(SessionHealthCache.Presentation(presentationSession,null,null,true,true,presentationNow).Label=="Отключено","Manual Stop must remain stopped in presentation.");
         Task.Run(()=>ConnectionSetupTests.Run(root)).GetAwaiter().GetResult();
         Task.Run(()=>ConnectionOperationTests.Run(root)).GetAwaiter().GetResult();
         Task.Run(()=>UpdateWorkflowTests.Run(root)).GetAwaiter().GetResult();

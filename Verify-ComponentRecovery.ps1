@@ -38,7 +38,7 @@ try {
         Assert ((Get-WireSockState ($prefix+$smartProfile+"`r`nExternal address: 203.0.113.1`r`n") $smartProfile) -eq 'Transitioning') 'The real establishing status was not recognized.'
     }
     foreach($state in @('Unknown','Foreign','Transitioning','Connected')){Assert ((Get-WatchRecoveryAction $true 0 $state 10) -eq 'Observe') 'An ambiguous status would restart the TUN.'}
-    Assert ((Get-WatchRecoveryAction $true 0 'Disconnected' 2) -eq 'Observe') 'Single disconnection should be rechecked.'
+    Assert ((Get-WatchRecoveryAction $true 0 'Disconnected' 2) -eq 'Observe') 'Disconnection should retain its confirmation window.'
     Assert ((Get-WatchRecoveryAction $true 0 'Disconnected' 3) -eq 'RepairVpn') 'Confirmed disconnection should repair only VPN.'
     Assert ((Get-WatchRecoveryAction $false 0 'Connected' 0) -eq 'Reconnect') 'A crashed router requires full recovery.'
     Assert ((Get-WatchRecoveryAction $true 2 'Connected' 0) -eq 'Reconnect') 'Confirmed network change must rebind.'

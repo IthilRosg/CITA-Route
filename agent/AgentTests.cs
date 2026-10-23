@@ -21,6 +21,9 @@ public static class AgentTests
         await DetachedCommandTests.Run();
         await PolicyDnsTests.Run();
         await PolicyDnsFallbackTests.Run();
+        await PolicyBodyProbeTests.Run();
+        await PolicyWarmupTests.Run();
+        await PolicyFirstUseTests.Run();
         await PolicyTimingTests.Run();
         PolicyTcpBudgetTests.Run();
         void Assert(bool condition,string message){if(!condition)throw new Exception(message);}

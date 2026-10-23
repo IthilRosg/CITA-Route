@@ -68,7 +68,7 @@ internal static class PolicyEngineTests
         Storage.Write(Path.Combine(root,"runtime/session.json"),session);
         string token=Guid.NewGuid().ToString("N");File.WriteAllText(Path.Combine(root,"private/controller-token.txt"),token);
         var cachedKey=new PolicyKey("cache-generation",domain,app,443);
-        Storage.Write(Path.Combine(root,"data/policy-cache.json"),new PolicyCache(PolicyNetwork.Signature(root),"Auto",true,"",new[]{new PolicyDecision(cachedKey,"vpn","fixture",DateTime.UtcNow,DateTime.UtcNow.AddMinutes(15),1)}){ExperimentalFastTcp=fastTcp});
+        Storage.Write(Path.Combine(root,"data/policy-cache.json"),new PolicyCache(PolicyNetwork.Signature(root),"Auto",true,"",new[]{new PolicyDecision(cachedKey,"vpn","fixture",DateTime.UtcNow,DateTime.UtcNow.AddMinutes(15),1)}){ExperimentalFastTcp=fastTcp,BodyProbes=true});
         PolicyWorker.Prepare(root);
 
         var rules=new List<object>();
