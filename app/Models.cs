@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -108,7 +108,7 @@ public sealed class WindowPlacement
     public bool Maximized{get;set;}
     public static double Bounded(double value,double fallback,double min,double max)=>Math.Clamp(double.IsFinite(value)&&value>0?value:fallback,min,Math.Max(min,max));
 }
-public sealed class RoutingPolicyPreferences { public string Mode{get;set;}="Auto";public bool AllowListedDpi{get;set;}public bool ExperimentalFastTcp{get;set;}public bool ExperimentalBrowserFeedback{get;set;} }
+public sealed class RoutingPolicyPreferences { public string Mode{get;set;}="Auto";public bool AllowListedDpi{get;set;}public bool ExperimentalFastTcp{get;set;}public bool ExperimentalBrowserFeedback{get;set;} public bool VerifyBody{get;set;}=true; public bool Warmup{get;set;}=true;public bool FirstUseGate{get;set;} }
 public sealed class EngineSession
 {
     public bool Running{get;set;}

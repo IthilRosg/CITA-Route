@@ -56,12 +56,14 @@ internal static class BrowserIntegrityLab
         catch(Exception ex){error=ex.GetType().Name+":"+ex.HResult;}
         Storage.Write(Path.Combine(profile,"peer-probe.json"),new{stage,connected,server,error,sameOwner,identity});
     }
-    internal static Process Start(ProcessStartInfo info)
+    internal static Process Start(ProcessStartInfo info,bool publicAudit=false)
     {
         using var owner=Process.GetCurrentProcess();
         if(Level(owner)!=12288)throw new IOException("Medium-browser acceptance requires a high-integrity user agent.");
         string profile=info.ArgumentList.Single(a=>a.StartsWith("--user-data-dir=",StringComparison.Ordinal))[16..];
-        if(!profile.StartsWith(@"C:\CitaLab\BrowserTun\",StringComparison.OrdinalIgnoreCase))throw new IOException("Only an owned browser profile may be launched.");
+        string auditRoot=Directory.GetParent(Directory.GetParent(profile)!.FullName)!.FullName;
+        bool ownedAudit=publicAudit&&auditRoot.StartsWith(@"C:\CitaLab\PublicResources\",StringComparison.OrdinalIgnoreCase)&&Guid.TryParseExact(Path.GetFileName(auditRoot),"N",out _)&&Directory.GetParent(profile)!.Name=="profiles";
+        if(!profile.StartsWith(@"C:\CitaLab\BrowserTun\",StringComparison.OrdinalIgnoreCase)&&!ownedAudit)throw new IOException("Only an owned browser profile may be launched.");
         using var identity=WindowsIdentity.GetCurrent();var user=identity.User??throw new IOException("Missing user SID.");
         var directory=new DirectoryInfo(profile);var acl=directory.GetAccessControl();
         acl.AddAccessRule(new FileSystemAccessRule(user,FileSystemRights.Modify,InheritanceFlags.ContainerInherit|InheritanceFlags.ObjectInherit,PropagationFlags.None,AccessControlType.Allow));directory.SetAccessControl(acl);
@@ -69,6 +71,7 @@ internal static class BrowserIntegrityLab
         static string Literal(string text)=>"'"+text.Replace("'","''")+"'";
         string root=Directory.GetParent(Directory.GetParent(profile)!.FullName)!.FullName;
         string probe="Start-Process -WindowStyle Hidden -FilePath "+Literal(BrowserNativeIdentity.AgentImage)+" -ArgumentList "+Literal("--browser-native-peer-lab "+Quote(root)+" "+Quote(profile))+" -Wait -RedirectStandardOutput "+Literal(Path.Combine(profile,"probe-out.log"))+" -RedirectStandardError "+Literal(Path.Combine(profile,"probe-error.log"))+";";
+        if(ownedAudit)probe=""; // Public audit has no synthetic peer fixture.
         File.WriteAllText(script,@"$ErrorActionPreference='Stop';$env:DOTNET_ROOT='C:\CitaLab\Dotnet';$env:DOTNET_ROOT_X64='C:\CitaLab\Dotnet';"+probe+"$p=Start-Process -WindowStyle Hidden -FilePath "+Literal(info.FileName)+" -ArgumentList "+Literal(string.Join(" ",info.ArgumentList.Select(Quote)))+" -PassThru -RedirectStandardOutput "+Literal(Path.Combine(profile,"stdout.log"))+" -RedirectStandardError "+Literal(Path.Combine(profile,"stderr.log"))+";[IO.File]::WriteAllText("+Literal(pidFile+".tmp")+",$p.Id.ToString(),[Text.Encoding]::ASCII);[IO.File]::Move("+Literal(pidFile+".tmp")+","+Literal(pidFile)+");$p.WaitForExit()",new UTF8Encoding(true));
         dynamic service=Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service")!)!;service.Connect();dynamic folder=service.GetFolder("\\");
         string name="Cita-BrowserLab-"+Guid.NewGuid().ToString("N");dynamic definition=service.NewTask(0);

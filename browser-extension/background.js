@@ -3,10 +3,12 @@ let enabled = false, port = null, busy = false, confirmed = false, nextConnect =
 let queue = [], timer = null, batchId = null;
 let lastNativeError = '';
 const requests = new Map(), pending = new Map();
-const counters = { watched: 0, errors: 0, ready: 0, dropped: 0 };
+const documents = new Map();
+const counters = { watched: 0, errors: 0, completed: 0, ready: 0, dropped: 0, linked: 0, missingDocument: 0, missingInitiator: 0 };
 const uid = () => crypto.randomUUID().replaceAll('-', '');
-const types = { image: 'Image', media: 'Media', xmlhttprequest: 'XHR' };
+const types = { image: 'Image', media: 'Media', xmlhttprequest: 'XHR', main_frame: 'Document', sub_frame: 'Document', script: 'Script', stylesheet: 'Stylesheet', font: 'Font' };
 const failures = new Set(['net::ERR_QUIC_PROTOCOL_ERROR', 'net::ERR_QUIC_HANDSHAKE_FAILED',
+  'net::ERR_NAME_NOT_RESOLVED', 'net::ERR_NAME_RESOLUTION_FAILED', 'net::ERR_DNS_TIMED_OUT',
   'net::ERR_CONNECTION_CLOSED', 'net::ERR_CONNECTION_RESET', 'net::ERR_TIMED_OUT',
   'net::ERR_CONTENT_LENGTH_MISMATCH', 'net::ERR_INCOMPLETE_CHUNKED_ENCODING', 'net::ERR_HTTP2_PROTOCOL_ERROR']);
 let tokens = 128, refill = performance.now();
@@ -20,12 +22,28 @@ function domain(url) {
   } catch { return null; }
 }
 function schedule() { if (!timer && enabled) timer = setTimeout(flush, 30); }
+function dependency(details, now) {
+  // An initiator is not necessarily the top page (frames/workers exist).
+  // Never infer ownership from a tab or from a previous navigation.
+  if (details.type === 'main_frame' || details.type === 'sub_frame') return {};
+  if (!/^(?:[a-f0-9]{32}|[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/i.test(details.documentId || '')) { counters.missingDocument++; return {}; }
+  const parentDomain = domain(details.initiator);
+  if (!parentDomain) { counters.missingInitiator++; return {}; }
+  for (const [key, value] of documents) if (now < value.at || now - value.at >= 600000) documents.delete(key);
+  const key = details.documentId + ':' + parentDomain;
+  let context = documents.get(key);
+  if (!context) {
+    if (documents.size >= 128) documents.delete(documents.keys().next().value);
+    context = { id: uid(), at: now }; documents.set(key, context);
+  }
+  return { parentDomain, contextId: context.id };
+}
 function add(item) {
   if (!enabled || !port || queue.length >= 256) { counters.dropped++; return false; }
   queue.push(item); schedule(); return true;
 }
 function disconnect() {
-  port = null; busy = false; confirmed = false; batchId = null; queue = []; requests.clear(); pending.clear(); nextConnect = performance.now() + 5000;
+  port = null; busy = false; confirmed = false; batchId = null; queue = []; requests.clear(); pending.clear(); documents.clear(); nextConnect = performance.now() + 5000;
   chrome.action.setBadgeText({ text: enabled ? '…' : '' });
 }
 function connect() {
@@ -51,7 +69,13 @@ function connect() {
 function flush() {
   timer = null; if (!enabled || !port || busy || !queue.length) return;
   batchId = uid(); busy = true;
-  try { port.postMessage({ id: batchId, events: queue.splice(0, 32) }); } catch { disconnect(); }
+  const events = [];
+  while (queue.length && events.length < 32) {
+    const next = queue[0];
+    if (new TextEncoder().encode(JSON.stringify({ id: batchId, events: [...events, next] })).length > 16000) break;
+    events.push(queue.shift());
+  }
+  try { port.postMessage({ id: batchId, events }); } catch { disconnect(); }
 }
 const filter = { urls: ['https://*/*'], types: Object.keys(types) };
 chrome.webRequest.onBeforeRequest.addListener(details => {
@@ -62,13 +86,18 @@ chrome.webRequest.onBeforeRequest.addListener(details => {
   if (previous) { add({ id: previous.id, kind: 'finish' }); requests.delete(details.requestId); }
   const host = domain(details.url), resource = types[details.type];
   if (!host || details.method !== 'GET' || details.tabId < 0 || details.incognito || requests.size >= 128 || tokens < 1) return;
-  tokens--; const fingerprint = crypto.subtle.digest('SHA-256', new TextEncoder().encode(details.url)).then(value => Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, '0')).join(''));
+  tokens--; const fingerprint = resource === 'Image' ? crypto.subtle.digest('SHA-256', new TextEncoder().encode(details.url)).then(value => Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, '0')).join('')) : null;
   const item = { id: uid(), domain: host, type: resource, at: now, tab: details.tabId, frame: details.frameId, fingerprint };
-  if (add({ id: item.id, kind: 'begin', domain: host, method: 'GET', resource })) { requests.set(details.requestId, item); counters.watched++; }
+  const relation = dependency(details, now);
+  if (add({ id: item.id, kind: 'begin', domain: host, method: 'GET', resource, ...relation })) { requests.set(details.requestId, item); counters.watched++; if(relation.contextId)counters.linked++; }
 }, filter);
 chrome.webRequest.onCompleted.addListener(details => {
   const item = requests.get(details.requestId); if (!item) return;
-  requests.delete(details.requestId); add({ id: item.id, kind: 'finish' });
+  requests.delete(details.requestId);
+  // Browser network completion is evidence of delivery, not semantic content
+  // validity. Cache hits, redirects and HTTP refusals cannot prove a live path.
+  const success = details.statusCode >= 200 && details.statusCode < 300 && details.fromCache === false;
+  if (add({ id: item.id, kind: success ? 'complete' : 'finish' }) && success) counters.completed++;
 }, filter);
 chrome.webRequest.onErrorOccurred.addListener(details => {
   const item = requests.get(details.requestId); if (!item) return;

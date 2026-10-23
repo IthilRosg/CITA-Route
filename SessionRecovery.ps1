@@ -38,6 +38,16 @@ function Set-SessionRecovering([string]$ExpectedId,[string]$Reason) {
 }
 function Get-RecoveryDelay([int]$Attempts) { return [int](@(2,5,15,30,60)[[Math]::Min([Math]::Max(0,$Attempts),4)]) }
 function Test-WatchObservationGap([datetime]$Previous,[datetime]$Now) {return $Now -lt $Previous -or ($Now-$Previous).TotalSeconds -gt 20}
+function Get-SessionHealthEpoch($Session) {return [string]$Session.id+':'+[int]$Session.bridgeGeneration}
+function Reset-SessionHealthContext($Context,$Session,[datetime]$Now) {
+    $epoch=Get-SessionHealthEpoch $Session
+    if($Context.epoch -eq $epoch){return $false}
+    # Neither pre-repair HTTPS nor its failed-attempt history belongs to a new
+    # bridge. Check it immediately, without restarting any transport or flow.
+    Stop-SessionHealthProbe $Context.probe
+    $Context.probe=$null;$Context.failures=0;$Context.next=$Now;$Context.epoch=$epoch
+    return $true
+}
 function Test-RecoveryNetworkAvailable {
     # Match preparation's actual requirements before spending its retry budget.
     try{return @(Get-NetIPConfiguration -ErrorAction Stop | Where-Object {$_.NetAdapter.HardwareInterface -and $_.NetAdapter.Status -eq 'Up' -and $_.IPv4DefaultGateway}).Count -gt 0}
@@ -83,11 +93,25 @@ function Get-WatchRecoveryAction([bool]$RouterAlive,[int]$NetworkMismatch,[strin
     if($WireSockState -notin @('Connected','Disconnected')){return 'Observe'}
     if(-not $RouterAlive){return 'Reconnect'}
     if($NetworkMismatch -ge 2){return 'Reconnect'}
+    # Retain the established confirmation threshold: a two-poll experiment did
+    # not demonstrate a material reduction in measured end-to-end downtime.
     if($WireSockState -eq 'Disconnected' -and $DisconnectedSamples -ge 3){return 'RepairVpn'}
     # Unknown, an unrelated profile or failed control HTTPS never justify a TUN restart.
     return 'Observe'
 }
 
+function Write-RecoveryStageTiming([string]$ExpectedId,[string]$Stage,[long]$Milliseconds) {
+    if($Stage -notin @('PauseBridge','ConnectWireSock','ResumeBridge') -or $Milliseconds -lt 0){return}
+    try {
+        $current=Read-JsonFile (Join-Path $runtime 'session.json')
+        if($current.id -ne $ExpectedId -or -not $current.running){return}
+        $path=Join-Path $runtime 'recovery-timing.json'
+        $previous=$null;try{$previous=Read-SmallComponentState $path}catch{}
+        $events=@();if($previous.schema -eq 1 -and $previous.sessionId -eq $ExpectedId){$events=@($previous.events|Select-Object -Last 15)}
+        $events+=@{stage=$Stage;milliseconds=$Milliseconds;bridgeGeneration=[int]$current.bridgeGeneration;utc=[DateTime]::UtcNow.ToString('o')}
+        Write-JsonFile $path @{schema=1;sessionId=$ExpectedId;events=$events}
+    }catch{} # Diagnostic timing cannot change recovery or its retry budget.
+}
 function Repair-SessionVpn([string]$ExpectedId) {
     # Caller owns the rescue lease AND network-control.lock. No router/policy restart.
     if(-not(Test-RecoverySession $ExpectedId)){return}
@@ -110,11 +134,17 @@ function Repair-SessionVpn([string]$ExpectedId) {
     if($observation.state -notin @('Connected','Disconnected')){return}
     $signature=Get-SessionNetworkSignature
     if($signature -ne $session.networkSignature){throw 'Network changed; component repair deferred.'}
-    if($observation.state -eq 'Disconnected'){Invoke-BridgeUpdate $false;Connect-WireSock}
+    if($observation.state -eq 'Disconnected'){
+        $stageClock=[Diagnostics.Stopwatch]::StartNew();Invoke-BridgeUpdate $false
+        Write-RecoveryStageTiming $ExpectedId 'PauseBridge' $stageClock.ElapsedMilliseconds
+        $stageClock.Restart();Connect-WireSock
+        Write-RecoveryStageTiming $ExpectedId 'ConnectWireSock' $stageClock.ElapsedMilliseconds
+    }
     if(-not(Test-RecoverySession $ExpectedId)){return}
     if((Get-WireSockObservation).state -ne 'Connected'){throw 'Managed WireSock connection is not confirmed.'}
     if(-not(Test-RecoverySession $ExpectedId)){return}
-    Invoke-BridgeUpdate $true
+    $stageClock=[Diagnostics.Stopwatch]::StartNew();Invoke-BridgeUpdate $true
+    Write-RecoveryStageTiming $ExpectedId 'ResumeBridge' $stageClock.ElapsedMilliseconds
 }
 
 function Write-WatchState([string]$SessionId,[string]$Phase,[string]$Reason,[string]$WireSockState,[int]$Attempts=0) {
@@ -203,6 +233,7 @@ function Watch-Session([string]$WatchScript) {
     $nextAttempt=[DateTime]::UtcNow;$nextBridge=[DateTime]::UtcNow;$nextPolicy=[DateTime]::UtcNow
     $healthySince=$null;$repair=$null;$repairTimer=$null;$repairAction='';$probe=$null;$healthFailures=0;$policyStaleSamples=0
     $disconnected=0;$networkMismatch=0;$nextHealth=[DateTime]::UtcNow.AddSeconds(10)
+    $healthEpoch=Get-SessionHealthEpoch $watchedSession
     $nextBridgeCheck=[DateTime]::MinValue;$listenerFailures=0;$listenerEpoch='';$listenerState='Unknown'
     $lastFeedAttempt=[DateTime]::UtcNow;$feedUpdater=$null;$transition=$null
     $lastObservation=[DateTime]::UtcNow;$nextNetworkCheck=[DateTime]::MinValue;$networkAvailable=$false
@@ -310,6 +341,10 @@ function Watch-Session([string]$WatchScript) {
                 $session=Read-JsonFile (Join-Path $runtime 'session.json')
                 if($session.id -ne $watchedSession.id -or -not $session.running){break}
             }
+            $healthContext=@{epoch=$healthEpoch;probe=$probe;failures=$healthFailures;next=$nextHealth}
+            if(Reset-SessionHealthContext $healthContext $session ([DateTime]::UtcNow)){
+                $healthEpoch=$healthContext.epoch;$probe=$healthContext.probe;$healthFailures=$healthContext.failures;$nextHealth=$healthContext.next;$healthySince=$null
+            }
             if($probe){
                 $completed=Complete-SessionHealthProbe $probe $session
                 if($null -ne $completed){
@@ -322,7 +357,7 @@ function Watch-Session([string]$WatchScript) {
                         }
                         if($completed.healthy){$healthFailures=0}else{$healthFailures++}
                         $nextHealth=[DateTime]::UtcNow.AddSeconds($(if($healthFailures -eq 1){5}else{30}))
-                    }
+                    }else{$nextHealth=[DateTime]::UtcNow}
                 }
             }
             if($connected -and $session.bridgeReady -and -not(Test-SessionVpnHold $session) -and -not $probe -and [DateTime]::UtcNow -ge $nextHealth){

@@ -13,6 +13,8 @@ internal sealed class BrowserNativeEvent
     public string Resource{get;set;}="";
     public string Error{get;set;}="";
     public bool Cancelled{get;set;}
+    public string ParentDomain{get;set;}="";
+    public string ContextId{get;set;}="";
 }
 internal sealed class BrowserNativeBatch
 {
@@ -35,12 +37,14 @@ internal static class BrowserNativeWire
         if(!Guid.TryParseExact(batch.Id,"N",out _)||batch.Events==null||batch.Events.Length is <1 or >32)throw new InvalidDataException("Invalid browser batch.");
         foreach(var item in batch.Events)
         {
-            if(item==null||!Guid.TryParseExact(item.Id,"N",out _)||item.Kind is not ("begin" or "fail" or "finish" or "poll")||item.Error==null||item.Error.Length>96||item.Domain==null||item.Domain.Length>253||item.Method==null||item.Resource==null)throw new InvalidDataException("Invalid browser event.");
+            if(item==null||!Guid.TryParseExact(item.Id,"N",out _)||item.Kind is not ("begin" or "fail" or "finish" or "complete" or "poll")||item.Error==null||item.Error.Length>96||item.Domain==null||item.Domain.Length>253||item.Method==null||item.Resource==null)throw new InvalidDataException("Invalid browser event.");
             if(item.Kind=="begin")
             {
-                if(PolicySafety.Domain(item.Domain)!=item.Domain||PolicySafety.Pinned(item.Domain)||item.Method!="GET"||item.Resource is not ("Image" or "Media" or "Fetch" or "XHR")||item.Error!="")throw new InvalidDataException("Unsupported browser resource.");
+                if(PolicySafety.Domain(item.Domain)!=item.Domain||PolicySafety.Pinned(item.Domain)||item.Method!="GET"||!PolicyBrowserFeedback.Resource(item.Resource)||item.Error!="")throw new InvalidDataException("Unsupported browser resource.");
+                if(item.ParentDomain==null||item.ContextId==null||((item.ParentDomain!=""||item.ContextId!="")&&
+                    (item.Resource=="Document"||item.ParentDomain.Length is 0 or >253||PolicySafety.Domain(item.ParentDomain)!=item.ParentDomain||PolicySafety.Pinned(item.ParentDomain)||!Guid.TryParseExact(item.ContextId,"N",out _))))throw new InvalidDataException("Invalid dependency context.");
             }
-            else if(item.Domain!=""||item.Method!=""||item.Resource!="")throw new InvalidDataException("Only resource identity is permitted after begin.");
+            else if(item.Domain!=""||item.Method!=""||item.Resource!=""||item.ParentDomain!=""||item.ContextId!="")throw new InvalidDataException("Only resource identity is permitted after begin.");
             if(item.Kind!="fail"&&(item.Cancelled||item.Error!=""))throw new InvalidDataException("Unexpected browser failure fields.");
         }
         return batch;

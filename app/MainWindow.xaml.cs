@@ -226,8 +226,9 @@ public partial class MainWindow : Window
                 int vpn=_connections.Count(c=>c.IsVpn),dpi=_connections.Count(c=>c.IsDpi),direct=_connections.Count-vpn-dpi;
                 ConnectionCountLabel.Text=_connections.Count.ToString();VpnCountLabel.Text=vpn.ToString();DirectCountLabel.Text=direct.ToString()+(dpi>0?" + "+dpi+" DPI":"");VpnShareBar.Value=_connections.Count==0?0:(double)vpn/_connections.Count;
                 UptimeLabel.Text=session.Running?Format.Uptime(session.StartedUtc):"—";
-                SetStatus(vpnReady?"VPN проверен":_vpnConnected&&session.BridgeReady?"VPN не проверен":"Восстановление VPN",vpnReady);
-                FooterStatus.Text=vpnReady?"HTTPS/IPv4 через VPN проверен · "+Format.Time:_egressMessage;
+                var connection=SessionHealthCache.Presentation(session,cachedHealth.Watch,cachedHealth.Health,_vpnConnected,vpnReady,DateTime.UtcNow);
+                SetStatus(connection.Label,connection.Connected);
+                FooterStatus.Text=connection.Detail;
             }
             else
             {
@@ -239,7 +240,7 @@ public partial class MainWindow : Window
                 _points.RemoveAll(p=>(DateTime.UtcNow-p.Time).TotalSeconds>60);
             }
             if(!_compact){TrafficChart.SetPoints(_points);UpdateConnectionGrids();UpdateFeedState();}UpdateHistoryLabels();
-            if(session.Running && session.Recovering){SetStatus("Автовосстановление",false);FooterStatus.Text="Маршрутизатор переподключается автоматически. «Отключить» отменит повторные попытки.";}
+            if(session.Running && session.Recovering){SetStatus("Восстановление туннеля",false);FooterStatus.Text="Маршрутизатор переподключается автоматически. «Отключить» отменит повторные попытки.";}
             if(!string.IsNullOrEmpty(session.VpnHoldReason)){_egressVerified=false;SetStatus("Проверь подключение",false);FooterStatus.Text=session.VpnHoldReason=="EgressMismatch"?"Выход VPN не совпал с профилем. Отключи маршрут и проверь настройки подключения.":"Безопасность VPN не подтверждена. Отключи маршрут и проверь журнал.";}
             else if(cachedHealth.Watch?.Phase=="WaitingForNetwork"){SetStatus("Ожидание сети",false);FooterStatus.Text="Ожидаем доступную сеть. Подключение восстановится автоматически.";}
             else if(cachedHealth.Watch?.Phase=="NeedsAttention"){SetStatus("Требуется внимание",false);FooterStatus.Text=SessionHealthCache.Attention(cachedHealth.Watch.Reason);}
@@ -254,7 +255,7 @@ public partial class MainWindow : Window
             if(_busy&&_operationPhase.Length>0&&_operationPhase!="UpdatingRules")SetStatus(_operationPhase=="Cancelling"?"Отмена подключения":_operationPhase=="Stopping"?"Отключение…":"Подключение…",false);
             SyncCompact();
             if(_trayToggle!=null){_trayToggle.Text=_engineRunning?"Отключить":"Подключить";_trayToggle.Enabled=!_busy&&!_rescueState.BlocksRouting;}
-            if(_tray!=null)_tray.Text="CITA Route · "+(vpnReady?"подключено":_engineRunning?(_engineAvailable?"восстановление VPN":"нет статистики"):"отключено");
+            if(_tray!=null)_tray.Text="CITA Route · "+_connectionStatus.ToLowerInvariant();
             if((DateTime.UtcNow-_lastSave).TotalSeconds>5){_lastSave=DateTime.UtcNow;SaveData();}
             if(!_compact&&Pages.SelectedIndex==3)ShowLogs();
         }
@@ -265,7 +266,7 @@ public partial class MainWindow : Window
     {
         _connectionStatus=label;
         StatusLabel.Text=label.ToUpperInvariant();SidebarState.Text=label;
-        bool attention=label.Contains("восстанов",StringComparison.OrdinalIgnoreCase)||label.Contains("не проверен",StringComparison.OrdinalIgnoreCase)||label.Contains("недоступ",StringComparison.OrdinalIgnoreCase)||label.StartsWith("Проверь")||label.StartsWith("Требуется")||label.StartsWith("Ожидается");
+        bool attention=label.Contains("восстанов",StringComparison.OrdinalIgnoreCase)||label.Contains("не проверен",StringComparison.OrdinalIgnoreCase)||label.Contains("не подтверждена",StringComparison.OrdinalIgnoreCase)||label.Contains("недоступ",StringComparison.OrdinalIgnoreCase)||label.StartsWith("Проверь")||label.StartsWith("Требуется")||label.StartsWith("Ожидается");
         StatusBadge.Background=ConsoleTheme.Brush(connected?"#19221B":attention?"#2A231A":"#1B191B");
         StatusLabel.Foreground=connected?ConsoleTheme.Ok:attention?ConsoleTheme.Warn:ConsoleTheme.Dim;SidebarDot.Fill=StatusLabel.Foreground;
     }

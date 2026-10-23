@@ -2,6 +2,16 @@ using System.Net.NetworkInformation;
 
 namespace RoutePilot.Agent;
 
+internal sealed class PolicyPollBudget
+{
+    long _last=long.MinValue,_next;
+    internal bool Take(long now)
+    {
+        bool due=now<_last||now>=_next;_last=now;
+        if(due)_next=now+500;return due;
+    }
+}
+
 internal sealed class PolicyNetworkMonitor:IDisposable
 {
     readonly Func<string> _read;

@@ -9,7 +9,11 @@ using System.Text.Json;
 namespace RoutePilot.Agent;
 
 public enum ProbeOutcome { Reachable, Unavailable, Indeterminate, DnsUnavailable, TlsAuthenticationError, Cancelled, HttpRestricted, ApplicationFailure }
-public sealed record CandidateTiming(string Route,long Milliseconds,ProbeOutcome Outcome);
+public sealed record CandidateTiming(string Route,long Milliseconds,ProbeOutcome Outcome)
+{
+    public string Evidence{get;init;}="Headers";
+    public long BodyBytes{get;init;}
+}
 public sealed record RouteSelection(ProbeOutcome Outcome,string? Route,long Milliseconds,CandidateTiming[] Candidates)
 {
     // Milliseconds remains the selected candidate's duration for compatibility.
@@ -79,16 +83,25 @@ internal static class PolicyTransport
         if(certificateResult!=null)handler.SslOptions.RemoteCertificateValidationCallback=(_,_,_,errors)=>{certificateResult(errors);return errors==SslPolicyErrors.None;};
         return new HttpClient(handler){Timeout=timeout};
     }
-    internal static async Task<CandidateResult> Probe(string domain,IPAddress address,int port,CancellationToken stop)
+    internal static async Task<CandidateResult> Probe(string domain,IPAddress address,int port,CancellationToken stop,bool verifyBody=false)
     {
         if(PolicySafety.Domain(domain)!=domain || !PolicySafety.Public(address))throw new ArgumentException("Invalid public policy probe.");
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(stop);timeout.CancelAfter(TimeSpan.FromSeconds(3));
         int rejectedCertificate=0,connectionEstablished=0;
         using var client=Client(port,address,TimeSpan.FromSeconds(3),errors=>{if(errors!=SslPolicyErrors.None)Interlocked.Exchange(ref rejectedCertificate,1);},()=>Interlocked.Exchange(ref connectionEstablished,1));
-        using var request=new HttpRequestMessage(HttpMethod.Head,"https://"+domain+"/"){Version=HttpVersion.Version11,VersionPolicy=HttpVersionPolicy.RequestVersionExact};
+        using var request=new HttpRequestMessage(verifyBody?HttpMethod.Get:HttpMethod.Head,"https://"+domain+"/"){Version=HttpVersion.Version11,VersionPolicy=HttpVersionPolicy.RequestVersionExact};
         var timer=Stopwatch.StartNew();
         try
-        {using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,timeout.Token);return HttpResponse((int)response.StatusCode,timer.ElapsedMilliseconds);}
+        {
+            using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,timeout.Token);
+            if(!verifyBody)return HttpResponse((int)response.StatusCode,timer.ElapsedMilliseconds);
+            // No redirects, credentials, cookies, paths or user-request replay.
+            // A refusal/challenge is not evidence of usable resource delivery.
+            if(response.StatusCode!=HttpStatusCode.OK)return HttpResponse((int)response.StatusCode,timer.ElapsedMilliseconds);
+            await using var input=await response.Content.ReadAsStreamAsync(timeout.Token);
+            var body=await PolicyBodyProbe.Read(input,response.Content.Headers.ContentLength,timeout.Token,stop);
+            return new(body.Success,false,body.Evidence,timer.ElapsedMilliseconds){ConnectionEstablished=true,HttpStatus=200,Evidence=body.Evidence,BodyBytes=body.Bytes};
+        }
         catch(HttpRequestException)when(Volatile.Read(ref rejectedCertificate)!=0)
         {return new(false,true,"TLS authentication failed.",timer.ElapsedMilliseconds){ConnectionEstablished=Volatile.Read(ref connectionEstablished)!=0};}
         catch(Exception ex)when(ex is HttpRequestException or IOException or OperationCanceledException or SocketException)
@@ -167,7 +180,7 @@ internal static class PolicyTransport
         return new(false,false,"Public address attempts unavailable within probe budget.",timer.ElapsedMilliseconds);
     }
     internal static async Task<(RouteSelection Selection,long DnsMilliseconds)> SelectResolved(string domain,PolicyPorts ports,CancellationToken stop,bool allowUnstableFallback=false,
-        Func<int,CancellationToken,Task<IPAddress[]?>>? resolve=null,Func<IPAddress,int,CancellationToken,Task<CandidateResult>>? probe=null,string? observeRoute=null,IReadOnlySet<string>? avoidRoutes=null)
+        Func<int,CancellationToken,Task<IPAddress[]?>>? resolve=null,Func<IPAddress,int,CancellationToken,Task<CandidateResult>>? probe=null,string? observeRoute=null,IReadOnlySet<string>? avoidRoutes=null,bool verifyBody=false,Action<CandidateTiming>? candidateReady=null)
     {
         if(PolicySafety.Domain(domain)!=domain)throw new ArgumentException("Invalid public policy domain.");
         using var dnsStop=CancellationTokenSource.CreateLinkedTokenSource(stop);
@@ -193,8 +206,8 @@ internal static class PolicyTransport
             {
                 var answer=await (port==ports.Vpn?vpn:direct).WaitAsync(token);
                 if(answer.Addresses==null)return new(false,false,"Configured route DNS unavailable",answer.Milliseconds);
-                return await ProbeAddresses(answer.Addresses,(ip,attempt)=>probe?.Invoke(ip,port,attempt)??Probe(domain,ip,port,attempt),token);
-            },ports,stop,allowUnstableFallback,observeRoute,avoidRoutes);
+                return await ProbeAddresses(answer.Addresses,(ip,attempt)=>probe?.Invoke(ip,port,attempt)??Probe(domain,ip,port,attempt,verifyBody),token);
+            },ports,stop,allowUnstableFallback,observeRoute,avoidRoutes,candidateReady);
         }
         finally{dnsStop.Cancel();await Task.WhenAll(direct,vpn);}
         var timings=selected.Candidates.Select(c=>c.Outcome==ProbeOutcome.Unavailable&&(c.Route=="vpn"?vpn.Result:direct.Result).Addresses==null?c with{Outcome=ProbeOutcome.DnsUnavailable}:c).ToArray();
@@ -203,7 +216,7 @@ internal static class PolicyTransport
         return(selected with{Outcome=outcome,Candidates=timings},dnsMs);
     }
     internal static bool UnstablePreferred(RouteSelection selection)=>selection.Route!=null&&selection.Candidates.TakeWhile(c=>c.Route!=selection.Route).Any(c=>c.Outcome==ProbeOutcome.Indeterminate);
-    internal static async Task<RouteSelection> Select(Func<int,CancellationToken,Task<CandidateResult>> probe,PolicyPorts ports,CancellationToken stop,bool allowUnstableFallback=false,string? observeRoute=null,IReadOnlySet<string>? avoidRoutes=null)
+    internal static async Task<RouteSelection> Select(Func<int,CancellationToken,Task<CandidateResult>> probe,PolicyPorts ports,CancellationToken stop,bool allowUnstableFallback=false,string? observeRoute=null,IReadOnlySet<string>? avoidRoutes=null,Action<CandidateTiming>? candidateReady=null)
     {
         var selectionTimer=Stopwatch.StartNew();
         using var cancel=CancellationTokenSource.CreateLinkedTokenSource(stop);
@@ -214,15 +227,19 @@ internal static class PolicyTransport
             try
             {
                 var first=await probe(port,cancel.Token);
-                if(first.Definitive && !first.Reachable)return new(route,timer.ElapsedMilliseconds,ProbeOutcome.TlsAuthenticationError);
+                if(first.Definitive && !first.Reachable){var refused=new CandidateTiming(route,timer.ElapsedMilliseconds,ProbeOutcome.TlsAuthenticationError);candidateReady?.Invoke(refused);return refused;}
                 var second=await probe(port,cancel.Token);
                 var outcome=second.Definitive && !second.Reachable?ProbeOutcome.TlsAuthenticationError:
                     first.Reachable && second.Reachable?ProbeOutcome.Reachable:first.Reachable || second.Reachable?ProbeOutcome.Indeterminate:
-                    first.HttpStatus==451&&second.HttpStatus==451?ProbeOutcome.HttpRestricted:ProbeOutcome.Unavailable;
+                    first.HttpStatus==451&&second.HttpStatus==451?ProbeOutcome.HttpRestricted:
+                    first.Evidence is "BodyUnknown" or "BodyBudgetExceeded"||second.Evidence is "BodyUnknown" or "BodyBudgetExceeded"?ProbeOutcome.Indeterminate:
+                    first.Evidence=="BodyStalled"&&second.Evidence=="BodyStalled"?ProbeOutcome.ApplicationFailure:ProbeOutcome.Unavailable;
                 // A healthy root cannot erase two recent real stream failures
                 // on this app/domain/path. Still perform TLS checks normally.
                 if(outcome==ProbeOutcome.Reachable&&avoidRoutes?.Contains(route)==true)outcome=ProbeOutcome.ApplicationFailure;
-                return new(route,timer.ElapsedMilliseconds,outcome);
+                string evidence=first.Evidence==second.Evidence?first.Evidence:first.Evidence is "BodyComplete" or "BodySample"&&second.Evidence is "BodyComplete" or "BodySample"?"BodySample":"Headers";
+                var proof=new CandidateTiming(route,timer.ElapsedMilliseconds,outcome){Evidence=evidence,BodyBytes=Math.Min(first.BodyBytes,second.BodyBytes)};
+                candidateReady?.Invoke(proof);return proof;
             }
             catch(OperationCanceledException){return new(route,timer.ElapsedMilliseconds,ProbeOutcome.Cancelled);}
         }

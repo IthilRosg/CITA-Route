@@ -1,3 +1,14 @@
+CITA Route 0.6.4 — resource delivery, Mini Apps and WireSock discovery.
+
+- Distinguish stalled HTTP bodies from reachable headers; retain bounded startup hints without extending route TTL.
+- Route Telegram Mini App domains through the Telegram rules and migrate older IP-only Telegram lists. Include WebView2 in transport discovery.
+- Find WireSock through installation folders, registry, service and application paths. Selecting its GUI can locate its CLI. Display the detected version; a latest release is not required. Older editions with a different CLI are reported separately and are not claimed as supported connection backends.
+- Add profile folder shortcuts in advanced settings and a useful starting directory for import.
+- Experimental FirstUseGate remains off by default; it affects only eligible new TCP/443 flows and does not migrate existing connections or cover IPv6/UDP/IP-only traffic.
+- Publish only the smaller framework ZIP and EXE Setup. Download the signed Microsoft .NET prerequisite separately when absent. MSI is excluded.
+
+Windows 11 acceptance: two cold browser runs with complete tested images; ten-minute idle/HTTPS test passed. These checks do not establish all-domain availability or long-duration stability.
+
 CITA Route 0.6.3 — moved-installation connection repair and smaller updates.
 
 - Explicit Connect can transfer an inactive pre-login startup binding from a previous client folder owned by the same Windows account. Both installations are reserved, active/unknown routes and other accounts are refused, and the previous protected package and startup state are restored if activation fails. No previous client scripts or VPN configurations are imported or executed.

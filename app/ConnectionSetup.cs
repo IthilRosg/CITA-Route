@@ -11,8 +11,11 @@ namespace RoutePilot;
 public sealed class ConnectionInventory
 {
     public string CliPath{get;set;}="";
+    public string ExecutablePath{get;set;}="";
+    public string Kind{get;set;}="";
     public string Version{get;set;}="";
     public string[] Profiles{get;set;}=Array.Empty<string>();
+    public string[] ProfileDirectories{get;set;}=Array.Empty<string>();
     public string SelectedProfile{get;set;}="";
     public string ExpectedEgressIp{get;set;}="";
     public string Message{get;set;}="";

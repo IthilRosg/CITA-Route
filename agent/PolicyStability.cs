@@ -15,6 +15,9 @@ internal sealed class PolicyStability
     internal void Clear()=>_returns.Clear();
     internal bool Accept(PolicyDecision? previous,PolicyDecision candidate,CandidateTiming[] evidence,DateTime now)
     {
+        // A short response/redirect on a later root probe cannot refresh or
+        // replace a route that was selected using completed/bounded body reads.
+        if(previous?.Key==candidate.Key&&previous.Evidence is "BodyComplete" or "BodySample"&&candidate.Evidence is not ("BodyComplete" or "BodySample"))return false;
         if(previous==null || previous.Key!=candidate.Key || Rank(candidate.Route)>=Rank(previous.Route))
         {Remove(candidate.Key);return true;}
         // Two failed checks of the current route allow immediate recovery.

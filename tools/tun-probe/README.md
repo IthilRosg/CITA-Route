@@ -12,9 +12,14 @@ must identify `Cita.TunProbe.exe` as the application.
 Cita.TunProbe.exe --request C:\CitaLab\TunProbe\one
 Cita.TunProbe.exe --direct C:\CitaLab\TunProbe\direct
 Cita.TunProbe.exe --hold C:\CitaLab\TunProbe\held
+Cita.TunProbe.exe --active-hold C:\CitaLab\TunProbe\active
 ```
 
 Results are written atomically to `<prefix>.ready.json` or `<prefix>.failed.json`.
+`--active-hold` also samples the same connection roughly once per second and
+replaces `<prefix>.active.json` with the latest sample and count. It shares the
+150-second total deadline and refuses reconnects just like `--hold`. A matched
+no-fault control must pass before attributing a later TCP failure to VPN loss.
 `--direct` uses the fixed HTTPS trace endpoint at 1.1.1.1, so a soak harness can
 check a separate IP destination while the hostname is explicitly routed to VPN.
 Its certificate is validated normally against that IP; the harness must verify
@@ -39,3 +44,7 @@ The client does not configure the tunnel or change routes, firewall, trust store
 services, user profiles or Windows proxy settings. Those transitions belong to
 the separate guest harness, with explicit ownership and cleanup. An HTTP egress
 check is not a packet capture or proof of a physical VPN-only boundary.
+
+`--patient-hold` is the same active connection test with a 30-second HTTP request
+deadline, to distinguish application cancellation at 10 seconds from TCP loss.
+It does not change CITA timeouts or promise uninterrupted delivery during loss.

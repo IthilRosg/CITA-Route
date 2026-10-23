@@ -12,7 +12,18 @@ function Write-TelegramRules([string]$Text,[string]$Path) {
         $networks += $address.ToString() + '/' + $prefix
     }
     if (-not $networks.Count) { throw 'Empty Telegram IP list.' }
-    Write-JsonFile $Path @{version=3;rules=@(@{ip_cidr=@($networks | Sort-Object -Unique)})}
+    # A FakeIP/CONNECT destination is still a name before the outbound resolves
+    # it. IP-only Telegram rules cannot cover its official web mini-apps.
+    Write-JsonFile $Path @{version=3;rules=@(@{ip_cidr=@($networks | Sort-Object -Unique)},@{domain_suffix=@('telegram.org','telegram.me','t.me','tdesktop.com')})}
+}
+
+function Ensure-TelegramDomainRules([string]$Path) {
+    $data=Read-JsonFile $Path
+    if($data.version -ne 3 -or -not $data.rules){throw 'Invalid installed Telegram rule set.'}
+    $required=@('telegram.org','telegram.me','t.me','tdesktop.com')
+    $present=@($data.rules|ForEach-Object {$_.domain_suffix})
+    $missing=@($required|Where-Object {$_ -notin $present})
+    if($missing.Count){$data.rules=@($data.rules)+@(@{domain_suffix=$missing});Write-JsonFile $Path $data}
 }
 
 function Publish-RuleFiles([object[]]$Files) {

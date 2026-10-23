@@ -269,6 +269,7 @@ function Prepare-Configuration {
     if (-not (Test-Path -LiteralPath $telegramRulePath)) {
         Write-TelegramRules ([IO.File]::ReadAllText((Join-Path $root 'rules\telegram-cidr.txt'))) $telegramRulePath
     }
+    Ensure-TelegramDomainRules $telegramRulePath
     $controllerTokenPath = Join-Path $private 'controller-token.txt'
     if (-not (Test-Path -LiteralPath $controllerTokenPath)) {
         [IO.File]::WriteAllText($controllerTokenPath,([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')),$utf8)
@@ -486,8 +487,14 @@ function Start-Helper([string]$Exe,[string]$Config) {
                 Start-Sleep -Milliseconds 200
             }
         }
+        $savedGateRoot=$env:CITA_FIRST_USE_ROOT
+        try {
+            $env:CITA_FIRST_USE_ROOT=$null
+            $gateOptions=Read-JsonFile (Join-Path $root 'data\routing-policy.json')
+            if($Exe -eq $routerExe -and $gateOptions.Mode -eq 'Auto' -and $gateOptions.FirstUseGate -eq $true -and $gateOptions.VerifyBody -ne $false){$env:CITA_FIRST_USE_ROOT=$root}
         $process = Start-Process -FilePath $Exe -ArgumentList @('run','-c',('"' + $Config + '"'),'--disable-color') `
             -WorkingDirectory $runtime -WindowStyle Hidden -PassThru -RedirectStandardError $startupLog -RedirectStandardOutput ($startupLog+'.out')
+        } finally {$env:CITA_FIRST_USE_ROOT=$savedGateRoot}
         $deadline=[DateTime]::UtcNow.AddSeconds($(if($tuns.Count){20}else{8}))
         $ready=$false
         try{

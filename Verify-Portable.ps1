@@ -22,7 +22,7 @@ try{
         $refused=$false;try{$null=Get-ProfileEndpoint $invalid}catch{$refused=$true}
         Assert $refused 'An unsupported configuration was accepted.'
     }
-    function Invoke-WireSock($Arguments){@('Profiles:',' - Friend WG',' - MAIN',' - SmartRouting-AWG2',' - RoutePilot-Probe-012345',' - Friend WG')}
+    function Read-HelperOutput($Image,$Arguments){@('Profiles:',' - Friend WG',' - MAIN',' - SmartRouting-AWG2',' - RoutePilot-Probe-012345',' - Friend WG') -join "`r`n"}
     $names=@(Get-WireSockProfileNames)
     Assert ($names.Count -eq 2 -and $names -contains 'Friend WG' -and $names -contains 'MAIN') 'Managed or duplicate profiles leaked into discovery.'
     foreach($name in @('ConnectionEnvironment.ps1','Configure-Connection.ps1','SmartRouting.ps1','Install-Agent.ps1','Build-Portable.ps1')){

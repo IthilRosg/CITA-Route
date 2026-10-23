@@ -32,23 +32,25 @@ internal static class PolicyTcpBudgetTests
             string fingerprint=PolicyNetwork.Signature(root),epoch=session.Id+":"+fingerprint;
             var key=new PolicyKey(epoch,"budget.fixture.invalid",Environment.ProcessPath!,443);
             var decision=new PolicyDecision(key,"vpn","fixture",DateTime.UtcNow,DateTime.UtcNow.AddMinutes(5),1);
+            foreach(bool savedBody in new[]{false,true})
+            foreach(bool requestedBody in new[]{false,true})
             foreach(bool savedFast in new[]{false,true})
             foreach(bool requestedFast in new[]{false,true})
             {
-                var worker=new PolicyWorker(root,session,new(){Mode="Auto",ExperimentalFastTcp=requestedFast});
-                Storage.Write(Path.Combine(root,"data/policy-cache.json"),new PolicyCache(fingerprint,"Auto",false,"",new[]{decision}){ExperimentalFastTcp=savedFast});
+                var worker=new PolicyWorker(root,session,new(){Mode="Auto",ExperimentalFastTcp=requestedFast,VerifyBody=requestedBody});
+                Storage.Write(Path.Combine(root,"data/policy-cache.json"),new PolicyCache(fingerprint,"Auto",false,"",new[]{decision}){ExperimentalFastTcp=savedFast,BodyProbes=savedBody});
                 worker.LoadCache();worker.Publish(false);
                 int count=JsonNode.Parse(File.ReadAllText(Path.Combine(root,"runtime/rules/auto-vpn.json")))!["rules"]!.AsArray().Count;
-                Assert(count==(savedFast==requestedFast?1:0),"Persistent routes measured under another TCP budget must be recalibrated.");
-                worker=new PolicyWorker(root,session,new(){Mode="Auto",ExperimentalFastTcp=requestedFast});
-                Storage.Write(Path.Combine(root,"runtime/policy-active.json"),new PolicyActiveSnapshot(epoch,"Auto",false,"",new[]{decision}){ExperimentalFastTcp=savedFast});
+                Assert(count==(savedFast==requestedFast&&savedBody==requestedBody?1:0),"Persistent routes measured under another TCP budget must be recalibrated.");
+                worker=new PolicyWorker(root,session,new(){Mode="Auto",ExperimentalFastTcp=requestedFast,VerifyBody=requestedBody});
+                Storage.Write(Path.Combine(root,"runtime/policy-active.json"),new PolicyActiveSnapshot(epoch,"Auto",false,"",new[]{decision}){ExperimentalFastTcp=savedFast,BodyProbes=savedBody});
                 worker.LoadActiveBindings();worker.Publish(false);
                 count=JsonNode.Parse(File.ReadAllText(Path.Combine(root,"runtime/rules/auto-vpn.json")))!["rules"]!.AsArray().Count;
-                Assert(count==(savedFast==requestedFast?1:0),"Same-session snapshots must also reject a different TCP budget.");
+                Assert(count==(savedFast==requestedFast&&savedBody==requestedBody?1:0),"Same-session snapshots must also reject a different TCP budget.");
             }
             // Absence in the old schema means the stable default, not enabled.
             Storage.Write(Path.Combine(root,"data/policy-cache.json"),new{Fingerprint=fingerprint,Mode="Auto",AllowListedDpi=false,ClearRequest="",Decisions=new[]{decision}});
-            var legacy=new PolicyWorker(root,session,new(){Mode="Auto"});legacy.LoadCache();legacy.Publish(false);
+            var legacy=new PolicyWorker(root,session,new(){Mode="Auto",VerifyBody=false});legacy.LoadCache();legacy.Publish(false);
             Assert(JsonNode.Parse(File.ReadAllText(Path.Combine(root,"runtime/rules/auto-vpn.json")))!["rules"]!.AsArray().Count==1,"A legacy cache remains compatible with the disabled experiment.");
         }
         finally{Directory.Delete(root,true);}

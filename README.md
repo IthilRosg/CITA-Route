@@ -5,6 +5,8 @@ Part of the CITA family: [AWG CITA](https://github.com/IthilRosg/AWG-CITA) manag
 
 The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspired palette, sharp frames and terminal typography.
 
+**0.6.4** adds bounded body verification, startup warm hints, Telegram Mini App domain rules and broader WireSock executable discovery. First-use TCP gating remains experimental and off by default. Only framework ZIP and EXE Setup are published; .NET is a separate prerequisite. See [acceptance and limits](docs/RELEASE-0.6.4.md).
+
 **0.6.3** fixes connection setup after moving the client to another folder, clears obsolete update errors after manual Setup, and always downloads the smaller framework update. A missing .NET runtime is downloaded separately from Microsoft and verified before the route is stopped. See [repair details and verification scope](docs/RELEASE-0.6.3.md). Older clients with the manifest-counting error require one EXE Setup installation.
 
 0.6.1 added per-route DNS fallback, bounded CDN/resource failure detection, QUIC retry handling, recoverable EXE installation and an optional experimental browser adapter. Resource-pressure notifications are off by default. See [scope and acceptance boundaries](docs/RELEASE-0.6.1.md) and [browser adapter setup](docs/BROWSER-FEEDBACK.md). Protected routing before Windows sign-in remains opt-in; see [startup behavior](docs/STARTUP.md).
@@ -24,7 +26,7 @@ The [Sector Console interface](docs/STYLE.md) shares AWG CITA's SIGNALIS-inspire
 
 ## Install
 
-Windows 10/11 x64 and separately installed WireSock Secure Connect are required. Setup checks machine-wide .NET Desktop Runtime 10.0.13 x64 and offers to download/install the signed Microsoft prerequisite when missing. From 0.6.3, automatic updates always download `-framework.zip`; any required .NET installation is a separate, verified Microsoft download with Windows confirmation. The optional full ZIP is for manual offline use.
+Windows 10/11 x64 and separately installed WireSock Secure Connect are required. Setup checks machine-wide .NET Desktop Runtime 10.0.13 x64 and offers to download/install the signed Microsoft prerequisite when missing. From 0.6.3, automatic updates always download `-framework.zip`; any required .NET installation is a separate, verified Microsoft download with Windows confirmation. New releases provide the framework ZIP and EXE Setup only.
 
 1. Download **CITA-Route-VERSION-win-x64-setup.exe** from Releases, run it, choose a writable destination folder and click **Install**. Open **CITA Route** from the Desktop or Start shortcut (or launch at the end of Setup). For a portable installation, extract the complete ZIP and run **RoutePilot.exe**.
 2. Click **Connect**. The client finds WireSock and offers a profile picker only when needed; you can also import `.conf` there.

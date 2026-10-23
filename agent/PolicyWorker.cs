@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Security;
 using System.Security.Cryptography;
@@ -9,19 +9,22 @@ using System.Text.RegularExpressions;
 namespace RoutePilot.Agent;
 
 public sealed record PolicyKey(string Epoch,string Domain,string Application,int Port,string Protocol="tcp",string Strategy=PolicyKey.CurrentStrategy)
-{public const string CurrentStrategy="tls-record-ipv4-v3";}
-public sealed record PolicyDecision(PolicyKey Key,string Route,string Reason,DateTime CheckedUtc,DateTime ExpiresUtc,long Milliseconds);
-public sealed class PolicyOptions {public string Mode{get;set;}="Lists";public bool AllowListedDpi{get;set;}public bool ExperimentalFastTcp{get;set;}public bool ExperimentalBrowserFeedback{get;set;}}
+{public const string CurrentStrategy="tls-record-ipv4-body-v4";}
+public sealed record PolicyDecision(PolicyKey Key,string Route,string Reason,DateTime CheckedUtc,DateTime ExpiresUtc,long Milliseconds)
+{public string Evidence{get;init;}="Headers";}
+public sealed class PolicyOptions {public string Mode{get;set;}="Lists";public bool AllowListedDpi{get;set;}public bool ExperimentalFastTcp{get;set;}public bool ExperimentalBrowserFeedback{get;set;}public bool VerifyBody{get;set;}=true;public bool Warmup{get;set;}=true;public bool FirstUseGate{get;set;}}
 public sealed class PolicySession {public string Id{get;set;}="";public bool Running{get;set;}public int RouterPid{get;set;}public int BridgeGeneration{get;set;}}
 public sealed record CandidateResult(bool Reachable,bool Definitive,string Detail,long Milliseconds)
 {
     public bool ConnectionEstablished{get;init;}
     public int? HttpStatus{get;init;}
+    public string Evidence{get;init;}="Headers";
+    public long BodyBytes{get;init;}
 }
 internal sealed record PolicyCache(string Fingerprint,string Mode,bool AllowListedDpi,string ClearRequest,PolicyDecision[] Decisions)
-{public bool ExperimentalFastTcp{get;init;}}
+{public bool ExperimentalFastTcp{get;init;}public bool BodyProbes{get;init;}public PolicyWarmHint[] WarmHints{get;init;}=Array.Empty<PolicyWarmHint>();}
 internal sealed record PolicyActiveSnapshot(string Epoch,string Mode,bool AllowListedDpi,string ClearRequest,PolicyDecision[] Decisions)
-{public bool ExperimentalFastTcp{get;init;}}
+{public bool ExperimentalFastTcp{get;init;}public bool BodyProbes{get;init;}}
 internal sealed class PolicyMeasurement
 {
     public PolicyKey Key{get;init;}=null!;
@@ -107,14 +110,15 @@ public sealed partial class PolicyWorker
     readonly string _fingerprint;
     readonly PolicyStability _stability=new();
     PolicyNetworkMonitor? _networkMonitor;
+    readonly PolicyPollBudget _observeBudget=new();
     long _nextStatusTick;
     string _statusPhase="";
     DateTime _lastClockUtc=DateTime.UtcNow;
     string _clearRequest="";
     readonly HashSet<string> _listed=new(StringComparer.OrdinalIgnoreCase);
     string _listVersion="";
-    internal PolicyWorker(string root,PolicySession session,PolicyOptions options,Func<PolicyKey,CancellationToken,Task<CalibrationResult>>? calibration=null)
-    {_root=root;_options=options;_ports=PolicyPorts.Read(root);_fingerprint=Fingerprint();_epoch=session.Id+":"+_fingerprint;_calibration=calibration;_quicCompatible=PolicyWebRouting.Supported(root);
+    internal PolicyWorker(string root,PolicySession session,PolicyOptions options,Func<PolicyKey,CancellationToken,Task<CalibrationResult>>? calibration=null,Func<long>? warmClock=null)
+    {_warmClock=warmClock??(()=>Environment.TickCount64);_warmStarted=_warmClock();_root=root;_options=options;_ports=PolicyPorts.Read(root);_fingerprint=Fingerprint();_epoch=session.Id+":"+_fingerprint;_calibration=calibration;_quicCompatible=PolicyWebRouting.Supported(root);
         string clear=Runtime("clear-policy.request");if(File.Exists(clear))_clearRequest=File.ReadAllText(clear).Trim();}
     string Runtime(string name)=>Path.Combine(_root,"runtime",name);
     string Fingerprint()
@@ -152,6 +156,9 @@ public sealed partial class PolicyWorker
             worker.RefreshListed();worker.LoadCache();worker.LoadActiveBindings();
             worker._publisher=new(root,worker._ports,worker.Current);
             await InitializePublication(worker.PublishAsync,worker.Current,cancel.Token);
+            worker._warmStarted=worker._warmClock();
+            if(options.Mode=="Auto"&&options.FirstUseGate&&options.VerifyBody)
+                try{worker._firstUse=new(worker,root,session,20833);}catch(Exception ex)when(ex is IOException or System.Net.Sockets.SocketException or UnauthorizedAccessException){worker.Event("Ожидание первого соединения недоступно; обычная адаптация сохранена.");}
             if(options.Mode=="Auto"&&options.ExperimentalBrowserFeedback)
             {
                 using var browserOwner=System.Security.Principal.WindowsIdentity.GetCurrent();
@@ -175,10 +182,13 @@ public sealed partial class PolicyWorker
                     if(request!=worker._clearRequest && Guid.TryParseExact(request,"N",out _))
                     {worker._clearRequest=request;worker.Clear();}
                 }
-                await worker.Observe();
+                worker._firstUse?.Pump();
+                if(options.Mode=="Auto"&&worker._firstUse?.HasWaiting==true)worker.DrainFailures(cancel.Token);
+                if(worker._observeBudget.Take(Environment.TickCount64))await worker.Observe();
                 if(options.Mode=="Auto")worker.Failures(log,cancel.Token);
-                browser?.Pump();
+                browser?.Pump();worker._firstUse?.Pump();
                 await worker.CompletePending();
+                worker._firstUse?.Pump();
                 worker.Prune();
                 if(worker._dirty && DateTime.UtcNow>=worker._nextPublish)
                 {
@@ -187,10 +197,12 @@ public sealed partial class PolicyWorker
                     catch(Exception ex)when(ex is IOException or OperationCanceledException or System.Net.Sockets.SocketException)
                     {worker._nextPublish=DateTime.UtcNow.AddSeconds(5);worker.Event("Правила не подтверждены движком; прежние пути сохранены. "+ex.GetType().Name);}
                 }
-                if(options.Mode=="Auto")worker.DrainFailures(cancel.Token);
+                if(options.Mode=="Auto"){worker.DrainFailures(cancel.Token);worker.DrainWarmup(cancel.Token);}
+                worker._firstUse?.Pump();
                 worker.MaybeStatus(worker._dirty?"Applying":options.Mode=="Auto"?"Auto":"Lists");
                 worker._progress.Mark("Running");
-                await WaitForWork(browser==null?worker._pending.Values:worker._pending.Values.Append(browser.Signal),cancel.Token);
+                var signals=worker._pending.Values.Cast<Task>();if(browser!=null)signals=signals.Append(browser.Signal);if(worker._firstUse!=null)signals=signals.Append(worker._firstUse.Signal);
+                await WaitForWork(signals,cancel.Token,worker._firstUse?.HasWaiting==true?TimeSpan.FromMilliseconds(25):null);
             }
         }
         catch(Exception ex)
@@ -200,6 +212,7 @@ public sealed partial class PolicyWorker
             try{worker._progress.Mark(terminalPhase,true);}catch{}
             cancel.Cancel();await quality;await Task.WhenAll(worker._pending.Values.Select(async t=>{try{await t;}catch{}}));
             if(browser!=null)await browser.DisposeAsync();
+            if(worker._firstUse!=null)await worker._firstUse.DisposeAsync();
             // Keep the last applied rules across a controller crash/restart.
             // Start/Stop owns the engine; an old controller never clears a newer generation.
             try{if(Storage.Read<PolicySession>(worker.Runtime("session.json")).Id==session.Id)worker.Status(terminalPhase);}catch{}
@@ -255,7 +268,7 @@ public sealed partial class PolicyWorker
     internal void Clear()
     {
         _generation++;foreach(var pendingStop in _pendingStops.Values)pendingStop.Cancel();
-        _decisions.Clear();_failures.Clear();_seenFailures.Clear();_lastUse.Clear();_nextProbe.Clear();_queuedAt.Clear();_bindingStates.Clear();
+        ClearWarmup();_decisions.Clear();_failures.Clear();_seenFailures.Clear();_lastUse.Clear();_nextProbe.Clear();_queuedAt.Clear();_bindingStates.Clear();
         _web.Clear();_browserFeedback.Clear();_browserPublished.Clear();_browserFallbackPublished.Clear();_browserGuardTick=long.MinValue;_browserTicketGeneration++;
         _stability.Clear();
         lock(_events)_events.Clear();_dirty=true;
@@ -264,7 +277,7 @@ public sealed partial class PolicyWorker
     readonly Dictionary<PolicyKey,(DateTime Queued,DateTime Started,string Trigger)> _jobMetadata=new();
     internal void Touch(PolicyKey key,DateTime now)
     {
-        _lastUse[key]=now;
+        _lastUse[key]=now;RememberWarm(key,now);
         while(_lastUse.Count>1024)_lastUse.Remove(_lastUse.MinBy(p=>p.Value).Key);
     }
     internal bool ObserveClock(DateTime now)
@@ -279,6 +292,7 @@ public sealed partial class PolicyWorker
         _web.Clear();_browserFeedback.Clear();_browserPublished.Clear();_browserFallbackPublished.Clear();_browserGuardTick=long.MinValue;_browserTicketGeneration++;
         _logFlows.Clear();_applications.Clear();_flowHealth.Clear();_earlyFlows.Clear();
         foreach(var key in _lastUse.Where(p=>p.Value>now).Select(p=>p.Key).ToArray())_lastUse[key]=now;
+        _warmQueue.Clear();
         Event("Пауза или изменение времени: незавершённые проверки сброшены; активные пути сохранены.");
         return true;
     }
@@ -381,7 +395,8 @@ public sealed partial class PolicyWorker
         {
             using var request=new HttpRequestMessage(HttpMethod.Get,"http://127.0.0.1:"+_ports.Api+"/connections");
             request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",File.ReadAllText(Path.Combine(_root,"private","controller-token.txt")).Trim());
-            using var response=await _api.SendAsync(request);response.EnsureSuccessStatusCode();
+            using var snapshot=CancellationTokenSource.CreateLinkedTokenSource(_runStop);snapshot.CancelAfter(_firstUse?.HasWaiting==true?300:2000);
+            using var response=await _api.SendAsync(request,snapshot.Token);response.EnsureSuccessStatusCode();
             using var content=await response.Content.ReadAsStreamAsync();
             using var limited=new MemoryStream();byte[] buffer=new byte[8192];int read;
             while((read=await content.ReadAsync(buffer))>0){if(limited.Length+read>2097152)throw new IOException("Oversized connection snapshot.");limited.Write(buffer,0,read);}
@@ -530,15 +545,17 @@ public sealed partial class PolicyWorker
         while(_pending.Count<2)
         {
             var failures=_failures.Where(p=>now-p.Value.At<TimeSpan.FromMinutes(2) && !_pending.ContainsKey(p.Key) && !Manual(p.Key.Domain) && (!_nextProbe.TryGetValue(p.Key,out var next) || next<=now)).OrderBy(p=>p.Value.At).ToArray();
-            bool background=refresh.Count>0 && (failures.Length==0 || _foregroundSinceRefresh>=4);
-            bool discovery=!background&&failures.Length==0;
-            var discovered=discovery?_web.Take(k=>!_pending.ContainsKey(k)&&!Manual(k.Domain)&&(!_nextProbe.TryGetValue(k,out var next)||next<=now)&&(!_decisions.TryGetValue(k,out var old)||!PolicySafety.Live(old,_epoch,now)),now):null;
+            var gated=_firstUse?.Take(k=>!_pending.ContainsKey(k)&&(!_nextProbe.TryGetValue(k,out var deadline)||deadline<=now)&&(!_decisions.TryGetValue(k,out var fresh)||!PolicySafety.Live(fresh,_epoch,now)));
+            bool background=gated==null && refresh.Count>0 && (failures.Length==0 || _foregroundSinceRefresh>=4);
+            bool discovery=gated!=null||!background&&failures.Length==0;
+            if(gated==null&&failures.Length==0&&_firstUse!=null&&_pending.Count>=1)break;
+            var discovered=gated??(discovery?_web.Take(k=>!_pending.ContainsKey(k)&&!Manual(k.Domain)&&(!_nextProbe.TryGetValue(k,out var next)||next<=now)&&(!_decisions.TryGetValue(k,out var old)||!PolicySafety.Live(old,_epoch,now)),now,reserve:_firstUse!=null):null);
             if(discovery&&discovered==null)break;
             PolicyKey key=discovered??(background?refresh[0].Key:failures[0].Key);
             if(background){refresh.RemoveAt(0);_foregroundSinceRefresh=0;}else if(!discovery){_failures.Remove(key);_foregroundSinceRefresh++;refresh.RemoveAll(d=>d.Key==key);}
             _queuedAt.Remove(key,out var queued);
             var linked=CancellationTokenSource.CreateLinkedTokenSource(cancellation);_pendingStops[key]=linked;
-            _jobMetadata[key]=(queued==default?now:queued,now,background?"refresh":discovery?"first-use":"connection-hint");
+            _jobMetadata[key]=(queued==default?now:queued,now,gated!=null?"first-use-gate":background?"refresh":discovery?"first-use":"connection-hint");
             _pendingGeneration[key]=_generation;
             // Keep the active binding while a replacement is being measured.
             _pending[key]=_calibration?.Invoke(key,linked.Token)??Calibrate(key,linked.Token,!background&&!discovery);
@@ -554,15 +571,17 @@ public sealed partial class PolicyWorker
         {
             _decisions.TryGetValue(key,out var current);
             var avoided=AvoidedRoutes(key,DateTime.UtcNow);
-            var resolved=await PolicyTransport.SelectResolved(key.Domain,_ports,budget.Token,failureTriggered,observeRoute:current?.Route,avoidRoutes:avoided);dnsMs=resolved.DnsMilliseconds;
+            bool body=_options.VerifyBody;int generation=_generation;int transport=_firstUse==null?0:FirstUseTransport;
+            var resolved=await PolicyTransport.SelectResolved(key.Domain,_ports,budget.Token,failureTriggered,observeRoute:current?.Route,avoidRoutes:avoided,verifyBody:body,candidateReady:_firstUse==null?null:proof=>_firstUse.Candidate(key,generation,transport,proof));dnsMs=resolved.DnsMilliseconds;
             var chosen=resolved.Selection;
             CalibrationResult Result(ProbeOutcome outcome,PolicyDecision? decision)=>new(outcome,decision,dnsMs,timer.ElapsedMilliseconds,chosen.Candidates)
             {CandidateReadyMilliseconds=chosen.Route==null?null:chosen.Milliseconds,SelectionDecisionMilliseconds=chosen.DecisionMilliseconds,SelectionCompletionMilliseconds=chosen.CompletionMilliseconds};
             if(chosen.Route==null)return Result(chosen.Outcome,null);
             var now=DateTime.UtcNow;
             bool temporary=PolicyTransport.UnstablePreferred(chosen)||chosen.Candidates.Any(c=>c.Outcome==ProbeOutcome.ApplicationFailure)||chosen.Candidates.TakeWhile(c=>c.Route!=chosen.Route).Any(c=>c.Outcome==ProbeOutcome.DnsUnavailable);
-            var reason=chosen.Route=="direct"?"Две прямые TLS-пробы успешны.":temporary?"Подтверждён временный путь; прямой доступ или его DNS требуют перепроверки.":"Две TLS-пробы выбранного пути успешны; более приоритетные пути проверены.";
-            var decision=new PolicyDecision(key,chosen.Route,reason,now,now.AddSeconds(temporary?60:900),chosen.Milliseconds);
+            string evidence=chosen.Candidates.First(c=>c.Route==chosen.Route).Evidence;
+            var reason=evidence is "BodyComplete" or "BodySample"?"Две ограниченные GET-пробы корня подтверждены; это не проверка каждого ресурса страницы.":chosen.Route=="direct"?"Две прямые TLS-пробы успешны.":temporary?"Подтверждён временный путь; прямой доступ или его DNS требуют перепроверки.":"Две TLS-пробы выбранного пути успешны; более приоритетные пути проверены.";
+            var decision=new PolicyDecision(key,chosen.Route,reason,now,now.AddSeconds(temporary?60:900),chosen.Milliseconds){Evidence=evidence};
             return Result(ProbeOutcome.Reachable,decision);
         }
         catch(OperationCanceledException){return new(ProbeOutcome.Cancelled,null,dnsMs,timer.ElapsedMilliseconds,Array.Empty<CandidateTiming>());}
@@ -606,12 +625,13 @@ public sealed partial class PolicyWorker
         {
             if(new FileInfo(path).Length>1048576)return;
             var cache=Storage.Read<PolicyCache>(path);
-            if(cache.Fingerprint!=_fingerprint || cache.Mode!=_options.Mode || cache.AllowListedDpi!=_options.AllowListedDpi || cache.ExperimentalFastTcp!=_options.ExperimentalFastTcp || cache.ClearRequest!=_clearRequest || cache.Decisions.Length>DecisionLimit)return;
+            if(cache.Fingerprint!=_fingerprint || cache.Mode!=_options.Mode || cache.AllowListedDpi!=_options.AllowListedDpi || cache.ExperimentalFastTcp!=_options.ExperimentalFastTcp || cache.BodyProbes!=_options.VerifyBody || cache.ClearRequest!=_clearRequest || cache.Decisions.Length>DecisionLimit)return;
             foreach(var old in cache.Decisions)
             {
                 var decision=old with{Key=old.Key with{Epoch=_epoch}};
                 if(decision.Route is "direct" or "dpi" or "vpn" && decision.Key.Strategy==PolicyKey.CurrentStrategy && PolicySafety.Live(decision,_epoch,DateTime.UtcNow) && !Manual(decision.Key.Domain))StoreDecision(decision);
             }
+            LoadWarmHints(cache,DateTime.UtcNow);
             if(_decisions.Count>0)Event("Восстановлены проверенные маршруты: "+_decisions.Count);
         }
         catch(Exception ex)when(ex is IOException or JsonException or InvalidOperationException or NullReferenceException){Event("Кэш маршрутов не загружен; начата новая проверка.");}
@@ -624,7 +644,7 @@ public sealed partial class PolicyWorker
         {
             if(new FileInfo(path).Length>1048576)return;
             var snapshot=Storage.Read<PolicyActiveSnapshot>(path);
-            if(snapshot.Epoch!=_epoch || snapshot.Mode!=_options.Mode || snapshot.AllowListedDpi!=_options.AllowListedDpi || snapshot.ExperimentalFastTcp!=_options.ExperimentalFastTcp || snapshot.ClearRequest!=_clearRequest || snapshot.Decisions.Length>DecisionLimit)return;
+            if(snapshot.Epoch!=_epoch || snapshot.Mode!=_options.Mode || snapshot.AllowListedDpi!=_options.AllowListedDpi || snapshot.ExperimentalFastTcp!=_options.ExperimentalFastTcp || snapshot.BodyProbes!=_options.VerifyBody || snapshot.ClearRequest!=_clearRequest || snapshot.Decisions.Length>DecisionLimit)return;
             foreach(var decision in snapshot.Decisions)
                 if(!_decisions.ContainsKey(decision.Key) && decision.Key.Epoch==_epoch && decision.Key.Strategy==PolicyKey.CurrentStrategy && decision.Route is "vpn" or "dpi" && PolicySafety.Valid(decision.Key) && decision.ExpiresUtc>decision.CheckedUtc && decision.ExpiresUtc-decision.CheckedUtc<=TimeSpan.FromMinutes(16))StoreDecision(decision);
         }
@@ -647,14 +667,14 @@ public sealed partial class PolicyWorker
     }
     void PersistCache()
     {
-        if(_options.Mode=="Auto")Storage.Write(Path.Combine(_root,"data","policy-cache.json"),new PolicyCache(_fingerprint,_options.Mode,_options.AllowListedDpi,_clearRequest,_decisions.Values.Where(d=>PolicySafety.Live(d,_epoch,DateTime.UtcNow) && !Manual(d.Key.Domain)).ToArray()){ExperimentalFastTcp=_options.ExperimentalFastTcp});
+        if(_options.Mode=="Auto")Storage.Write(Path.Combine(_root,"data","policy-cache.json"),new PolicyCache(_fingerprint,_options.Mode,_options.AllowListedDpi,_clearRequest,_decisions.Values.Where(d=>PolicySafety.Live(d,_epoch,DateTime.UtcNow) && !Manual(d.Key.Domain)).ToArray()){ExperimentalFastTcp=_options.ExperimentalFastTcp,BodyProbes=_options.VerifyBody,WarmHints=_warmHints.Select(p=>WarmHint(p.Key,p.Value)).Where(h=>WarmHintValid(h,DateTime.UtcNow)).ToArray()});
     }
     async Task PublishAsync(CancellationToken stop)
     {
         _progress?.Mark("Publishing",true);
         await _publisher!.Apply(Desired(),stop);
         if(!Current())throw new OperationCanceledException();
-        Storage.Write(Runtime("policy-active.json"),new PolicyActiveSnapshot(_epoch,_options.Mode,_options.AllowListedDpi,_clearRequest,_decisions.Values.ToArray()){ExperimentalFastTcp=_options.ExperimentalFastTcp});
+        Storage.Write(Runtime("policy-active.json"),new PolicyActiveSnapshot(_epoch,_options.Mode,_options.AllowListedDpi,_clearRequest,_decisions.Values.ToArray()){ExperimentalFastTcp=_options.ExperimentalFastTcp,BodyProbes=_options.VerifyBody});
         PersistCache();_dirty=false;BrowserPublication();
         var applied=DateTime.UtcNow;
         foreach(var measurement in _measurements.Where(m=>m.AppliedUtc==null && m.DecisionCheckedUtc!=null))
@@ -678,6 +698,6 @@ public sealed partial class PolicyWorker
     internal void Status(string phase)
     {
         string[] events;lock(_events)events=_events.ToArray();
-        Storage.Write(Runtime("policy-state.json"),new{phase,version=typeof(PolicyWorker).Assembly.GetName().Version!.ToString(3),epoch=_epoch,updatedUtc=DateTime.UtcNow,strategy="TLS record / TCP IPv4; bounded parallel probes",pending=_pending.Count,queued=_failures.Count,discoveryQueued=_web.Queued,quicCompatibility=_quicCompatible,webFaults=_web.Snapshot(DateTime.UtcNow),switches=_switches,bytes=_bytes,decisions=_decisions.Values.ToArray(),stale=_decisions.Values.Count(d=>!PolicySafety.Live(d,_epoch,DateTime.UtcNow)),blocked=_decisions.Values.Count(d=>Binding(d,DateTime.UtcNow)=="blocked"),publication=new{phase=_publisher?.Phase??"Offline",version=_publisher?.Version??0,milliseconds=_publisher?.Milliseconds??0},measurements=_measurements.Take(5).ToArray(),events,limits="IPv4 TCP/443; own HTTPS and repeated transport faults, not whole-application proof; scoped browser QUIC-to-TCP compatibility on supported topology; no user request replay"});
+        Storage.Write(Runtime("policy-state.json"),new{phase,version=typeof(PolicyWorker).Assembly.GetName().Version!.ToString(3),epoch=_epoch,updatedUtc=DateTime.UtcNow,strategy="TLS record / TCP IPv4; bounded parallel probes",pending=_pending.Count,queued=_failures.Count,discoveryQueued=_web.Queued,firstUse=_firstUse?.Snapshot()??new{enabled=false},warmup=new{enabled=_options.Warmup,queued=_warmQueue.Count,launched=_warmLaunched},quicCompatibility=_quicCompatible,webFaults=_web.Snapshot(DateTime.UtcNow),browserDependencies=_browserFeedback.Dependencies.Snapshot(DateTime.UtcNow).Select(d=>new{contextId=d.ContextId,parentDomain=d.ParentDomain,domain=d.Target.Domain,application=Path.GetFileName(d.Target.Application),resource=d.Resource,seen=d.Seen,completed=d.Completed,failed=d.Failed,updatedUtc=d.UpdatedUtc,source="browser initiator document"}).ToArray(),browserDeliveries=_browserFeedback.Deliveries(DateTime.UtcNow).Select(d=>new{domain=d.Key.Domain,application=Path.GetFileName(d.Key.Application),publishedRoute=d.PublishedRoute,revision=d.Revision,generation=d.Generation,completed=d.Completed,failed=d.Failed,updatedUtc=d.UpdatedUtc,attribution="published rule; not per-flow proof"}).ToArray(),switches=_switches,bytes=_bytes,decisions=_decisions.Values.ToArray(),stale=_decisions.Values.Count(d=>!PolicySafety.Live(d,_epoch,DateTime.UtcNow)),blocked=_decisions.Values.Count(d=>Binding(d,DateTime.UtcNow)=="blocked"),publication=new{phase=_publisher?.Phase??"Offline",version=_publisher?.Version??0,milliseconds=_publisher?.Milliseconds??0},measurements=_measurements.Take(5).ToArray(),events,limits="IPv4 TCP/443; own HTTPS and repeated transport faults, not whole-application proof; scoped browser QUIC-to-TCP compatibility on supported topology; no user request replay"});
     }
 }

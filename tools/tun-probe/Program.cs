@@ -28,7 +28,7 @@ internal static class Program
             using var bios=Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\BIOS");
             if((bios?.GetValue("SystemManufacturer") as string)?.Contains("VMware",StringComparison.OrdinalIgnoreCase)!=true)
                 throw new IOException("This acceptance client runs only in the authorized VMware lab.");
-            if(args.Length!=2||args[0] is not ("--request" or "--direct" or "--hold" or "--resolve"))throw new ArgumentException("Expected a lab mode and report prefix.");
+            if(args.Length!=2||args[0] is not ("--request" or "--direct" or "--hold" or "--active-hold" or "--patient-hold" or "--resolve"))throw new ArgumentException("Expected a lab mode and report prefix.");
             prefix=Path.GetFullPath(args[1]);
             if(!prefix.StartsWith(@"C:\CitaLab\TunProbe\",StringComparison.OrdinalIgnoreCase))throw new IOException("Unexpected laboratory output directory.");
             Directory.CreateDirectory(Path.GetDirectoryName(prefix)!);
@@ -38,7 +38,7 @@ internal static class Program
                 ConnectCallback=async(context,stop)=>
                 {
                     // A hold test must fail rather than conceal a reconnect.
-                    if(args[0]=="--hold"&&Volatile.Read(ref connections)>0)throw new IOException("The original TCP connection was lost.");
+                    if(args[0] is "--hold" or "--active-hold" or "--patient-hold"&&Volatile.Read(ref connections)>0)throw new IOException("The original TCP connection was lost.");
                     var socket=new Socket(AddressFamily.InterNetwork,SocketType.Stream,ProtocolType.Tcp);
                     try
                     {
@@ -49,7 +49,7 @@ internal static class Program
                     }
                     catch{socket.Dispose();throw;}
                 }};
-            using var client=new HttpClient(handler){Timeout=TimeSpan.FromSeconds(10),DefaultRequestVersion=HttpVersion.Version11,DefaultVersionPolicy=HttpVersionPolicy.RequestVersionExact};
+            using var client=new HttpClient(handler){Timeout=TimeSpan.FromSeconds(args[0]=="--patient-hold"?30:10),DefaultRequestVersion=HttpVersion.Version11,DefaultVersionPolicy=HttpVersionPolicy.RequestVersionExact};
             async Task<object> Sample()
             {
                 var clock=Stopwatch.StartNew();
@@ -80,9 +80,10 @@ internal static class Program
             }
             Write(prefix+".ready.json",await Sample());
             if(args[0] is "--request" or "--direct")return 0;
-            int last=0;
+            int last=0,activeSamples=0;var activeClock=Stopwatch.StartNew();
             while(!budget.IsCancellationRequested)
             {
+                if((args[0] is "--active-hold" or "--patient-hold")&&activeClock.ElapsedMilliseconds>=1000){Write(prefix+".active.json",new{samples=++activeSamples,sample=await Sample()});activeClock.Restart();}
                 await Task.Delay(100,budget.Token);string file=prefix+".command.json";if(!File.Exists(file))continue;
                 using var command=JsonDocument.Parse(File.ReadAllText(file));int id=command.RootElement.GetProperty("id").GetInt32();
                 if(id<=last||id>20)continue;last=id;

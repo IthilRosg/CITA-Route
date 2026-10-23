@@ -10,6 +10,15 @@ try {
     Write-TelegramRules ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'rules\telegram-cidr.txt'))) $telegram
     $parsed = [IO.File]::ReadAllText($telegram) | ConvertFrom-Json
     Assert-Feed ($parsed.rules[0].ip_cidr -contains '149.154.160.0/20') 'Telegram server network was omitted.'
+    Assert-Feed ($parsed.rules[1].domain_suffix -contains 'telegram.org') 'Telegram mini-app domain must route even before IP resolution.'
+    Write-JsonFile $telegram @{version=3;rules=@(@{ip_cidr=@('149.154.160.0/20')})}
+    Ensure-TelegramDomainRules $telegram
+    $migrated=[IO.File]::ReadAllText($telegram)
+    Ensure-TelegramDomainRules $telegram
+    Assert-Feed ($migrated -eq [IO.File]::ReadAllText($telegram)) 'Repeated domain migration must not rewrite or duplicate rules.'
+    $parsed=$migrated|ConvertFrom-Json
+    Assert-Feed ($parsed.rules[0].ip_cidr -contains '149.154.160.0/20') 'Domain migration must preserve the existing IP networks.'
+    Assert-Feed ($parsed.rules[1].domain_suffix.Count -eq 4) 'All pinned Telegram domains need a static route counterpart.'
     foreach ($invalid in @('', 'not-an-address', '0.0.0.0/0', '149.154.160.0/33', '2001:db8::/129')) {
         $rejected = $false
         try { Write-TelegramRules $invalid $telegram } catch { $rejected = $true }
