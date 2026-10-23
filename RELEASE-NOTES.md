@@ -1,4 +1,15 @@
-CITA Route 0.6.1 — DNS fallback, web resource routing and recoverable updates.
+CITA Route 0.6.2 — update manifest recognition hotfix.
+
+- Recognize the package's root manifest in flat and single-folder ZIP archives. The optional browser extension's nested manifest no longer blocks download or restoration of a prepared update.
+- Retain SHA-256, version, architecture, payload checksums, unsafe-path and ambiguous-root checks. A modified nested browser manifest is still rejected as a corrupted file.
+- Remove the operation's extracted directory after a rejected download so repeated attempts do not accumulate abandoned packages.
+- Exercise actual full and framework release ZIPs through the GUI updater's archive validation before publication, in addition to fixture installation tests.
+
+**Upgrading from an older client:** if downloading 0.6.1 reports that the archive must contain one manifest.json, install this release with setup.exe. The already installed updater contains the bug and cannot repair itself by downloading another ZIP with the same extension layout. Profiles and personal rules are retained by the installer. The fixed client supports subsequent automatic ZIP updates.
+
+See [hotfix evidence and test boundaries](https://github.com/IthilRosg/CITA-Route/blob/main/docs/RELEASE-0.6.2.md). MSI is excluded. The following routing and resource improvements from 0.6.1 are retained:
+
+DNS fallback, web resource routing and recoverable updates:
 
 - Add separate, bounded DNS fallback for each route and retry public IPv4 addresses before connecting. Valid negative DNS answers and TLS validation keep their meaning; requests are not replayed after connection.
 - Improve first-use CDN discovery and distinguish a healthy page from interrupted resource transfers. HTTP 451 can trigger fallback; a generic 403, a certificate error or a browser extension block is not treated as proof of network filtering.

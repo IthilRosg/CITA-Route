@@ -89,12 +89,12 @@ jobs:
           $zip=Get-ChildItem dist/CITA-Route-*-win-x64.zip | Select-Object -First 1
           Expand-Archive -LiteralPath $zip.FullName -DestinationPath runtime/package-check
           $package=Get-ChildItem runtime/package-check -Directory | Select-Object -First 1
-          ./Verify-Portable.ps1 -PackageDirectory $package.FullName
+          ./Verify-Portable.ps1 -PackageDirectory $package.FullName -PackageArchive $zip.FullName
           ./Build-Portable.ps1 -FrameworkDependent
           $thin=Get-ChildItem dist/CITA-Route-*-win-x64-framework.zip | Select-Object -First 1
           Expand-Archive -LiteralPath $thin.FullName -DestinationPath runtime/framework-check
           $framework=Get-ChildItem runtime/framework-check -Directory | Select-Object -First 1
-          ./Verify-Portable.ps1 -PackageDirectory $framework.FullName -AllowFrameworkDependent
+          ./Verify-Portable.ps1 -PackageDirectory $framework.FullName -AllowFrameworkDependent -PackageArchive $thin.FullName
           ./Build-Installer.ps1 -PackageDirectory $framework.FullName
           ./Build-Installer.ps1 -PackageDirectory $framework.FullName -TestBuild
           ./Verify-Installer.ps1 -Setup (Get-ChildItem dist/*-test-setup.exe).FullName

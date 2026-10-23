@@ -103,12 +103,16 @@ public sealed class ReleaseUpdates
             }
             await using(var input=File.OpenRead(archive))if(Convert.ToHexString(await SHA256.HashDataAsync(input,token))!=expected)throw new InvalidDataException("SHA-256 не совпал. Установка запрещена.");
             string extracted=Path.Combine(folder,"package");Extract(archive,extracted);
-            string[] manifests=Directory.GetFiles(extracted,"manifest.json",SearchOption.AllDirectories);
-            if(manifests.Length!=1)throw new InvalidDataException("В архиве должен быть один manifest.json.");
-            string package=Path.GetDirectoryName(manifests[0])!;VerifyPackage(package,update.Version);
+            string package=PackageDirectory(archive,extracted);VerifyPackage(package,update.Version);
             return package;
         }
-        catch{if(File.Exists(archive))File.Delete(archive);throw;}
+        catch
+        {
+            // This newly created operation owns the entire directory. Rejected
+            // downloads must not accumulate fully extracted packages on disk.
+            try{Directory.Delete(folder,true);}catch(IOException){}catch(UnauthorizedAccessException){}
+            throw;
+        }
     }
     public async Task<(string Package,string ManifestHash)> Restore(PreparedRelease prepared,string root,CancellationToken token)
     {
@@ -131,12 +135,30 @@ public sealed class ReleaseUpdates
     internal static string VerifyExtractedArchive(string archive,string package,Version version)
     {
         using var zip=ZipFile.OpenRead(archive);
-        var manifests=zip.Entries.Where(e=>Path.GetFileName(e.FullName)=="manifest.json").ToArray();
-        if(manifests.Length!=1 || manifests[0].Length>4*1024*1024)throw new InvalidDataException("Некорректный manifest архива.");
-        using var original=manifests[0].Open();string expected=Convert.ToHexString(SHA256.HashData(original));
+        using var original=PackageManifest(zip).Open();string expected=Convert.ToHexString(SHA256.HashData(original));
         using(var extracted=File.OpenRead(Path.Combine(package,"manifest.json")))
             if(Convert.ToHexString(SHA256.HashData(extracted))!=expected)throw new InvalidDataException("Manifest изменён после распаковки.");
         VerifyPackage(package,version);return expected;
+    }
+    internal static string PackageDirectory(string archive,string extracted)
+    {
+        using var zip=ZipFile.OpenRead(archive);
+        string relative=PackageManifest(zip).FullName.Replace('\\','/');
+        string directory=Path.GetDirectoryName(Path.Combine(extracted,relative.Replace('/',Path.DirectorySeparatorChar)))!;
+        string prefix=Path.GetFullPath(extracted).TrimEnd(Path.DirectorySeparatorChar)+Path.DirectorySeparatorChar;
+        string package=Path.GetFullPath(directory);
+        if(!package.Equals(prefix.TrimEnd(Path.DirectorySeparatorChar),StringComparison.OrdinalIgnoreCase)&&!package.StartsWith(prefix,StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Путь пакета выходит за папку обновления.");
+        return package;
+    }
+    static ZipArchiveEntry PackageManifest(ZipArchive zip)
+    {
+        // A release is flat or wrapped in one directory. A browser extension or
+        // another payload may legitimately contain its own nested manifest.
+        var names=zip.Entries.Select(entry=>new{Entry=entry,Name=entry.FullName.Replace('\\','/')}).ToArray();
+        var roots=names.Where(x=>x.Name.Equals("manifest.json",StringComparison.OrdinalIgnoreCase)).ToArray();
+        if(roots.Length==0)roots=names.Where(x=>x.Name.Split('/') is var parts&&parts.Length==2&&parts[1].Equals("manifest.json",StringComparison.OrdinalIgnoreCase)&&parts[0] is not ("" or "." or "..")&&!parts[0].Contains(':')).ToArray();
+        if(roots.Length!=1||roots[0].Entry.Length>4*1024*1024)throw new InvalidDataException("В архиве должен быть один корневой manifest.json пакета.");
+        return roots[0].Entry;
     }
     public static void Extract(string archive,string directory)
     {

@@ -69,8 +69,8 @@ internal static class ReleaseUpdateTests
                 refused=false;try{ReleaseUpdates.Extract(zip,Path.Combine(folder,Guid.NewGuid().ToString()));}catch(InvalidDataException){refused=true;}Assert(refused,"Unsafe ZIP path rejected: "+unsafeName);
             }
             string payload=Path.Combine(folder,"payload");Directory.CreateDirectory(payload);
-            var entries=new[]{"RoutePilot.exe","SmartRouting.ps1","Install-Agent.ps1","Configure-Connection.ps1","product.json"}.Select(name=>{
-                string path=Path.Combine(payload,name);File.WriteAllText(path,"fixture");return new{path=name,bytes=new FileInfo(path).Length,sha256=Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))};
+            var entries=new[]{"RoutePilot.exe","SmartRouting.ps1","Install-Agent.ps1","Configure-Connection.ps1","product.json","browser-extension/manifest.json"}.Select(name=>{
+                string path=Path.Combine(payload,name);Directory.CreateDirectory(Path.GetDirectoryName(path)!);File.WriteAllText(path,"fixture");return new{path=name,bytes=new FileInfo(path).Length,sha256=Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))};
             }).ToArray();
             File.WriteAllText(Path.Combine(payload,"manifest.json"),JsonSerializer.Serialize(new{version="0.4.0",architecture="win-x64",selfContained=true,files=entries}));
             ReleaseUpdates.VerifyPackage(payload,new Version(0,4,0));
@@ -80,8 +80,41 @@ internal static class ReleaseUpdateTests
             var update=new ReleaseUpdate(new Version(0,4,0),"v0.4.0",new Uri("https://github.com/IthilRosg/CITA-Route/releases/tag/v0.4.0"),new Uri("https://github.com/archive.zip"),new Uri("https://github.com/SHA256SUMS.txt"),"CITA-Route-0.4.0-win-x64.zip",bytes.Length);
             string downloaded=Task.Run(()=>new ReleaseUpdates(http).Download(update,folder,null,CancellationToken.None)).GetAwaiter().GetResult();
             Assert(File.Exists(Path.Combine(downloaded,"product.json")),"Verified download extracted");
+            Assert(ReleaseUpdates.VerifyExtractedArchive(validZip,downloaded,new Version(0,4,0)).Length==64,"Restoring a flat package selects its root manifest, not the extension manifest.");
+            string wrappedZip=Path.Combine(folder,"wrapped.zip");ZipFile.CreateFromDirectory(payload,wrappedZip,CompressionLevel.Optimal,true);
+            byte[] wrappedBytes=File.ReadAllBytes(wrappedZip);
+            using(var wrappedHttp=new HttpClient(new FixtureHandler(wrappedBytes,Convert.ToHexString(SHA256.HashData(wrappedBytes)))))
+            {
+                var wrappedUpdate=update with {Bytes=wrappedBytes.Length};
+                string wrapped=Task.Run(()=>new ReleaseUpdates(wrappedHttp).Download(wrappedUpdate,folder,null,CancellationToken.None)).GetAwaiter().GetResult();
+                Assert(Path.GetFileName(wrapped)=="payload","A wrapped release selects the package root.");
+                Assert(ReleaseUpdates.VerifyExtractedArchive(wrappedZip,wrapped,new Version(0,4,0)).Length==64,"Restoring a wrapped release tolerates a nested extension manifest.");
+            }
+            string browserManifest=Path.Combine(downloaded,"browser-extension","manifest.json");File.WriteAllText(browserManifest,"changed");
+            refused=false;try{ReleaseUpdates.VerifyExtractedArchive(validZip,downloaded,new Version(0,4,0));}catch(InvalidDataException){refused=true;}
+            Assert(refused,"Ignoring a nested manifest as a root never bypasses its payload checksum.");File.WriteAllText(browserManifest,"fixture");
+            File.AppendAllText(Path.Combine(downloaded,"manifest.json")," ");
+            refused=false;try{ReleaseUpdates.VerifyExtractedArchive(validZip,downloaded,new Version(0,4,0));}catch(InvalidDataException){refused=true;}
+            Assert(refused,"The selected root manifest remains bound to the archive bytes.");
+            int acceptedFolders=Directory.GetDirectories(Path.Combine(folder,"runtime","updates")).Length;
             using var wrong=new HttpClient(new FixtureHandler(bytes,new string('0',64)));
             refused=false;try{Task.Run(()=>new ReleaseUpdates(wrong).Download(update,folder,null,CancellationToken.None)).GetAwaiter().GetResult();}catch(InvalidDataException){refused=true;}Assert(refused,"Bad SHA-256 cannot be installed");
+            string ambiguousZip=Path.Combine(folder,"ambiguous.zip");
+            using(var ambiguous=ZipFile.Open(ambiguousZip,ZipArchiveMode.Create))foreach(string name in new[]{"first/manifest.json","second/manifest.json"}){using var writer=new StreamWriter(ambiguous.CreateEntry(name).Open());writer.Write("{}");}
+            byte[] ambiguousBytes=File.ReadAllBytes(ambiguousZip);
+            using(var ambiguousHttp=new HttpClient(new FixtureHandler(ambiguousBytes,Convert.ToHexString(SHA256.HashData(ambiguousBytes)))))
+            {
+                refused=false;try{Task.Run(()=>new ReleaseUpdates(ambiguousHttp).Download(update with {Bytes=ambiguousBytes.Length},folder,null,CancellationToken.None)).GetAwaiter().GetResult();}catch(InvalidDataException){refused=true;}
+                Assert(refused,"Two possible package roots remain ambiguous.");
+            }
+            Assert(Directory.GetDirectories(Path.Combine(folder,"runtime","updates")).Length==acceptedFolders,"Rejected archives leave no extracted update directory.");
+            string? packagedArchive=Environment.GetEnvironmentVariable("CITA_RELEASE_ARCHIVE_TEST");
+            if(!string.IsNullOrEmpty(packagedArchive))
+            {
+                string extracted=Path.Combine(folder,"packaged-release");ReleaseUpdates.Extract(packagedArchive,extracted);
+                string packaged=ReleaseUpdates.PackageDirectory(packagedArchive,extracted);
+                Assert(ReleaseUpdates.VerifyExtractedArchive(packagedArchive,packaged,ReleaseUpdates.Current).Length==64,"The actual release ZIP passes the GUI updater's manifest and payload verification.");
+            }
             File.WriteAllText(Path.Combine(payload,"SmartRouting.ps1"),"changed");
             refused=false;try{ReleaseUpdates.VerifyPackage(payload,new Version(0,4,0));}catch(InvalidDataException){refused=true;}Assert(refused,"Changed payload rejected");
         }

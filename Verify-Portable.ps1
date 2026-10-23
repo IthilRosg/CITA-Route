@@ -1,4 +1,4 @@
-param([string]$PackageDirectory='',[switch]$AllowFrameworkDependent)
+param([string]$PackageDirectory='',[switch]$AllowFrameworkDependent,[string]$PackageArchive='')
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 . (Join-Path $root 'FileStorage.ps1')
@@ -55,7 +55,12 @@ try{
         Assert (-not $inventory.SelectedProfile) 'Clean package inherited the current user profile.'
         & (Join-Path $package 'runtime\agent-build\RoutePilot.Agent.exe') --self-test
         Assert ($LASTEXITCODE -eq 0) 'Self-contained agent failed.'
-        $app=Start-Process -FilePath (Join-Path $package 'RoutePilot.exe') -ArgumentList '--self-test' -PassThru -Wait
+        $previousArchiveTest=$env:CITA_RELEASE_ARCHIVE_TEST
+        try{
+            if($PackageArchive){$env:CITA_RELEASE_ARCHIVE_TEST=[IO.Path]::GetFullPath($PackageArchive)}
+            else{Remove-Item Env:CITA_RELEASE_ARCHIVE_TEST -ErrorAction SilentlyContinue}
+            $app=Start-Process -FilePath (Join-Path $package 'RoutePilot.exe') -ArgumentList '--self-test' -WindowStyle Hidden -PassThru -Wait
+        }finally{if($null -eq $previousArchiveTest){Remove-Item Env:CITA_RELEASE_ARCHIVE_TEST -ErrorAction SilentlyContinue}else{$env:CITA_RELEASE_ARCHIVE_TEST=$previousArchiveTest}}
         if($app.ExitCode -ne 0){
             $appLog=Join-Path $package 'logs\app-self-test.log'
             if(Test-Path -LiteralPath $appLog){Get-Content -LiteralPath $appLog -Tail 50 | Write-Output}
