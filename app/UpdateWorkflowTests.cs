@@ -20,6 +20,13 @@ public static class UpdateWorkflowTests
         string folder=Path.Combine(root,"runtime","update-workflow-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(Path.Combine(folder,"runtime"));
         try
         {
+            var obsolete=new UpdateState{Phase="Failed",NotifiedTag="v0.6.2",Error="old manifest failure",NetworkRetries=3,OperationId="old"};
+            Assert(UpdateJournal.ReconcileInstalled(obsolete,new Version(0,6,2)),"Manual Setup reconciles a failed download without Prepared.");
+            Assert(obsolete.Phase=="Installed"&&obsolete.Error==""&&obsolete.OperationId==""&&obsolete.NetworkRetries==0,"Obsolete failures and retry budgets are cleared together.");
+            var newer=new UpdateState{Phase="Failed",NotifiedTag="v9.0.0",Error="new failure"};
+            Assert(!UpdateJournal.ReconcileInstalled(newer,new Version(0,6,2))&&newer.Error=="new failure","A newer failed update must remain visible.");
+            var pending=new UpdateState{Phase="Verified",NotifiedTag="v0.6.2",Prepared=new("v9.0.0","p","a")};
+            Assert(!UpdateJournal.ReconcileInstalled(pending,new Version(0,6,2)),"A prepared newer target wins over an older notification.");
             var history=new ProfileMemory(Path.Combine(folder,"user","profile-history.json"));
             string cli="C:\\Program Files\\WireSock Secure Connect\\command-line\\wiresock-connect-cli.exe";
             DateTime now=DateTime.UtcNow;
@@ -84,10 +91,10 @@ public static class UpdateWorkflowTests
     sealed class Handler(byte[] archive,string hash):HttpMessageHandler
     {
         public static string Metadata(int bytes)=>JsonSerializer.Serialize(new{draft=false,prerelease=false,tag_name="v9.0.0",body="Изменения <script>plain text</script>",assets=new[]{
-            new{name="CITA-Route-9.0.0-win-x64.zip",size=bytes,browser_download_url="https://github.com/IthilRosg/CITA-Route/releases/download/v9.0.0/CITA-Route-9.0.0-win-x64.zip"},
+            new{name="CITA-Route-9.0.0-win-x64-framework.zip",size=bytes,browser_download_url="https://github.com/IthilRosg/CITA-Route/releases/download/v9.0.0/CITA-Route-9.0.0-win-x64-framework.zip"},
             new{name="SHA256SUMS.txt",size=100,browser_download_url="https://github.com/IthilRosg/CITA-Route/releases/download/v9.0.0/SHA256SUMS.txt"}}});
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken cancellationToken)=>Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK){RequestMessage=request,
-            Content=request.RequestUri!.AbsolutePath.EndsWith("SHA256SUMS.txt")?new ByteArrayContent(Encoding.UTF8.GetBytes(hash+"  CITA-Route-9.0.0-win-x64.zip\n")):
+            Content=request.RequestUri!.AbsolutePath.EndsWith("SHA256SUMS.txt")?new ByteArrayContent(Encoding.UTF8.GetBytes(hash+"  CITA-Route-9.0.0-win-x64-framework.zip\n")):
                 request.RequestUri.Host=="api.github.com"?new StringContent(Metadata(archive.Length)):new ByteArrayContent(archive)});
     }
 }

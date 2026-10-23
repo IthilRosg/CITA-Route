@@ -1,4 +1,4 @@
-﻿param([string]$UserSid,[string]$UserProfile,[ValidateSet('Unchanged','Enable')][string]$BootStartup='Unchanged',[int]$SetupOwner=0,[long]$SetupHandle=0)
+﻿param([string]$UserSid,[string]$UserProfile,[ValidateSet('Unchanged','Enable')][string]$BootStartup='Unchanged',[int]$SetupOwner=0,[long]$SetupHandle=0,[switch]$TransferStartup,[int]$TransferOwner=0,[string]$TransferHandles='')
 $ErrorActionPreference = 'Stop'
 if (-not $UserSid) { $UserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
 if (-not $UserProfile) { $UserProfile = $env:USERPROFILE }
@@ -8,6 +8,7 @@ if (-not $isAdmin) {
     $sidLiteral = $UserSid.Replace("'","''")
     $profileLiteral = $UserProfile.Replace("'","''")
     $command = "& '$scriptLiteral' -UserSid '$sidLiteral' -UserProfile '$profileLiteral' -BootStartup '$BootStartup'"
+    if($TransferStartup){$command+=' -TransferStartup'}
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     $child = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -PassThru -Wait -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded)
     exit $child.ExitCode
@@ -17,6 +18,7 @@ $logPath = Join-Path $PSScriptRoot 'logs\agent-install.log'
 . (Join-Path $PSScriptRoot 'FileStorage.ps1')
 . (Join-Path $PSScriptRoot 'ConnectionEnvironment.ps1')
 $setupReservation=$null
+$startupTransfer=$null
 try {
     # Resolve prerequisites before acquiring a lease, stopping the existing
     # service or replacing protected files. A user SDK cannot run SYSTEM.
@@ -42,7 +44,10 @@ try {
     if(Test-Path -LiteralPath $bootSettingsPath){
         $oldBoot=Read-JsonFile $bootSettingsPath
         if($oldBoot.Enabled){
-            if([IO.Path]::GetFullPath($oldBoot.SourceRoot).TrimEnd('\') -ne [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')){throw 'Enabled startup belongs to another client installation.'}
+            if([IO.Path]::GetFullPath($oldBoot.SourceRoot).TrimEnd('\') -ine [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')){
+                if(-not $TransferStartup){throw 'Enabled startup belongs to another client installation. Connect from the new client to transfer an inactive installation.'}
+                $startupTransfer=Reserve-AgentStartupTransfer $installRoot $dataRoot $PSScriptRoot $UserSid $TransferOwner $TransferHandles
+            }
             $refreshBoot=$true
         }
     }
@@ -87,6 +92,13 @@ try {
     Publish-AgentPackage $files $installRoot {
         $current=Get-Service -Name RoutePilotRescue -ErrorAction SilentlyContinue
         if($current){Stop-Service -Name RoutePilotRescue; $current.WaitForStatus('Stopped',[TimeSpan]::FromSeconds(60))}
+        if($startupTransfer){
+            # Both installations are reserved and the old coordinator stopped.
+            if(Get-Process -Name 'smart-router','vpn-bridge' -ErrorAction SilentlyContinue){throw 'Startup transfer requires an inactive route.'}
+            $transferState=Read-JsonFile $bootStatePath
+            $transferState.Phase='StoppedForBoot';$transferState.UpdatedUtc=[datetime]::UtcNow.ToString('o')
+            Write-JsonFile $bootStatePath $transferState
+        }
     } {
         if (-not (Get-Service -Name RoutePilotRescue -ErrorAction SilentlyContinue)) {
             New-Service -Name RoutePilotRescue -BinaryPathName ('"' + (Join-Path $installRoot 'RoutePilot.Agent.exe') + '" --service') -DisplayName 'RoutePilot Rescue' -StartupType Automatic | Out-Null
@@ -129,4 +141,4 @@ try {
 } catch {
     $_.Exception.ToString() | Set-Content -LiteralPath $logPath -Encoding UTF8
     exit 1
-}finally{if($setupReservation){$setupReservation.Dispose()}}
+}finally{if($startupTransfer){foreach($held in $startupTransfer.Locks){$held.Dispose()}};if($setupReservation){$setupReservation.Dispose()}}

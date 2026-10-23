@@ -47,20 +47,18 @@ public sealed class ReleaseUpdates
         string tag=release.GetProperty("tag_name").GetString()??"";
         if(!Regex.IsMatch(tag,@"^v\d+\.\d+\.\d+$") || !Version.TryParse(tag[1..],out var version))throw new InvalidDataException("Некорректная версия выпуска.");
         if(Compare(version,current)<=0)return null;
-        string name="CITA-Route-"+version.ToString(3)+"-win-x64.zip";
+        string full="CITA-Route-"+version.ToString(3)+"-win-x64.zip";
         var assets=release.GetProperty("assets").EnumerateArray().ToArray();
         string thin="CITA-Route-"+version.ToString(3)+"-win-x64-framework.zip";
-        bool ready=frameworkReady??DesktopRuntime.Available();
+        string name=thin;
         if(archivedFile!=null)
         {
-            if(archivedFile!=name && archivedFile!=thin)throw new InvalidDataException("Неизвестный вид сохранённого архива.");
-            if(archivedFile==thin && !ready)throw new InvalidDataException("Для сохранённого обновления требуется .NET Desktop 10.0.13 x64. Запусти установщик.");
+            if(archivedFile!=full && archivedFile!=thin)throw new InvalidDataException("Неизвестный вид сохранённого архива.");
             name=archivedFile;
         }
-        else if(ready && assets.Any(a=>a.GetProperty("name").GetString()==thin))name=thin;
         var archives=assets.Where(a=>a.GetProperty("name").GetString()==name).ToArray();
         var sums=assets.Where(a=>a.GetProperty("name").GetString()=="SHA256SUMS.txt").ToArray();
-        if(archives.Length!=1 || sums.Length!=1)throw new InvalidDataException("В выпуске нет полного ZIP и SHA256SUMS.txt.");
+        if(archives.Length!=1 || sums.Length!=1)throw new InvalidDataException("В выпуске нет облегчённого ZIP и SHA256SUMS.txt.");
         long length=archives[0].GetProperty("size").GetInt64();
         if(length<=0 || length>MaximumDownload)throw new InvalidDataException("Неподдерживаемый размер обновления.");
         Uri Asset(JsonElement asset,string file)
@@ -103,7 +101,7 @@ public sealed class ReleaseUpdates
             }
             await using(var input=File.OpenRead(archive))if(Convert.ToHexString(await SHA256.HashDataAsync(input,token))!=expected)throw new InvalidDataException("SHA-256 не совпал. Установка запрещена.");
             string extracted=Path.Combine(folder,"package");Extract(archive,extracted);
-            string package=PackageDirectory(archive,extracted);VerifyPackage(package,update.Version);
+            string package=PackageDirectory(archive,extracted);VerifyPackage(package,update.Version,requireRuntime:false);
             return package;
         }
         catch
@@ -129,16 +127,16 @@ public sealed class ReleaseUpdates
         string expected=ExpectedHash(System.Text.Encoding.UTF8.GetString(await ReadBounded(sums,65536,token)),update.FileName);
         await using(var input=File.OpenRead(archive))
             if(input.Length!=update.Bytes || Convert.ToHexString(await SHA256.HashDataAsync(input,token))!=expected)throw new InvalidDataException("Сохранённый архив повреждён.");
-        string manifestHash=VerifyExtractedArchive(archive,package,update.Version);
+        string manifestHash=VerifyExtractedArchive(archive,package,update.Version,requireRuntime:false);
         return(package,manifestHash);
     }
-    internal static string VerifyExtractedArchive(string archive,string package,Version version)
+    internal static string VerifyExtractedArchive(string archive,string package,Version version,bool requireRuntime=true)
     {
         using var zip=ZipFile.OpenRead(archive);
         using var original=PackageManifest(zip).Open();string expected=Convert.ToHexString(SHA256.HashData(original));
         using(var extracted=File.OpenRead(Path.Combine(package,"manifest.json")))
             if(Convert.ToHexString(SHA256.HashData(extracted))!=expected)throw new InvalidDataException("Manifest изменён после распаковки.");
-        VerifyPackage(package,version);return expected;
+        VerifyPackage(package,version,requireRuntime);return expected;
     }
     internal static string PackageDirectory(string archive,string extracted)
     {
@@ -175,13 +173,13 @@ public sealed class ReleaseUpdates
         }
         Directory.CreateDirectory(directory);zip.ExtractToDirectory(directory);
     }
-    public static void VerifyPackage(string package,Version expected)
+    public static void VerifyPackage(string package,Version expected,bool requireRuntime=true)
     {
         using var manifest=JsonDocument.Parse(File.ReadAllText(Path.Combine(package,"manifest.json")));
         var data=manifest.RootElement;
         if(!Version.TryParse(data.GetProperty("version").GetString(),out var actual) || Compare(actual,expected)!=0 || data.GetProperty("architecture").GetString()!="win-x64")throw new InvalidDataException("Архив относится к другой версии или платформе.");
         if(!data.GetProperty("selfContained").GetBoolean() && (!data.TryGetProperty("desktopRuntimeMajor",out var major) || !major.TryGetInt32(out int runtimeMajor) || runtimeMajor!=10 ||
-            !data.TryGetProperty("desktopRuntimeMinimum",out var minimum) || minimum.ValueKind!=JsonValueKind.String || !Version.TryParse(minimum.GetString(),out var required) || !DesktopRuntime.Available(required)))
+            !data.TryGetProperty("desktopRuntimeMinimum",out var minimum) || minimum.ValueKind!=JsonValueKind.String || !Version.TryParse(minimum.GetString(),out var required) || required<DesktopRuntime.Minimum || required.Major!=10 || required.Minor!=0 || required.Revision>=0 || (requireRuntime && !DesktopRuntime.Available(required))))
             throw new InvalidDataException("Для облегчённого обновления требуется системный .NET Desktop 10 x64 указанной версии. Запусти установщик.");
         string prefix=Path.GetFullPath(package)+Path.DirectorySeparatorChar;var names=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach(var file in data.GetProperty("files").EnumerateArray())

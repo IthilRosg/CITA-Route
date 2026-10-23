@@ -16,7 +16,7 @@ internal static class ReleaseUpdateTests
 {
     static void Assert(bool value,string message){if(!value)throw new Exception(message);}
     static string Release(string owner="IthilRosg",bool pre=false)=>JsonSerializer.Serialize(new{draft=false,prerelease=pre,tag_name="v0.4.0",assets=new[]{
-        new{name="CITA-Route-0.4.0-win-x64.zip",size=100,browser_download_url="https://github.com/"+owner+"/CITA-Route/releases/download/v0.4.0/CITA-Route-0.4.0-win-x64.zip"},
+        new{name="CITA-Route-0.4.0-win-x64-framework.zip",size=100,browser_download_url="https://github.com/"+owner+"/CITA-Route/releases/download/v0.4.0/CITA-Route-0.4.0-win-x64-framework.zip"},
         new{name="SHA256SUMS.txt",size=100,browser_download_url="https://github.com/IthilRosg/CITA-Route/releases/download/v0.4.0/SHA256SUMS.txt"}}});
     public static void Run(string root)
     {
@@ -27,10 +27,9 @@ internal static class ReleaseUpdateTests
             new{name="SHA256SUMS.txt",size=100L,browser_download_url="https://github.com/IthilRosg/CITA-Route/releases/download/v9.0.0/SHA256SUMS.txt"}}})))
         {
             Assert(ReleaseUpdates.Parse(both.RootElement,new Version(0,6,0),true)!.FileName.EndsWith("-framework.zip"),"A machine runtime allows the smaller archive.");
-            Assert(ReleaseUpdates.Parse(both.RootElement,new Version(0,6,0),false)!.FileName.EndsWith("-win-x64.zip"),"A runtime-free machine retains the self-contained archive.");
+            Assert(ReleaseUpdates.Parse(both.RootElement,new Version(0,6,0),false)!.FileName.EndsWith("-framework.zip"),"A missing runtime never selects the large self-contained archive.");
             Assert(ReleaseUpdates.Parse(both.RootElement,new Version(0,6,0),true,"CITA-Route-9.0.0-win-x64.zip")!.Bytes==200,"A staged transaction retains its original flavor even if the runtime becomes available.");
-            bool rejected=false;try{ReleaseUpdates.Parse(both.RootElement,new Version(0,6,0),false,"CITA-Route-9.0.0-win-x64-framework.zip");}catch(InvalidDataException){rejected=true;}
-            Assert(rejected,"Removing the runtime cannot silently change a staged framework transaction.");
+            Assert(ReleaseUpdates.Parse(both.RootElement,new Version(0,6,0),false,"CITA-Route-9.0.0-win-x64-framework.zip")!.Bytes==100,"Runtime preparation is separate from restoring a verified framework archive.");
         }
         string dotnetFixture=Path.Combine(root,"runtime","runtime-detection-"+Guid.NewGuid().ToString("N"));
         try
@@ -69,11 +68,17 @@ internal static class ReleaseUpdateTests
                 refused=false;try{ReleaseUpdates.Extract(zip,Path.Combine(folder,Guid.NewGuid().ToString()));}catch(InvalidDataException){refused=true;}Assert(refused,"Unsafe ZIP path rejected: "+unsafeName);
             }
             string payload=Path.Combine(folder,"payload");Directory.CreateDirectory(payload);
-            var entries=new[]{"RoutePilot.exe","SmartRouting.ps1","Install-Agent.ps1","Configure-Connection.ps1","product.json","browser-extension/manifest.json"}.Select(name=>{
+            var entries=new[]{"RoutePilot.exe","SmartRouting.ps1","Install-Agent.ps1","Configure-Connection.ps1","product.json","DesktopRuntime.ps1","browser-extension/manifest.json"}.Select(name=>{
                 string path=Path.Combine(payload,name);Directory.CreateDirectory(Path.GetDirectoryName(path)!);File.WriteAllText(path,"fixture");return new{path=name,bytes=new FileInfo(path).Length,sha256=Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))};
             }).ToArray();
             File.WriteAllText(Path.Combine(payload,"manifest.json"),JsonSerializer.Serialize(new{version="0.4.0",architecture="win-x64",selfContained=true,files=entries}));
             ReleaseUpdates.VerifyPackage(payload,new Version(0,4,0));
+            string originalManifest=File.ReadAllText(Path.Combine(payload,"manifest.json"));
+            File.WriteAllText(Path.Combine(payload,"manifest.json"),JsonSerializer.Serialize(new{version="0.4.0",architecture="win-x64",selfContained=false,desktopRuntimeMajor=10,desktopRuntimeMinimum="10.0.9999",files=entries}));
+            ReleaseUpdates.VerifyPackage(payload,new Version(0,4,0),requireRuntime:false);
+            bool missing=false;try{ReleaseUpdates.VerifyPackage(payload,new Version(0,4,0));}catch(InvalidDataException){missing=true;}
+            Assert(missing,"A thin package may stage without its runtime, but cannot install before the declared machine prerequisite is ready.");
+            File.WriteAllText(Path.Combine(payload,"manifest.json"),originalManifest);
             string validZip=Path.Combine(folder,"valid.zip");ZipFile.CreateFromDirectory(payload,validZip);
             byte[] bytes=File.ReadAllBytes(validZip);string digest=Convert.ToHexString(SHA256.HashData(bytes));
             using var http=new HttpClient(new FixtureHandler(bytes,digest));

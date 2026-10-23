@@ -20,9 +20,8 @@ public partial class MainWindow
     {
         _updates=UpdateJournal.Read(_root);AutoInstallUpdatesBox.IsChecked=_preferences.AutoInstallUpdates;
         if(_render)return;
-        if(_updates.Prepared is { } prepared && Version.TryParse(prepared.Tag.TrimStart('v'),out var version) && ReleaseUpdates.Compare(version,ReleaseUpdates.Current)<=0)
-        {_updates.Phase="Installed";_updates.Prepared=null;SaveUpdates();}
-        else if(_updates.Phase is "Installing" or "Verifying" or "Downloading" or "Disconnecting")
+        if(UpdateJournal.ReconcileInstalled(_updates,ReleaseUpdates.Current))SaveUpdates();
+        else if(_updates.Phase is "Installing" or "Verifying" or "Downloading" or "Disconnecting" or "PreparingRuntime")
         {
             _updates.Phase="Failed";_updates.Error="Предыдущая установка не завершена. Повтори установку вручную.";
             SaveUpdates();
@@ -126,9 +125,20 @@ public partial class MainWindow
             var prepared=_updates.Prepared;
             preparation=UpdateJournal.ReservePreparation(_root);
             _updates.Phase="Verifying";_updates.Error="";SaveUpdates();UpdateStatusLabel.Text="Повторно проверяю выпуск и сохранённый пакет…";
-            using var timeout=CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token);timeout.CancelAfter(TimeSpan.FromMinutes(2));
+            using var restoreTimeout=CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token);restoreTimeout.CancelAfter(TimeSpan.FromMinutes(2));
             using var http=ReleaseUpdates.CreateClient(owned);
-            var verified=await Task.Run(()=>new ReleaseUpdates(http).Restore(prepared,_root,timeout.Token),timeout.Token);
+            var verified=await Task.Run(()=>new ReleaseUpdates(http).Restore(prepared,_root,restoreTimeout.Token),restoreTimeout.Token);
+            _updates.Phase="PreparingRuntime";SaveUpdates();
+            using(var runtimeTimeout=CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token))
+            {
+                runtimeTimeout.CancelAfter(TimeSpan.FromMinutes(15));
+                await RuntimePrerequisite.Ensure(verified.Package,http,new Progress<string>(message=>UpdateStatusLabel.Text=message),runtimeTimeout.Token);
+            }
+            using(var manifest=File.OpenRead(Path.Combine(verified.Package,"manifest.json")))
+                if(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(manifest))!=verified.ManifestHash)throw new IOException("Пакет изменился во время подготовки .NET. Загрузи обновление повторно.");
+            ReleaseUpdates.VerifyPackage(verified.Package,Version.Parse(prepared.Tag[1..]));
+            // Runtime preparation may take minutes; use a fresh handoff deadline.
+            using var timeout=CancellationTokenSource.CreateLinkedTokenSource(_updateLifetime.Token);timeout.CancelAfter(TimeSpan.FromMinutes(2));
             // Finish every network-dependent verification before stopping this VPN.
             if(owned)
             {

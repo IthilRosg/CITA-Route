@@ -199,12 +199,19 @@ begin
 end;
 #endif
 
+function CanUpdateDestination(Directory: String): Boolean;
+begin
+  Result := (PreviousDirectory = '') or
+    (CompareText(RemoveBackslashUnlessRoot(Directory), RemoveBackslashUnlessRoot(PreviousDirectory)) = 0) or
+    (FileExists(AddBackslash(Directory) + 'client\manifest.json') and FileExists(AddBackslash(Directory) + 'client\runtime\installation-transaction.json'));
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
   if CurPageID <> wpSelectDir then exit;
-  if (PreviousDirectory <> '') and (CompareText(RemoveBackslashUnlessRoot(WizardDirValue), RemoveBackslashUnlessRoot(PreviousDirectory)) <> 0) then begin
-    MsgBox('Обновление устанавливается в прежнюю папку, чтобы сохранить подключение и настройки. Для переноса сначала удали приложение; личные данные сохраняются.', mbInformation, MB_OK);
+  if not CanUpdateDestination(WizardDirValue) then begin
+    SuppressibleMsgBox('Обновление устанавливается в прежнюю папку, чтобы сохранить подключение и настройки. Для переноса сначала удали приложение; личные данные сохраняются.', mbInformation, MB_OK, IDOK);
     Result := False;
   end;
 end;
@@ -265,10 +272,13 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  if (PreviousDirectory <> '') and (CompareText(RemoveBackslashUnlessRoot(ExpandConstant('{app}')), RemoveBackslashUnlessRoot(PreviousDirectory)) <> 0) then begin
+  if not CanUpdateDestination(ExpandConstant('{app}')) then begin
     Result := 'Обновление должно использовать прежнюю папку установки. Для переноса сначала удали приложение.';
     exit;
   end;
+  { A previously committed installation at the explicitly selected destination
+    may have a stale registration pointing elsewhere. The guard still validates
+    its root/SID and complete transaction before it can accept replacement. }
 #ifdef NeedsDesktopRuntime
   Result := PrepareRuntime(NeedsRestart);
   if Result <> '' then exit;

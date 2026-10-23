@@ -45,6 +45,7 @@ if($Action -in @('ReleaseConflicts','CompleteHandoff','RestoreHandoff')){
 }
 New-Item -ItemType Directory -Path (Join-Path $root 'data'),(Join-Path $root 'runtime'),(Join-Path $root 'logs') -Force | Out-Null
 $setupLock=$null
+$startupTransfer=$null
 try{
     $setupLock=[IO.File]::Open((Join-Path $root 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','None')
     Write-ConnectionProgress 'Preparing'
@@ -71,6 +72,17 @@ try{
         if(-not [Net.IPAddress]::TryParse($ExpectedEgressIp,[ref]$egress) -or $egress.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork){throw 'Expected egress must be an IPv4 address, or leave it empty for profile verification.'}
         $ExpectedEgressIp=$egress.ToString()
     }
+    # Reserve the former client's gates before Prepare touches the shared
+    # managed WireSock profile, then lend those exact handles to the installer.
+    . (Join-Path $root 'AgentPackage.ps1')
+    $protectedRoot=Join-Path $env:ProgramFiles 'RoutePilot\Agent'
+    $startupSettings=Join-Path $protectedRoot 'startup-settings.json'
+    if(Test-Path -LiteralPath $startupSettings){
+        $prior=Read-JsonFile $startupSettings
+        if($prior.Enabled -and [IO.Path]::GetFullPath($prior.SourceRoot).TrimEnd('\') -ine [IO.Path]::GetFullPath($root).TrimEnd('\')){
+            $startupTransfer=Reserve-AgentStartupTransfer $protectedRoot (Join-Path $env:ProgramData 'RoutePilot') $root $UserSid
+        }
+    }
     $settingsPath=Join-Path $root 'data\connection.json'
     $old=if(Test-Path -LiteralPath $settingsPath){[IO.File]::ReadAllText($settingsPath)}else{$null}
     try{
@@ -80,11 +92,17 @@ try{
         if($LASTEXITCODE -ne 0){throw 'Connection preparation failed. Check WireSock transparent mode and the selected profile.'}
         Write-ConnectionProgress 'Installing'
         # Run separately: a failed installer must not exit this transaction before rollback.
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Install-Agent.ps1') -UserSid $UserSid -UserProfile $UserProfile -SetupOwner $PID -SetupHandle $setupLock.SafeFileHandle.DangerousGetHandle().ToInt64()
-        if($LASTEXITCODE -ne 0){throw 'Protected service installation failed. See logs/agent-install.log.'}
+        $transferArguments=@()
+        if($startupTransfer -and $startupTransfer.Locks.Count -gt 0){$transferArguments=@('-TransferOwner',[string]$PID,'-TransferHandles',(($startupTransfer.Locks|ForEach-Object {$_.SafeFileHandle.DangerousGetHandle().ToInt64()}) -join ','))}
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Install-Agent.ps1') -UserSid $UserSid -UserProfile $UserProfile -SetupOwner $PID -SetupHandle $setupLock.SafeFileHandle.DangerousGetHandle().ToInt64() -TransferStartup @transferArguments
+        if($LASTEXITCODE -ne 0){
+            $detail='';$installLog=Join-Path $root 'logs\agent-install.log'
+            if(Test-Path -LiteralPath $installLog){$detail=[IO.File]::ReadAllText($installLog);if($detail.Length -gt 2000){$detail=$detail.Substring(0,2000)}}
+            throw ('Protected service installation failed. '+$detail)
+        }
     }catch{
         if($null -ne $old){[IO.File]::WriteAllText($settingsPath,$old,(New-Object Text.UTF8Encoding($false)))}else{Remove-Item -LiteralPath $settingsPath -Force -ErrorAction SilentlyContinue}
         throw
     }
     Write-Output 'Connection saved. The source WireSock profile was not modified. Connect when ready.'
-}finally{if($setupLock){$setupLock.Dispose()}}
+}finally{if($startupTransfer){foreach($held in $startupTransfer.Locks){$held.Dispose()}};if($setupLock){$setupLock.Dispose()}}

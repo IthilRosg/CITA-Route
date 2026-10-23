@@ -28,6 +28,7 @@ foreach($file in $manifest.files){
 }
 $files=@('RoutePilot.exe','SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','Verify-Routing.ps1','Install-Release.ps1','DesktopRuntime.ps1','product.json','README.md','THIRD-PARTY.md','LICENSE','runtime\smart-router.exe','runtime\vpn-bridge.exe','runtime\agent-build\RoutePilot.Agent.exe','runtime\rules\russia_inside.srs','runtime\rules\discord.srs','rules\telegram-cidr.txt')
 foreach($name in $files){if(-not $names.ContainsKey((Join-Path $packagePath $name))){throw ('Required update file missing: '+$name)}}
+if($names.ContainsKey((Join-Path $packagePath 'desktop-runtime.json'))){$files+='desktop-runtime.json'}
 # An optional adapter must be delivered as one complete, verified set. Never
 # leave new native registration paired with an old background/content script.
 $browserFiles=@('Register-BrowserFeedback.ps1','browser-extension\manifest.json','browser-extension\background.js','browser-extension\images.js','browser-extension\popup.html','browser-extension\popup.js','browser-extension\README.md')

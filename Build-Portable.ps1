@@ -25,6 +25,7 @@ Copy-Item -LiteralPath (Join-Path $root 'Directory.Build.props') -Destination (J
 # Explicit allowlist: never recurse into this computer's private/runtime/data/log folders.
 $scripts=@('SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','Verify-Routing.ps1','Install-Release.ps1','DesktopRuntime.ps1','Register-BrowserFeedback.ps1')
 foreach($name in $scripts){Copy-Item -LiteralPath (Join-Path $root $name) -Destination $stage}
+Copy-Item -LiteralPath (Join-Path $root 'installer\desktop-runtime.json') -Destination (Join-Path $stage 'desktop-runtime.json')
 [void][IO.Directory]::CreateDirectory((Join-Path $stage 'browser-extension'))
 foreach($name in @('manifest.json','background.js','images.js','popup.html','popup.js')){Copy-Item -LiteralPath (Join-Path $root ('browser-extension\'+$name)) -Destination (Join-Path $stage ('browser-extension\'+$name))}
 Copy-Item -LiteralPath (Join-Path $root 'docs\BROWSER-FEEDBACK.md') -Destination (Join-Path $stage 'browser-extension\README.md')

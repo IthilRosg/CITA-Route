@@ -21,6 +21,17 @@ public sealed class UpdateState
 }
 public static class UpdateJournal
 {
+    public static bool ReconcileInstalled(UpdateState state,Version current)
+    {
+        // A manual Setup can finish an update whose failed download had no
+        // Prepared entry. Do not keep displaying that obsolete error forever.
+        string tag=state.Prepared?.Tag??state.NotifiedTag;
+        if(!System.Text.RegularExpressions.Regex.IsMatch(tag,@"^v\d+\.\d+\.\d+$")||!Version.TryParse(tag[1..],out var target)||ReleaseUpdates.Compare(target,current)>0)return false;
+        if(state.Phase=="Idle"||state.Phase=="Installed")return false;
+        state.Phase="Installed";state.Prepared=null;state.Error="";state.OperationId="";
+        state.NetworkRetries=0;state.NextRetryUtc=DateTime.MinValue;state.DeferredUntilUtc=DateTime.MinValue;
+        return true;
+    }
     public static FileStream ReservePreparation(string root)
     {
         // Both sides take the operation lock before testing/reserving this gate.

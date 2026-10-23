@@ -25,6 +25,35 @@ try {
     $rejected=$false;try{Assert-AgentRuntimeReady $legacy}catch{$rejected=$_.Exception.Message -like 'Machine-wide .NET Desktop Runtime*'}
     if(-not $rejected){throw 'A framework agent without the machine prerequisite was accepted'}
     $lockPath=Join-Path $fixture 'setup.lock'
+    # A moved client may adopt only its own inactive protected startup binding.
+    $transferRoot=Join-Path $fixture 'old-client';$transferAgent=Join-Path $fixture 'old-agent';$transferData=Join-Path $fixture 'old-data'
+    foreach($directory in @((Join-Path $transferRoot 'runtime'),$transferAgent,$transferData)){[void][IO.Directory]::CreateDirectory($directory)}
+    Write-JsonFile (Join-Path $transferAgent 'agent-config.json') @{AppRoot=$transferRoot;UserSid='owner'}
+    Write-JsonFile (Join-Path $transferAgent 'startup-settings.json') @{Schema=1;Enabled=$true;SourceRoot=$transferRoot}
+    Write-JsonFile (Join-Path $transferRoot 'runtime\session.json') @{running=$false}
+    $transferState=Join-Path $transferData 'startup-state.json'
+    foreach($phase in @('ReadyForBoot','StoppedForBoot','NeedsAttention')){
+        Write-JsonFile $transferState @{Schema=1;SourceRoot=$transferRoot;Phase=$phase}
+        $transfer=Reserve-AgentStartupTransfer $transferAgent $transferData (Join-Path $fixture 'new-client') 'owner'
+        try{
+            $handles=($transfer.Locks|ForEach-Object {$_.SafeFileHandle.DangerousGetHandle().ToInt64()}) -join ','
+            $childTransfer=Reserve-AgentStartupTransfer $transferAgent $transferData (Join-Path $fixture 'new-client') 'owner' $PID $handles
+            foreach($held in $childTransfer.Locks){$held.Dispose()}
+            $blocked=$false;try{$extra=[IO.File]::Open((Join-Path $transferRoot 'runtime\setup.lock'),'OpenOrCreate','ReadWrite','None');$extra.Dispose()}catch [IO.IOException]{$blocked=$true}
+            if(-not $blocked){throw 'Transfer did not reserve the previous installation'}
+        }finally{foreach($held in $transfer.Locks){$held.Dispose()}}
+    }
+    foreach($phase in @('Connected','Starting','WaitingForNetwork','Stopping','StopFailed','Unknown')){
+        Write-JsonFile $transferState @{Schema=1;SourceRoot=$transferRoot;Phase=$phase}
+        $rejected=$false;try{$transfer=Reserve-AgentStartupTransfer $transferAgent $transferData (Join-Path $fixture 'new-client') 'owner';foreach($held in $transfer.Locks){$held.Dispose()}}catch{$rejected=$true}
+        if(-not $rejected){throw 'Transfer accepted an active or unrecognized startup state'}
+    }
+    Write-JsonFile $transferState @{Schema=1;SourceRoot=$transferRoot;Phase='NeedsAttention'}
+    $rejected=$false;try{$transfer=Reserve-AgentStartupTransfer $transferAgent $transferData (Join-Path $fixture 'new-client') 'other-user';foreach($held in $transfer.Locks){$held.Dispose()}}catch{$rejected=$true}
+    if(-not $rejected){throw 'Transfer accepted another account'}
+    Write-JsonFile (Join-Path $transferRoot 'runtime\session.json') @{running=$true}
+    $rejected=$false;try{$transfer=Reserve-AgentStartupTransfer $transferAgent $transferData (Join-Path $fixture 'new-client') 'owner';foreach($held in $transfer.Locks){$held.Dispose()}}catch{$rejected=$true}
+    if(-not $rejected){throw 'Transfer accepted a running ordinary session'}
     $original=[IO.File]::Open($lockPath,'OpenOrCreate','ReadWrite','None');$retained=$null
     try{
         $retained=Receive-SetupReservation $lockPath $PID $original.SafeFileHandle.DangerousGetHandle().ToInt64()

@@ -150,6 +150,9 @@ public sealed class Backend : IDisposable
     }
     public static string FriendlyError(string message)
     {
+        if(message.Contains("Startup transfer ownership"))return "Автоподключение принадлежит другой учётной записи или его данные изменились. Перенос остановлен; прежние настройки сохранены.";
+        if(message.Contains("Startup transfer requires"))return "Прежняя копия CITA Route ещё управляет подключением. Отключи её маршрут перед переносом в новую папку.";
+        if(message.Contains("Enabled startup belongs"))return "Автоподключение привязано к прежней папке CITA Route. Нажми «Подключить» в обновлённом клиенте для переноса.";
         if(message.Contains("Update preparation is in progress"))return "CITA Route готовит обновление. Подключение будет доступно после установки.";
         if(message.Contains("virtual routing adapter is still in use"))return "Виртуальный адаптер занят или ещё отключается. Подожди и повтори подключение.";
         if(message.Contains("Helper exited before its network interface") || message.Contains("helper did not finish network"))return "Сетевой компонент не смог завершить запуск. Подробности — в журнале.";

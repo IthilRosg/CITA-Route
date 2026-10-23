@@ -1,3 +1,13 @@
+CITA Route 0.6.3 — moved-installation connection repair and smaller updates.
+
+- Explicit Connect can transfer an inactive pre-login startup binding from a previous client folder owned by the same Windows account. Both installations are reserved, active/unknown routes and other accounts are refused, and the previous protected package and startup state are restored if activation fails. No previous client scripts or VPN configurations are imported or executed.
+- Updates always select the framework ZIP. If the required machine-wide .NET Desktop Runtime is missing, download it separately from the pinned Microsoft URL, verify SHA-512 and the Microsoft Authenticode signature, and install with Windows confirmation before stopping the current route. Cancellation or failure leaves the route available.
+- Clear an obsolete failed-update message after manual Setup has already installed that version. Failures targeting a newer release remain visible.
+- Allow Setup to update an explicitly selected, previously committed installation when its Windows registration points to an older folder; retain the destination ownership and transaction checks.
+- Preserve root-manifest validation with the optional browser extension. Surface protected setup failure details instead of only a generic failure notice.
+
+For clients whose old updater still reports one manifest.json, use setup.exe once. The installer also downloads .NET only when necessary. MSI remains excluded.
+
 CITA Route 0.6.2 — update manifest recognition hotfix.
 
 - Recognize the package's root manifest in flat and single-folder ZIP archives. The optional browser extension's nested manifest no longer blocks download or restoration of a prepared update.

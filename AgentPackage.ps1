@@ -56,6 +56,48 @@ public static class RoutePilotSetupNative {
     return [RoutePilotSetupNative]::Receive([IO.Path]::GetFullPath($Path),$Owner,$Handle)
 }
 
+function Reserve-AgentStartupTransfer([string]$InstallRoot,[string]$DataRoot,[string]$NewRoot,[string]$UserSid,[int]$Owner=0,[string]$Handles='') {
+    $config=Read-JsonFile (Join-Path $InstallRoot 'agent-config.json')
+    $settings=Read-JsonFile (Join-Path $InstallRoot 'startup-settings.json')
+    $oldRoot=[IO.Path]::GetFullPath($config.AppRoot).TrimEnd('\')
+    $newRoot=[IO.Path]::GetFullPath($NewRoot).TrimEnd('\')
+    if($config.UserSid -ne $UserSid -or $settings.Schema -ne 1 -or -not $settings.Enabled -or
+       [IO.Path]::GetFullPath($settings.SourceRoot).TrimEnd('\') -ine $oldRoot -or $oldRoot -ieq $newRoot -or
+       $oldRoot.StartsWith($newRoot+'\',[StringComparison]::OrdinalIgnoreCase) -or $newRoot.StartsWith($oldRoot+'\',[StringComparison]::OrdinalIgnoreCase)){
+        throw 'Startup transfer ownership could not be verified.'
+    }
+    $locks=New-Object 'System.Collections.Generic.List[System.IO.FileStream]'
+    try {
+        $borrowed=@();$index=0
+        if($Owner -gt 0){
+            if($Handles -notmatch '^\d+(,\d+){4}$'){throw 'Invalid startup transfer reservation.'}
+            $borrowed=@($Handles.Split(',')|ForEach-Object {[long]$_})
+        }elseif($Handles){throw 'Invalid startup transfer reservation.'}
+        # No code from the previous user-writable client is executed.
+        foreach($path in @($oldRoot,(Join-Path $oldRoot 'runtime'))){
+            for($part=$path;$part;$part=[IO.Path]::GetDirectoryName($part)){
+                if((Test-Path -LiteralPath $part) -and ((Get-Item -LiteralPath $part -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Startup transfer paths contain a link.'}
+            }
+        }
+        if(Test-Path -LiteralPath (Join-Path $oldRoot 'runtime')){
+            foreach($name in @('setup.lock','connection-operation.lock','network-control.lock','installation-maintenance.lock','update-preparation.lock')){
+                $path=Join-Path $oldRoot ('runtime\'+$name)
+                if((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Startup transfer paths contain a link.'}
+                if($Owner -gt 0){$locks.Add((Receive-SetupReservation $path $Owner $borrowed[$index++]))}
+                else{$locks.Add([IO.File]::Open($path,'OpenOrCreate','ReadWrite','None'))}
+            }
+        }
+        if($Owner -gt 0 -and $index -ne 5){throw 'Startup transfer reservation paths changed.'}
+        $state=Read-JsonFile (Join-Path $DataRoot 'startup-state.json')
+        if($state.Schema -ne 1 -or [IO.Path]::GetFullPath($state.SourceRoot).TrimEnd('\') -ine $oldRoot -or
+           $state.Phase -notin @('Disabled','ReadyForBoot','StoppedForBoot','NeedsAttention')){throw 'Startup transfer requires an inactive route.'}
+        foreach($path in @((Join-Path $oldRoot 'runtime\session.json'),(Join-Path $InstallRoot 'startup-client\runtime\session.json'))){
+            if((Test-Path -LiteralPath $path) -and (Read-JsonFile $path).running){throw 'Startup transfer requires an inactive route.'}
+        }
+        return [pscustomobject]@{SourceRoot=$oldRoot;Locks=$locks}
+    }catch{foreach($held in $locks){$held.Dispose()};throw}
+}
+
 function Publish-AgentPackage {
     param([object[]]$Files,[string]$InstallRoot,[scriptblock]$Stop,[scriptblock]$Start,[scriptblock]$Prepare={},[scriptblock]$Restore={})
     $InstallRoot=[IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')

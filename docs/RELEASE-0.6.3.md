@@ -1,0 +1,13 @@
+# CITA Route 0.6.3
+
+The October 23 diagnostics came from client 0.6.2 while its protected agent was still 0.6.0. Local operation logs identify the concrete failure: the client was installed in a new folder, but an enabled startup snapshot still belonged to the earlier installation. Applying the connection refused that binding before creating a route.
+
+Explicit Connect now permits a protected startup transfer only for the same recorded Windows SID, an inactive source, consistent protected ownership, regular paths and exclusive control reservations on both folders. Active and unrecognized startup phases, running session journals, other accounts, links and overlapping roots are refused. No previous client code is executed or private VPN configuration imported. Snapshot publication remains inside the protected package transaction; failed activation restores the old package and startup state before restarting its service.
+
+Update selection always chooses the framework ZIP, even when no supported machine runtime is installed. Runtime preparation is a separate step after release verification and before disconnecting the route. The Microsoft URL is restricted to the exact versioned x64 Desktop Runtime path; downloads are bounded, SHA-512 checked and checked for a valid Microsoft Authenticode publisher. A read lease prevents replacement of the checked installer during execution. Windows confirms elevation; cancellation does not stop the current route. Payload hashes and the original manifest identity are rechecked after prerequisite installation. A handoff receives a new deadline rather than inheriting the prerequisite download's elapsed time.
+
+Manual Setup reconciles an obsolete failed-update journal even if the old failed download had no prepared package. A pending newer target retains its failure. Root-manifest recognition from 0.6.2 and all payload validation remain in force.
+
+Setup can update an explicitly selected, already committed destination even if its older Windows registration names another folder. It still validates that destination's transaction and Windows SID. Creating an unrelated new destination under that conflicting registration remains blocked; this exception does not copy or remove the other installation's data.
+
+Verification records are kept locally in `runtime/vm-lab/w11/`. Synthetic relocation tests exercise the real Windows service and protected file transaction, without creating a VPN route. They are separate from live tunnel availability and long-duration tests. MSI is excluded. A previous updater containing the manifest-counting bug still requires one Setup installation.
