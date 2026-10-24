@@ -84,6 +84,7 @@ func proxyRetentionClient(input io.Reader, output io.Writer) int {
 		Port              int
 		FaultMilliseconds int
 		Token             string
+		HoldForFinal      bool
 	}
 	if decoder.Decode(&spec) != nil || spec.Port < 1 || spec.Port > 65535 || (spec.FaultMilliseconds != 3000 && spec.FaultMilliseconds != 10000) {
 		return 1
@@ -151,6 +152,23 @@ func proxyRetentionClient(input io.Reader, output io.Writer) int {
 	r.ReusedTCP = reused.Load()
 	r.DialsAfter = calls.Load()
 	r.Success = r.SameExit && r.ReusedTCP && r.DialsBefore == 1 && r.DialsAfter == 1
+	if spec.HoldForFinal {
+		if json.NewEncoder(output).Encode(struct {
+			Stage string `json:"stage"`
+		}{"RetentionAfterLoss"}) != nil {
+			return 1
+		}
+		var final struct{ Continue bool }
+		if decoder.Decode(&final) != nil || !final.Continue {
+			return 1
+		}
+		reused.Store(false)
+		finalHash := get(httptrace.WithClientTrace(ctx, trace))
+		r.SameExit = r.SameExit && finalHash != "" && finalHash == r.EgressHash
+		r.ReusedTCP = r.ReusedTCP && reused.Load()
+		r.DialsAfter = calls.Load()
+		r.Success = r.Success && r.SameExit && r.ReusedTCP && r.DialsAfter == 1
+	}
 	if r.Success {
 		r.Stage = "RetainedTcpThroughCore"
 		if spec.Token != "" {

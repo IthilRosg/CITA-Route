@@ -270,13 +270,18 @@ reset as the leading explanation; no per-connection reset trace was collected.
 Do not disable all resets: physical direct traffic, DNS, TUN and other protocols
 also depend on that lifecycle.
 
-Next implementation gate: selectively retain only explicitly owned native-AWG
+The interface-reset gate described below now has an isolated implementation
+and W11 acceptance harness; see [INTERFACE-RETENTION.md](INTERFACE-RETENTION.md).
+The earlier failed full-chain receipts remain preserved as baseline evidence.
+
+Interface-reset gate: selectively retain only explicitly owned native-AWG
 TCP chains across interface reset. It must verify outbound/session/generation,
 keep the endpoint-only encrypted boundary, retain the default reset for other
 connections, and close everything on Stop/profile change/crash. Required tests:
 mixed direct/native streams, link down/up, stale generations, failed tunnel,
-sleep/resume and no direct fallback. Do not claim NIC-change retention or enable
-this prototype in production before the full-chain link gate passes.
+sleep/resume and no direct fallback. The bounded same-adapter W11 gate is now
+accepted as described in the linked checkpoint. This does not establish
+arbitrary NIC/address migration or make the prototype ready for production.
 
 Following gates: address/NAT changes; authenticated UDP association
 and resource/stream limits; production owner leases, profile/generation handoff
