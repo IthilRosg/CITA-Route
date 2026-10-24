@@ -15,6 +15,7 @@ internal sealed class NativeAwgBackend : IAsyncDisposable
     ulong generation;
     bool stopped;
     internal NativeAwgBackend(string image)=>this.image=Path.GetFullPath(image);
+    internal int ProcessId{get{try{return process?.Id??0;}catch(InvalidOperationException){return 0;}}}
     static bool Hex(string? text,int length)=>text?.Length==length && text.All(Uri.IsHexDigit);
     internal static (string Session,ulong Generation) ValidateStart(JsonElement spec)
     {
@@ -27,7 +28,7 @@ internal sealed class NativeAwgBackend : IAsyncDisposable
     {
         if(command.GetProperty("Session").GetString()!=session||command.GetProperty("Generation").GetUInt64()!=generation||command.GetProperty("Action").GetString() is not ("Snapshot" or "CrashChild" or "BlackholeChild" or "Stop"))throw new InvalidDataException("Native backend ownership mismatch.");
     }
-    static async Task<JsonElement> ReadReply(StreamReader reader,CancellationToken stop)
+    internal static async Task<JsonElement> ReadReply(StreamReader reader,CancellationToken stop)
     {
         var text=new StringBuilder();var one=new char[1];
         while(text.Length<8192)
@@ -38,6 +39,21 @@ internal sealed class NativeAwgBackend : IAsyncDisposable
             text.Append(one[0]);
         }
         throw new InvalidDataException("Oversized native backend reply.");
+    }
+    internal static async Task PreflightAsync(string image,JsonElement spec,CancellationToken stop)
+    {
+        var identity=ValidateStart(spec);
+        var info=new ProcessStartInfo(Path.GetFullPath(image)){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};info.ArgumentList.Add("--validate-profile-lab");
+        using var p=Process.Start(info)??throw new IOException("Profile validation did not start.");
+        _=p.StandardError.BaseStream.CopyToAsync(Stream.Null);
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(stop);deadline.CancelAfter(TimeSpan.FromSeconds(3));
+        try
+        {
+            await p.StandardInput.WriteLineAsync(spec.GetRawText().AsMemory(),deadline.Token);p.StandardInput.Close();
+            var result=await ReadReply(p.StandardOutput,deadline.Token);await p.WaitForExitAsync(deadline.Token);
+            if(p.ExitCode!=0||result.GetProperty("stage").GetString()!="ConfigurationValidated"||result.GetProperty("session").GetString()!=identity.Session||result.GetProperty("generation").GetUInt64()!=identity.Generation)throw new InvalidDataException("Profile validation failed.");
+        }
+        finally{if(!p.HasExited){p.Kill();await p.WaitForExitAsync();}}
     }
     internal async Task<JsonElement> StartAsync(JsonElement spec,CancellationToken stop)
     {

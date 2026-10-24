@@ -1,6 +1,9 @@
 using System.Text.Json;
 using RoutePilot.Agent;
 
+if(args.Length==2 && args[0]=="--profiles-lab")return await ProfilesLab.Run(Path.GetFullPath(args[1]));
+if(args.Length==2 && args[0]=="--profiles-races-lab")return await ProfilesLab.Run(Path.GetFullPath(args[1]),true);
+
 if(args.Length==1 && args[0]=="--self-test")
 {
     using var spec=JsonDocument.Parse(JsonSerializer.Serialize(new{Session=new string('a',32),Generation=7UL,Token=new string('b',64),Config="fixture"}));

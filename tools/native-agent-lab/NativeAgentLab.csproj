@@ -4,5 +4,5 @@
     <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
     <AssemblyName>Cita.NativeAgentLab</AssemblyName><NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
-  <ItemGroup><Compile Include="../../agent/NativeAwgBackend.cs" Link="NativeAwgBackend.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../agent/NativeAwgBackend.cs" Link="NativeAwgBackend.cs" /><Compile Include="../../agent/NativeAwgProfiles.cs" Link="NativeAwgProfiles.cs" /></ItemGroup>
 </Project>

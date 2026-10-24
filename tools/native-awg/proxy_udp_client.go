@@ -23,6 +23,7 @@ type udpClientResult struct {
 	NoReplyAfterClose    bool   `json:"noReplyAfterClose"`
 	HeldOwnerStop        bool   `json:"heldOwnerStop"`
 	ResumedAssociation   bool   `json:"resumedAssociation"`
+	DNSFailure           string `json:"dnsFailure,omitempty"`
 }
 
 func openUDPAssociation(ctx context.Context, port int, token string) (net.Conn, *net.UDPConn, error) {
@@ -96,22 +97,37 @@ func dnsQuery() ([]byte, uint16, error) {
 	packet, e := m.Pack()
 	return packet, id, e
 }
-func queryThroughAssociation(socket *net.UDPConn, target netip.AddrPort, timeout time.Duration) bool {
+func queryThroughAssociation(socket *net.UDPConn, target netip.AddrPort, timeout time.Duration, diagnostic ...*string) bool {
+	fail := func(reason string) bool {
+		if len(diagnostic) == 1 {
+			*diagnostic[0] = reason
+		}
+		return false
+	}
 	payload, id, e := dnsQuery()
 	if e != nil {
-		return false
+		return fail("QueryCreation")
 	}
 	socket.SetDeadline(time.Now().Add(timeout))
 	if _, e = socket.Write(udpFrame(target, payload)); e != nil {
-		return false
+		return fail("WriteError")
 	}
 	buffer := make([]byte, udpPayloadLimit+11)
 	n, e := socket.Read(buffer)
 	if e != nil {
-		return false
+		if timeout, ok := e.(net.Error); ok && timeout.Timeout() {
+			return fail("ReadTimeout")
+		}
+		return fail("ReadError")
 	}
 	reply, data, ok := parseUDPFrame(buffer[:n])
-	return ok && reply == target && validDNS(data, id)
+	if !ok || reply != target {
+		return fail("InvalidFrame")
+	}
+	if !validDNS(data, id) {
+		return fail("DNSRejected")
+	}
+	return true
 }
 func proxyUDPClient(input io.Reader, output io.Writer) int {
 	var spec struct {
@@ -138,14 +154,16 @@ func proxyUDPClient(input io.Reader, output io.Writer) int {
 	target := netip.AddrPortFrom(server, 53)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	r.Stage = "UdpOpen"
 	control, socket, e := openUDPAssociation(ctx, spec.Port, spec.Token)
 	if e != nil {
 		return 1
 	}
 	defer control.Close()
 	defer socket.Close()
+	r.Stage = "UdpQueries"
 	for i := 0; i < 3; i++ {
-		if !queryThroughAssociation(socket, target, 3*time.Second) {
+		if !queryThroughAssociation(socket, target, 3*time.Second, &r.DNSFailure) {
 			return 1
 		}
 		r.Queries++
@@ -180,7 +198,7 @@ func proxyUDPClient(input io.Reader, output io.Writer) int {
 		}
 		if spec.Resume {
 			for i := 0; i < 3; i++ {
-				if !queryThroughAssociation(socket, target, 3*time.Second) {
+				if !queryThroughAssociation(socket, target, 3*time.Second, &r.DNSFailure) {
 					return 1
 				}
 				r.Queries++

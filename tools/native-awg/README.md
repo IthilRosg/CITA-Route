@@ -328,3 +328,9 @@ socket/process recovery under one parent and shared lifetime budget. It is
 tested through the shared `agent/NativeAwgBackend.cs` implementation, with
 direct TCP held over sequential failures and Stop cancelling recovery. Normal
 AgentHost/UI selection remains unchanged; this is an isolated backend candidate.
+
+The [backend profile handoff checkpoint](PROFILE-HANDOFF-CHECKPOINT.md) accepts
+strict retirement-before-start, rotating identities/credentials, stale command
+and reply fencing, and Stop before startup/publication through the shared agent
+coordinator. Live core/TUN outbound rebinding and different-server acceptance
+remain separate gates; network preparation outliers are preserved in receipts.

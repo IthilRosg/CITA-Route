@@ -130,6 +130,7 @@ func proxyRetentionClient(input io.Reader, output io.Writer) int {
 		FaultMilliseconds int
 		Token             string
 		HoldForFinal      bool
+		LiteralIPv4       bool
 	}
 	if decoder.Decode(&spec) != nil || spec.Port < 1 || spec.Port > 65535 || (spec.FaultMilliseconds != 3000 && spec.FaultMilliseconds != 10000) {
 		return 1
@@ -159,7 +160,11 @@ func proxyRetentionClient(input io.Reader, output io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	get := func(ctx context.Context) string {
-		req, e := http.NewRequestWithContext(ctx, "GET", "https://www.cloudflare.com/cdn-cgi/trace", nil)
+		url := "https://www.cloudflare.com/cdn-cgi/trace"
+		if spec.LiteralIPv4 {
+			url = "https://1.1.1.1/cdn-cgi/trace"
+		}
+		req, e := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if e != nil {
 			return ""
 		}

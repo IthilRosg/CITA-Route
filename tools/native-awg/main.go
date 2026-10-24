@@ -28,6 +28,7 @@ type result struct {
 	EgressHash   string           `json:"egressHash,omitempty"`
 	Engine       string           `json:"engine"`
 	UDPDNS       bool             `json:"udpDnsVerified"`
+	HTTPStatus   int              `json:"httpStatus,omitempty"`
 	Retention    *retentionResult `json:"retention,omitempty"`
 }
 
@@ -135,6 +136,9 @@ func probeLoss(input io.Reader, retain bool, inboundOnly bool) (r result) {
 	return r
 }
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--validate-profile-lab" {
+		os.Exit(validateProfile(os.Stdin, os.Stdout))
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--coordinated-owner-lab" {
 		os.Exit(ownerMainMode(os.Stdin, os.Stdout, true))
 	}

@@ -123,3 +123,7 @@ intermittent UDP warmup observations remain unproven to share the fixed stale
 association cause. This adds no universal NIC/IPv6 leak proof, arbitrary domain
 acceptance, full core-crash safety or game/QUIC/call continuity. Host VPNUS,
 installed CITA and WireSock's production-default role remain unchanged.
+
+The subsequent [profile coordinator gate](PROFILE-HANDOFF-CHECKPOINT.md) accepts
+backend retirement/publication fencing and cancellation. Generation-safe
+activation of the running core/TUN outbound is still outstanding.

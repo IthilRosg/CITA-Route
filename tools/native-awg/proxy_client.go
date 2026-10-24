@@ -14,8 +14,9 @@ import (
 // Fixed anonymous HTTPS acceptance client. Secret input stays off command lines.
 func proxyClient(input io.Reader, output io.Writer) int {
 	var spec struct {
-		Port  int
-		Token string
+		Port        int
+		Token       string
+		LiteralIPv4 bool
 	}
 	decoder := json.NewDecoder(io.LimitReader(input, 2048))
 	decoder.DisallowUnknownFields()
@@ -44,7 +45,11 @@ func proxyClient(input io.Reader, output io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	client := http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	request, e := http.NewRequestWithContext(ctx, "GET", "https://www.cloudflare.com/cdn-cgi/trace", nil)
+	url := "https://www.cloudflare.com/cdn-cgi/trace"
+	if spec.LiteralIPv4 {
+		url = "https://1.1.1.1/cdn-cgi/trace"
+	}
+	request, e := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if e != nil {
 		return 1
 	}
@@ -52,9 +57,12 @@ func proxyClient(input io.Reader, output io.Writer) int {
 	response, e := client.Do(request)
 	r.Milliseconds = time.Since(began).Milliseconds()
 	if e != nil {
+		r.Stage = "ProxyConnectFailed"
 		return 1
 	}
 	defer response.Body.Close()
+	r.HTTPStatus = response.StatusCode
+	r.Stage = "ProxyHttpResponse"
 	body, e := io.ReadAll(io.LimitReader(response.Body, 8193))
 	if e != nil || len(body) > 8192 || response.StatusCode != 200 {
 		return 1
