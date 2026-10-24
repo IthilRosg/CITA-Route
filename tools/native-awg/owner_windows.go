@@ -16,25 +16,35 @@ import (
 // Explicit laboratory owner, not the installed Windows service. Only this
 // executable can be its child. Configuration and credentials travel over stdin.
 type ownedProxy struct {
-	cmd   *exec.Cmd
-	input io.WriteCloser
-	done  chan error
-	port  int
+	cmd     *exec.Cmd
+	input   io.WriteCloser
+	done    chan error
+	port    int
+	read    io.ReadCloser
+	decoder *json.Decoder
+	ioMu    sync.Mutex
 }
 type ownerStatus struct {
-	Stage      string `json:"stage"`
-	Session    string `json:"session"`
-	Generation uint64 `json:"generation"`
-	State      string `json:"state"`
-	Epoch      int    `json:"epoch"`
-	Restarts   int    `json:"restarts"`
-	ChildPID   int    `json:"childPid"`
+	Stage         string        `json:"stage"`
+	Session       string        `json:"session"`
+	Generation    uint64        `json:"generation"`
+	State         string        `json:"state"`
+	Epoch         int           `json:"epoch"`
+	Restarts      int           `json:"restarts"`
+	ChildPID      int           `json:"childPid"`
+	Health        string        `json:"health,omitempty"`
+	SocketRepairs int           `json:"socketRepairs"`
+	BudgetUsed    int           `json:"budgetUsed"`
+	Transport     *lossSnapshot `json:"transport,omitempty"`
 }
 type proxyOwner struct {
-	mu     sync.Mutex
-	status ownerStatus
-	child  *ownedProxy
-	relays map[net.Conn]struct{}
+	mu          sync.Mutex
+	status      ownerStatus
+	child       *ownedProxy
+	relays      map[net.Conn]struct{}
+	coordinated bool
+	verified    bool
+	failures    int
 }
 
 func (o *proxyOwner) snapshot(action string) ownerStatus {
@@ -49,6 +59,12 @@ func (o *proxyOwner) clear() {
 	defer o.mu.Unlock()
 	o.child = nil
 	o.status.ChildPID = 0
+	if o.coordinated {
+		o.status.Health = "Unavailable"
+		o.verified = false
+		o.failures = 0
+		o.status.Transport = nil
+	}
 	for c := range o.relays {
 		c.Close()
 	}
@@ -56,10 +72,13 @@ func (o *proxyOwner) clear() {
 func (o *proxyOwner) launchAllowed(ctx context.Context) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if ctx.Err() != nil || o.status.Restarts >= 2 {
+	if ctx.Err() != nil || o.status.Restarts >= 2 || o.coordinated && o.status.BudgetUsed >= 3 {
 		return false
 	}
 	o.status.Restarts++
+	if o.coordinated {
+		o.status.BudgetUsed++
+	}
 	o.status.State = "Restarting"
 	return true
 }
@@ -73,19 +92,35 @@ func (o *proxyOwner) publish(ctx context.Context, child *ownedProxy) bool {
 	o.status.Epoch++
 	o.status.ChildPID = child.cmd.Process.Pid
 	o.status.State = "RunningUnverified"
+	if o.coordinated {
+		o.status.Health = "Starting"
+		o.verified = false
+		o.failures = 0
+		o.status.Transport = nil
+	}
 	return true
 }
 func (o *proxyOwner) state(state string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.status.State = state
+	if o.coordinated && (state == "Stopped" || state == "Exhausted") {
+		o.status.Health = state
+	}
 }
 func startOwnedProxy(ctx context.Context, spec proxyStart) (*ownedProxy, error) {
+	return startOwnedProxyMode(ctx, spec, false)
+}
+func startOwnedProxyMode(ctx context.Context, spec proxyStart, coordinated bool) (*ownedProxy, error) {
 	image, e := os.Executable()
 	if e != nil {
 		return nil, errProxy
 	}
-	cmd := exec.CommandContext(ctx, image, "--serve-proxy-udp-lab")
+	mode := "--serve-proxy-udp-lab"
+	if coordinated {
+		mode = "--serve-owned-transport-lab"
+	}
+	cmd := exec.CommandContext(ctx, image, mode)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	input, e := cmd.StdinPipe()
 	if e != nil {
@@ -101,13 +136,15 @@ func startOwnedProxy(ctx context.Context, spec proxyStart) (*ownedProxy, error) 
 		input.Close()
 		return nil, errProxy
 	}
-	child := &ownedProxy{cmd: cmd, input: input, done: make(chan error, 1)}
+	child := &ownedProxy{cmd: cmd, input: input, done: make(chan error, 1), read: output, decoder: json.NewDecoder(io.LimitReader(output, 65536))}
 	ready := make(chan proxyReady, 1)
 	go func() {
 		var r proxyReady
-		json.NewDecoder(io.LimitReader(output, 2048)).Decode(&r)
+		child.decoder.Decode(&r)
 		ready <- r
-		io.Copy(io.Discard, output)
+		if !coordinated {
+			io.Copy(io.Discard, output)
+		}
 	}()
 	go func() { child.done <- cmd.Wait() }()
 	stop := func() { input.Close(); cmd.Process.Kill(); <-child.done }
@@ -161,7 +198,7 @@ func (o *proxyOwner) monitor(ctx context.Context, spec proxyStart, child *ownedP
 				return
 			case <-timer.C:
 			}
-			next, e := startOwnedProxy(ctx, spec)
+			next, e := startOwnedProxyMode(ctx, spec, o.coordinated)
 			if e != nil {
 				continue
 			}
@@ -208,6 +245,9 @@ func (o *proxyOwner) relay(ctx context.Context, local net.Conn) {
 	<-done
 }
 func ownerMain(input io.Reader, output io.Writer) int {
+	return ownerMainMode(input, output, false)
+}
+func ownerMainMode(input io.Reader, output io.Writer, coordinated bool) int {
 	decoder := json.NewDecoder(io.LimitReader(input, 147456))
 	decoder.DisallowUnknownFields()
 	var spec proxyStart
@@ -225,14 +265,20 @@ func ownerMain(input io.Reader, output io.Writer) int {
 		return 1
 	}
 	defer listener.Close()
-	child, e := startOwnedProxy(ctx, spec)
+	child, e := startOwnedProxyMode(ctx, spec, coordinated)
 	if e != nil {
 		return 1
 	}
-	o := &proxyOwner{status: ownerStatus{Session: spec.Session, Generation: spec.Generation}, relays: make(map[net.Conn]struct{})}
+	o := &proxyOwner{status: ownerStatus{Session: spec.Session, Generation: spec.Generation}, relays: make(map[net.Conn]struct{}), coordinated: coordinated}
 	o.publish(ctx, child)
 	monitored := make(chan struct{})
 	go func() { defer close(monitored); o.monitor(ctx, spec, child) }()
+	healthDone := make(chan struct{})
+	if coordinated {
+		go func() { defer close(healthDone); o.healthLoop(ctx, spec) }()
+	} else {
+		close(healthDone)
+	}
 	var workers sync.WaitGroup
 	accepted := make(chan struct{})
 	slots := make(chan struct{}, 32)
@@ -257,6 +303,7 @@ func ownerMain(input io.Reader, output io.Writer) int {
 		listener.Close()
 		<-accepted
 		<-monitored
+		<-healthDone
 		o.clear()
 		workers.Wait()
 		o.state("Stopped")
@@ -266,7 +313,7 @@ func ownerMain(input io.Reader, output io.Writer) int {
 	if json.NewEncoder(output).Encode(ready) != nil {
 		return 1
 	}
-	for n := 0; n < 32; n++ {
+	for n := 0; n < 64; n++ {
 		var command lossCommand
 		if e := decoder.Decode(&command); e != nil {
 			if e == io.EOF {
@@ -279,6 +326,22 @@ func ownerMain(input io.Reader, output io.Writer) int {
 		}
 		switch command.Action {
 		case "Snapshot":
+			if coordinated {
+				o.transportSnapshot(ctx, spec)
+			}
+		case "BlackholeChild":
+			if !coordinated {
+				return 1
+			}
+			o.mu.Lock()
+			c := o.child
+			o.mu.Unlock()
+			if c == nil {
+				return 1
+			}
+			if _, e := c.call(ctx, spec, "Blackhole"); e != nil {
+				return 1
+			}
 		case "CrashChild":
 			o.mu.Lock()
 			if o.child != nil {

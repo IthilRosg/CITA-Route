@@ -36,7 +36,11 @@ func openUDPAssociation(ctx context.Context, port int, token string) (net.Conn, 
 		return nil, nil, e
 	}
 	fail := func() (net.Conn, *net.UDPConn, error) { control.Close(); udp.Close(); return nil, nil, errProxy }
-	control.SetDeadline(time.Now().Add(3 * time.Second))
+	deadline := time.Now().Add(3 * time.Second)
+	if until, ok := ctx.Deadline(); ok && until.Before(deadline) {
+		deadline = until
+	}
+	control.SetDeadline(deadline)
 	method := byte(0)
 	if token != "" {
 		method = 2

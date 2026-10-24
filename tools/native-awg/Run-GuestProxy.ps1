@@ -1,4 +1,4 @@
-param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention,[switch]$CandidateCore,[switch]$ActiveOwnerStop,[switch]$DisableRetentionLease,[switch]$Udp,[ValidateSet('None','Rebind','GuestIPv4')][string]$Migration='None',[switch]$Tun,[switch]$TunOwnerCrash,[switch]$AutoRecovery,[switch]$Supervised,[switch]$OwnerStopRace,[switch]$UDPLifetime)
+param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention,[switch]$CandidateCore,[switch]$ActiveOwnerStop,[switch]$DisableRetentionLease,[switch]$Udp,[ValidateSet('None','Rebind','GuestIPv4')][string]$Migration='None',[switch]$Tun,[switch]$TunOwnerCrash,[switch]$AutoRecovery,[switch]$Supervised,[switch]$OwnerStopRace,[switch]$UDPLifetime,[switch]$Coordinated,[switch]$AgentBackend)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
@@ -38,13 +38,18 @@ function ReadResetEvent{
  if($Tun){$barrier=$router.StandardError.ReadLineAsync();if(-not $barrier.Wait(10000) -or $barrier.Result -ne 'CITA_LAB_INTERFACE_RESET_DONE'){throw 'TUN callbacks completion not observed'};$event.callbacksCompleted=$true}
  $script:resetEvent=$router.StandardError.ReadLineAsync();return $event
 }
-function TunRoundTrip{
+function TunRoundTrip([string]$fault='None'){
  $p=[Diagnostics.Process]::Start((ProcessInfo $exe '--tun-client'));$errors=$p.StandardError.ReadToEndAsync();$line=$p.StandardOutput.ReadLineAsync()
  try{
   $p.StandardInput.WriteLine((@{DnsServer=$script:udpServer}|ConvertTo-Json -Compress));if(-not $line.Wait(30000)){throw 'Fresh TUN warmup deadline'}
   $warmup=$line.Result|ConvertFrom-Json;if($warmup.stage -ne 'RetentionClientReady'){return $warmup}
+  if($fault -eq 'Crash'){$beforeFault=Control 'Snapshot';$null=Control 'CrashChild';$afterFault=WaitOwner ($beforeFault.epoch+1) 'RunningUnverified';$script:roundTripFault=@{before=$beforeFault;after=$afterFault}}
+  if($fault -eq 'Blackhole'){$beforeFault=WaitHealth 'Reachable';$null=Control 'BlackholeChild';$script:roundTripFault=@{before=$beforeFault}}
   $p.StandardInput.WriteLine('{"Continue":true}');$p.StandardInput.Close();$output=$p.StandardOutput.ReadToEndAsync();if(-not $p.WaitForExit(20000)){throw 'Fresh TUN result deadline'};return ($output.GetAwaiter().GetResult()|ConvertFrom-Json)
  }finally{if(-not $p.HasExited){$p.Kill();$p.WaitForExit()};$p.Dispose()}
+}
+function WaitHealth([string]$state){
+ for($i=0;$i -lt 20;$i++){$s=Control 'Snapshot';if($s.health -eq $state){return $s};Start-Sleep -Milliseconds 500};throw 'Coordinated health state deadline'
 }
 function WaitOwner([int]$epoch,[string]$state){
  for($i=0;$i -lt 10;$i++){$s=Control 'Snapshot';if($s.state -eq $state -and $s.epoch -eq $epoch){return $s};Start-Sleep -Milliseconds 500};throw 'Owner state deadline'
@@ -63,8 +68,10 @@ try{
  if($Supervised -and (-not $Tun -or $Migration -ne 'Rebind' -or $TunOwnerCrash -or $AutoRecovery -or $DisableRetentionLease)){throw 'Supervision requires standalone leased TUN case'}
  if($OwnerStopRace -and -not $Supervised){throw 'Stop race requires supervisor'}
  if($UDPLifetime -and -not $Supervised){throw 'UDP lifetime checkpoint requires supervised TUN'}
+ if($Coordinated -and (-not $Supervised -or -not $UDPLifetime)){throw 'Coordinated owner requires native UDP lifetime'}
+ if($AgentBackend -and -not $Coordinated){throw 'Agent backend requires coordinated owner'}
  if($Tun -and (Get-NetAdapter -Name 'Cita-NativeLab' -IncludeHidden -ErrorAction SilentlyContinue)){throw 'Lab TUN already exists'}
- if(Get-Process smart-router,vpn-bridge,RoutePilot,native-awg-lab,native-core-lab -ErrorAction SilentlyContinue){throw 'Guest must be idle'}
+ if(Get-Process smart-router,vpn-bridge,RoutePilot,native-awg-lab,native-core-lab,Cita.NativeAgentLab -ErrorAction SilentlyContinue){throw 'Guest must be idle'}
  $report.nativeSha256=(Get-FileHash -LiteralPath $exe).Hash
  . C:\CitaLab\PlatformNext\WireSockCli.ps1
  $cli='C:\Program Files\WireSock Secure Connect\command-line\wiresock-connect-cli.exe'
@@ -78,7 +85,9 @@ try{
  if($Migration -ne 'None'){$mode='--serve-proxy-migration-lab';$peerText=[IO.File]::ReadAllText((Join-Path $root 'private\peer.conf'));if($peerText -notmatch '(?m)^DNS\s*=\s*(\d+\.\d+\.\d+\.\d+)'){throw 'Migration requires literal DNS'};$script:udpServer=$Matches[1];$peerText=$null}
  if($AutoRecovery){$mode='--serve-proxy-recovery-lab'}
  if($Supervised){$mode='--supervise-proxy-lab'}
- $owner=[Diagnostics.Process]::Start((ProcessInfo $exe $mode));$ownerErrors=$owner.StandardError.ReadToEndAsync();$line=$owner.StandardOutput.ReadLineAsync()
+ if($Coordinated){$mode='--coordinated-owner-lab'}
+ $ownerImage=$exe;if($AgentBackend){$ownerImage=Join-Path $root 'AgentBackend\Cita.NativeAgentLab.exe';$mode='--owner-agent-lab C:\CitaLab\NativeAwg';$report.agentBackendSha256=(Get-FileHash (Join-Path $root 'AgentBackend\Cita.NativeAgentLab.dll')).Hash}
+ $owner=[Diagnostics.Process]::Start((ProcessInfo $ownerImage $mode));$ownerErrors=$owner.StandardError.ReadToEndAsync();$line=$owner.StandardOutput.ReadLineAsync()
  $owner.StandardInput.WriteLine((@{Config=[IO.File]::ReadAllText((Join-Path $root 'private\peer.conf'));Token=$token;Session=$session;Generation=1}|ConvertTo-Json -Compress))
  if(-not $line.Wait(6000)){throw 'Readiness deadline'};$ready=$line.Result|ConvertFrom-Json
  if($ready.stage -ne 'ListeningUnverified' -or $ready.session -ne $session -or $ready.generation -ne 1 -or $ready.port -le 0){throw 'Owner readiness mismatch'}
@@ -153,11 +162,12 @@ try{
   }
   if($CandidateCore -and ($LinkInterruption -or ($Supervised -and $UDPLifetime))){
    $directClient=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-retention-client'));$directErrors=$directClient.StandardError.ReadToEndAsync();$directReady=$directClient.StandardOutput.ReadLineAsync()
-   $directClient.StandardInput.WriteLine('{"Port":20939,"FaultMilliseconds":3000}')
+   $directClient.StandardInput.WriteLine((@{Port=20939;FaultMilliseconds=3000;HoldForFinal=[bool]$Coordinated}|ConvertTo-Json -Compress))
    if(-not $directReady.Wait(18000) -or ($directReady.Result|ConvertFrom-Json).stage -ne 'RetentionClientReady'){throw 'Mixed direct baseline unavailable'}
   }
   if($CandidateCore -and $LinkInterruption){while($script:resetEvent.IsCompleted){$null=ReadResetEvent}}
   $baseline=Control 'Snapshot'
+  if($Coordinated){$baseline=WaitHealth 'Reachable'}
   if($AutoRecovery){
    for($i=0;$i -lt 12 -and $baseline.recovery.state -ne 'Healthy';$i++){Start-Sleep -Seconds 1;$baseline=Control 'Snapshot'}
    if($baseline.recovery.state -ne 'Healthy' -or $baseline.recovery.attempts -ne 0){throw 'Recovery baseline not verified'}
@@ -179,6 +189,9 @@ try{
    $disabled=Get-NetAdapter -IncludeHidden|Where-Object {[guid]$_.InterfaceGuid -eq [guid]$adapterGuid}
    $report.linkDisabled=[bool]($disabled.AdminStatus -eq 'Down')
    if(-not $report.linkDisabled){throw 'Adapter disable not confirmed'}
+  }elseif($Coordinated){
+   $stage='CoordinatedSocketFailure';$null=Control 'BlackholeChild'
+   if($OwnerStopRace){$report.stopWindow=WaitHealth 'Suspect';$report.stopAck=Control 'Stop';if(-not $owner.WaitForExit(6000)){throw 'Coordinated stop deadline'};$report.stopDuringBackoff=[bool]($report.stopAck.childPid -eq 0 -and $report.stopAck.epoch -eq 1 -and $report.stopAck.socketRepairs -eq 0 -and $report.stopAck.budgetUsed -eq 0)}
   }elseif($Supervised){
    $stage='ChildCrash';$report.childBefore=$baseline;$null=Control 'CrashChild'
    if($OwnerStopRace){$report.stopWindow=WaitOwner 1 'Restarting';$report.stopAck=Control 'Stop';if(-not $owner.WaitForExit(6000)){throw 'Supervisor stop deadline'};Start-Sleep -Seconds 1;$report.stopDuringBackoff=[bool]($report.stopAck.epoch -eq 1 -and $report.stopAck.childPid -eq 0)}
@@ -193,7 +206,7 @@ try{
   }else{$pause=Control 'Pause'}
   $retaining.StandardInput.WriteLine('{"Continue":true}')
   if(($CandidateCore -and $LinkInterruption) -or $TunOwnerCrash){$afterLossLine=$retaining.StandardOutput.ReadLineAsync()}else{$retaining.StandardInput.Close();$clientOutput=$retaining.StandardOutput.ReadToEndAsync()}
-  if($directClient){$directClient.StandardInput.WriteLine('{"Continue":true}');$directClient.StandardInput.Close();$directOutput=$directClient.StandardOutput.ReadToEndAsync()}
+  if($directClient){$directClient.StandardInput.WriteLine('{"Continue":true}');if($Coordinated){$directMid=$directClient.StandardOutput.ReadLineAsync()}else{$directClient.StandardInput.Close();$directOutput=$directClient.StandardOutput.ReadToEndAsync()}}
   if($migrationUdp){$migrationUdp.StandardInput.WriteLine('{"Continue":true}');$migrationUdp.StandardInput.Close();$migrationOutput=$migrationUdp.StandardOutput.ReadToEndAsync()}
   if($LinkInterruption){
    Start-Sleep -Milliseconds 3000
@@ -215,7 +228,14 @@ try{
   $client=$clientOutput.GetAwaiter().GetResult()|ConvertFrom-Json
   if($migrationUdp){if(-not $migrationUdp.WaitForExit(15000)){throw 'Migration UDP response deadline'};$report.migrationUdp=$migrationOutput.GetAwaiter().GetResult()|ConvertFrom-Json}
   $afterLoss=if($TunOwnerCrash){$beforeCrash}elseif($OwnerStopRace){$report.stopAck}else{Control 'Snapshot'}
-  if($Supervised -and -not $OwnerStopRace){
+  if($Coordinated -and -not $OwnerStopRace){
+   $report.firstRepair=WaitHealth 'Reachable'
+   $report.coordinatedSocketRetained=[bool]($client.success -and $client.dialsAfter -eq 1 -and $client.udpAfter -eq 3 -and $report.firstRepair.epoch -eq 1 -and $report.firstRepair.socketRepairs -eq 1 -and $report.firstRepair.budgetUsed -eq 1 -and $baseline.transport.bindOpens -eq 1 -and $report.firstRepair.transport.bindOpens -eq 2 -and $baseline.transport.outerPort -ne $report.firstRepair.transport.outerPort)
+   $stage='CoordinatedChildCrash';$report.afterCoordinatedCrash=TunRoundTrip 'Crash';$report.crashTransition=$script:roundTripFault;$report.afterRestart=WaitHealth 'Reachable'
+   $stage='CoordinatedSecondRepair';$report.secondRepairClient=TunRoundTrip 'Blackhole';$report.secondRepair=WaitHealth 'Reachable'
+   $stage='SharedBudgetExhaustion';$null=Control 'CrashChild';$report.sharedExhausted=WaitOwner 2 'Exhausted'
+   $report.coordinatedPassed=[bool]($report.coordinatedSocketRetained -and $report.afterCoordinatedCrash.udpBefore -eq 3 -and $report.afterCoordinatedCrash.udpAfter -eq 3 -and $report.afterCoordinatedCrash.dialsAfter -gt 1 -and $report.afterRestart.budgetUsed -eq 2 -and $report.secondRepairClient.success -and $report.secondRepair.socketRepairs -eq 2 -and $report.secondRepair.restarts -eq 1 -and $report.secondRepair.budgetUsed -eq 3 -and $report.sharedExhausted.budgetUsed -eq 3 -and $report.sharedExhausted.restarts -eq 1 -and $report.sharedExhausted.childPid -eq 0)
+  }elseif($Supervised -and -not $OwnerStopRace){
    $stage='FreshOsTrafficAfterChildCrash';$report.freshAfterCrash=TunRoundTrip
    $report.oldStreamClosed=[bool]($client.dialsAfter -gt 1 -or -not $client.sameExit)
    $report.childRestarted=[bool]($report.childBefore.epoch -eq 1 -and $report.childAfter.epoch -eq 2 -and $report.childAfter.restarts -eq 1 -and $report.childAfter.childPid -ne $report.childBefore.childPid)
@@ -230,6 +250,7 @@ try{
    $report.recoveryElapsedMilliseconds=$migrationTimer.ElapsedMilliseconds
   }
   if($directClient){
+   if($Coordinated){if(-not $directMid.Wait(20000) -or ($directMid.Result|ConvertFrom-Json).stage -ne 'RetentionAfterLoss'){throw 'Direct intermediate barrier failed'};$directClient.StandardInput.WriteLine('{"Continue":true}');$directClient.StandardInput.Close();$directOutput=$directClient.StandardOutput.ReadToEndAsync()}
    if(-not $directClient.WaitForExit(30000)){throw 'Mixed direct result deadline'}
    $report.directAfterLink=$directOutput.GetAwaiter().GetResult()|ConvertFrom-Json
    $report.directResetObserved=[bool]($report.directAfterLink.dialsBefore -eq 1 -and $report.directAfterLink.dialsAfter -gt 1 -and -not $report.directAfterLink.success)
@@ -267,8 +288,8 @@ try{
   if(-not $report.expectedDefaultReset){$report.success=$false}
  }elseif($Supervised){
   if($OwnerStopRace){$report.supervisionPassed=[bool]($report.stopDuringBackoff -and $report.stopAck.state -eq 'Stopped' -and -not $report.retention.client.sameExit)}
-  else{$report.supervisionPassed=[bool]($report.oldStreamClosed -and $report.childRestarted -and $report.restartBudgetEnforced -and $report.freshAfterCrash.success -and $report.freshAfterCrash.egressHash -eq $reference.serverEgressHash -and $report.freshAfterCrash.tcpFromTun -and $report.freshAfterCrash.udpFromTun)}
-  if($UDPLifetime -and -not $OwnerStopRace){$report.sameSocketUdpRecovered=[bool]($report.retention.client.udpBefore -eq 3 -and $report.retention.client.udpAfter -eq 3 -and -not $report.retention.client.dnsFailure);if(-not $report.sameSocketUdpRecovered){$report.supervisionPassed=$false}}
+  elseif($Coordinated){$report.supervisionPassed=[bool]$report.coordinatedPassed}else{$report.supervisionPassed=[bool]($report.oldStreamClosed -and $report.childRestarted -and $report.restartBudgetEnforced -and $report.freshAfterCrash.success -and $report.freshAfterCrash.egressHash -eq $reference.serverEgressHash -and $report.freshAfterCrash.tcpFromTun -and $report.freshAfterCrash.udpFromTun)}
+  if($UDPLifetime -and -not $OwnerStopRace -and -not $Coordinated){$report.sameSocketUdpRecovered=[bool]($report.retention.client.udpBefore -eq 3 -and $report.retention.client.udpAfter -eq 3 -and -not $report.retention.client.dnsFailure);if(-not $report.sameSocketUdpRecovered){$report.supervisionPassed=$false}}
   if($UDPLifetime -and -not $report.directRetained){$report.supervisionPassed=$false}
   if(-not $report.supervisionPassed){$report.success=$false}
  }elseif($TunOwnerCrash){$report.expectedActiveTunClose=[bool](-not $report.retention.client.success -and -not $report.retention.client.sameExit -and $report.retention.client.udpBefore -eq 3 -and $report.retention.client.udpAfter -eq 3);if(-not $report.expectedActiveTunClose){$report.success=$false}
@@ -296,7 +317,7 @@ finally{
  # Delete just this run's credential-bearing file, never another run's folder.
  try{if($path -and (Test-Path -LiteralPath $path)){Remove-Item -LiteralPath $path -Force};$report.credentialFileRemoved=[bool](-not $path -or -not (Test-Path -LiteralPath $path))}catch{$report.credentialFileRemoved=$false}
  if(-not $report.credentialFileRemoved){$report.success=$false}
- $report.processesStopped=[bool](-not (Get-Process native-awg-lab,smart-router,native-core-lab -ErrorAction SilentlyContinue))
+ $report.processesStopped=[bool](-not (Get-Process native-awg-lab,smart-router,native-core-lab,Cita.NativeAgentLab -ErrorAction SilentlyContinue))
  if(-not $report.processesStopped){$report.success=$false}
  if($before){$report.topologyUnchanged=[bool]($before -eq (Topology));if(-not $report.topologyUnchanged){$report.success=$false}}
  $report.finishedUtc=[datetime]::UtcNow.ToString('o')

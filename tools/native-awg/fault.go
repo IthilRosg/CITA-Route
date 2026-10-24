@@ -20,6 +20,7 @@ type faultBind struct {
 	udpDials       atomic.Int64
 	blackholePort  atomic.Int64
 	recovery       *transportRecovery
+	ownedControl   bool
 }
 
 func newFaultBind(bind conn.Bind) *faultBind { return &faultBind{Bind: bind, origin: time.Now()} }

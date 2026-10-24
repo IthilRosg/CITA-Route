@@ -109,7 +109,7 @@ func proxyMainMode(input io.Reader, output io.Writer, lossLab bool) int {
 func proxyMainTransport(input io.Reader, output io.Writer, lossLab, udpLab bool) int {
 	return proxyTransport(input, output, lossLab, udpLab, false)
 }
-func proxyTransport(input io.Reader, output io.Writer, lossLab, udpLab, recoveryLab bool) int {
+func proxyTransport(input io.Reader, output io.Writer, lossLab, udpLab, recoveryLab bool, owned ...bool) int {
 	var spec proxyStart
 	decoder := json.NewDecoder(io.LimitReader(input, 131073))
 	decoder.DisallowUnknownFields()
@@ -132,6 +132,7 @@ func proxyTransport(input io.Reader, output io.Writer, lossLab, udpLab, recovery
 	}
 	bind := conn.NewDefaultBind()
 	fault := newFaultBind(bind)
+	fault.ownedControl = len(owned) == 1 && owned[0]
 	var outer conn.Bind = bind
 	if lossLab {
 		outer = fault

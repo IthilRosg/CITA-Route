@@ -89,3 +89,7 @@ the stale association after a confirmed child crash.
 Next: compose process restart and in-process socket repair under one owned
 budget/status contract in an isolated agent backend, then test profile handoff,
 simultaneous Stop/repair and application workloads before production selection.
+
+The subsequent [coordinated backend checkpoint](COORDINATED-AGENT-CHECKPOINT.md)
+accepts the shared owner/budget and agent-candidate boundary. Profile handoff
+and production selection remain separate gates.

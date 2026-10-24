@@ -322,3 +322,9 @@ native SOCKS UDP associations on child death. A controlled opt-in/off W11
 comparison restores queries from the same OS UDP socket while retaining direct
 TCP. This is local UDP recovery with a new internal association, not preservation
 of server-side UDP session identity or VPN TCP across a process crash.
+
+The [coordinated agent checkpoint](COORDINATED-AGENT-CHECKPOINT.md) composes
+socket/process recovery under one parent and shared lifetime budget. It is
+tested through the shared `agent/NativeAwgBackend.cs` implementation, with
+direct TCP held over sequential failures and Stop cancelling recovery. Normal
+AgentHost/UI selection remains unchanged; this is an isolated backend candidate.

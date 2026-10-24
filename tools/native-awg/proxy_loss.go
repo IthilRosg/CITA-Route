@@ -53,12 +53,22 @@ func validLossCommand(c lossCommand, session string, generation uint64, used boo
 // Bounded commands, one fault, allowlisted durations, matching owner identity; no TCP
 // management listener and no such commands on the ordinary proxy launch path.
 func proxyLossControl(input io.Reader, output io.Writer, session string, generation uint64, bind *faultBind, dials *atomic.Int64, rebind ...func() error) {
-	decoder := json.NewDecoder(io.LimitReader(input, 8192))
+	limit := int64(8192)
+	commands := 32
+	if bind.ownedControl {
+		limit = 16384
+		commands = 64
+	}
+	decoder := json.NewDecoder(io.LimitReader(input, limit))
 	decoder.DisallowUnknownFields()
 	used := false
-	for count := 0; count < 32; count++ {
+	rebinds := 0
+	for count := 0; count < commands; count++ {
 		var c lossCommand
-		if decoder.Decode(&c) != nil || !validLossCommand(c, session, generation, used) {
+		if decoder.Decode(&c) != nil || !validLossCommand(c, session, generation, used && !(bind.ownedControl && c.Action == "Rebind")) {
+			return
+		}
+		if bind.ownedControl && (c.Action != "Snapshot" && c.Action != "Rebind" && c.Action != "Blackhole" || c.Action == "Rebind" && rebinds >= 2) {
 			return
 		}
 		if c.Action == "Pause" {
@@ -67,7 +77,7 @@ func proxyLossControl(input io.Reader, output io.Writer, session string, generat
 			bind.pause(time.Duration(c.Milliseconds) * time.Millisecond)
 		}
 		if c.Action == "Blackhole" {
-			if bind.recovery == nil {
+			if bind.recovery == nil && !bind.ownedControl {
 				return
 			}
 			used = true
@@ -78,7 +88,10 @@ func proxyLossControl(input io.Reader, output io.Writer, session string, generat
 			if len(rebind) != 1 || bind.recovery != nil {
 				return
 			}
-			used = true
+			if !bind.ownedControl {
+				used = true
+			}
+			rebinds++
 			if rebind[0]() != nil {
 				return
 			}
