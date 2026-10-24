@@ -103,6 +103,8 @@ installation/update integration. A capture from one source IPv4/NIC is not
 universal leak proof. The local core input fix is not silently installed on
 users' machines. WireSock remains the released transport.
 
-Next checkpoint: controlled address/network change and then the real TUN path,
+The subsequent controlled same-subnet address / outer-port change checkpoint
+is accepted; see [MIGRATION-CHECKPOINT.md](MIGRATION-CHECKPOINT.md), including
+its direct-native UDP limitation. Following work is the real TUN path,
 with separate TCP and UDP acceptance and recovery limits. Application workloads
 and production owner/generation handoff follow before proposing a release.

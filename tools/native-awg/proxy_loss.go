@@ -28,6 +28,8 @@ type lossSnapshot struct {
 	BindOpens       int64  `json:"bindOpens"`
 	DroppedOutgoing int64  `json:"droppedOutgoing"`
 	DroppedIncoming int64  `json:"droppedIncoming"`
+	OuterPort       int64  `json:"outerPort"`
+	UdpDials        int64  `json:"udpDials"`
 }
 
 func validLossCommand(c lossCommand, session string, generation uint64, used bool) bool {
@@ -37,13 +39,16 @@ func validLossCommand(c lossCommand, session string, generation uint64, used boo
 	if c.Action == "Snapshot" {
 		return c.Milliseconds == 0 && !c.IncomingOnly
 	}
+	if c.Action == "Rebind" {
+		return !used && c.Milliseconds == 0 && !c.IncomingOnly
+	}
 	return c.Action == "Pause" && !used && (c.Milliseconds == 3000 || c.Milliseconds == 10000)
 }
 
 // This control channel exists ONLY in the explicit VM loss-lab launch mode.
 // Bounded commands, one fault, allowlisted durations, matching owner identity; no TCP
 // management listener and no such commands on the ordinary proxy launch path.
-func proxyLossControl(input io.Reader, output io.Writer, session string, generation uint64, bind *faultBind, dials *atomic.Int64) {
+func proxyLossControl(input io.Reader, output io.Writer, session string, generation uint64, bind *faultBind, dials *atomic.Int64, rebind ...func() error) {
 	decoder := json.NewDecoder(io.LimitReader(input, 4096))
 	decoder.DisallowUnknownFields()
 	used := false
@@ -58,6 +63,18 @@ func proxyLossControl(input io.Reader, output io.Writer, session string, generat
 			bind.pause(time.Duration(c.Milliseconds) * time.Millisecond)
 		}
 		r := lossSnapshot{Stage: c.Action, Session: session, Generation: generation, Dials: dials.Load(), BindOpens: bind.opens.Load(), DroppedOutgoing: bind.droppedSend.Load(), DroppedIncoming: bind.droppedReceive.Load()}
+		if c.Action == "Rebind" {
+			if len(rebind) != 1 {
+				return
+			}
+			used = true
+			if rebind[0]() != nil {
+				return
+			}
+			r.BindOpens = bind.opens.Load()
+		}
+		r.OuterPort = bind.port.Load()
+		r.UdpDials = bind.udpDials.Load()
 		if json.NewEncoder(output).Encode(r) != nil {
 			return
 		}

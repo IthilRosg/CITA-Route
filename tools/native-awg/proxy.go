@@ -155,22 +155,31 @@ func proxyMainTransport(input io.Reader, output io.Writer, lossLab, udpLab bool)
 	}
 	dial := restrictedDial(network)
 	var dials atomic.Int64
+	var udpOptions []udpTunnelDial
+	if udpLab {
+		udpOptions = append(udpOptions, func(target netip.AddrPort) (net.Conn, error) {
+			socket, e := network.DialUDPAddrPort(netip.AddrPort{}, target)
+			if e == nil {
+				fault.udpDials.Add(1)
+			}
+			return socket, e
+		})
+	}
 	if lossLab {
 		go func() {
 			defer cancel()
-			proxyLossControl(io.MultiReader(decoder.Buffered(), input), output, spec.Session, spec.Generation, fault, &dials)
+			if udpLab {
+				proxyLossControl(io.MultiReader(decoder.Buffered(), input), output, spec.Session, spec.Generation, fault, &dials, func() error { return dev.IpcSet("listen_port=0\n") })
+			} else {
+				proxyLossControl(io.MultiReader(decoder.Buffered(), input), output, spec.Session, spec.Generation, fault, &dials)
+			}
 		}()
 		return serveProxy(ctx, listener, spec.Token, func(ctx context.Context, kind, address string) (net.Conn, error) {
 			dials.Add(1)
 			return dial(ctx, kind, address)
-		})
+		}, udpOptions...)
 	}
-	if udpLab {
-		return serveProxy(ctx, listener, spec.Token, dial, func(target netip.AddrPort) (net.Conn, error) {
-			return network.DialUDPAddrPort(netip.AddrPort{}, target)
-		})
-	}
-	return serveProxy(ctx, listener, spec.Token, dial)
+	return serveProxy(ctx, listener, spec.Token, dial, udpOptions...)
 }
 
 func serveProxy(ctx context.Context, listener net.Listener, token string, dial tunnelDial, udp ...udpTunnelDial) int {

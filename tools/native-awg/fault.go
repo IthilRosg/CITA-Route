@@ -16,6 +16,8 @@ type faultBind struct {
 	droppedSend    atomic.Int64
 	droppedReceive atomic.Int64
 	inboundOnly    atomic.Bool
+	port           atomic.Int64
+	udpDials       atomic.Int64
 }
 
 func newFaultBind(bind conn.Bind) *faultBind { return &faultBind{Bind: bind, origin: time.Now()} }
@@ -29,6 +31,7 @@ func (b *faultBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 		return funcs, actual, e
 	}
 	b.opens.Add(1)
+	b.port.Store(int64(actual))
 	wrapped := make([]conn.ReceiveFunc, len(funcs))
 	for i, receive := range funcs {
 		wrapped[i] = func(packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {

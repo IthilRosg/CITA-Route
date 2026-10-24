@@ -1,9 +1,10 @@
-param([switch]$RetentionOnly,[switch]$InboundLoss,[switch]$ProxyChain,[switch]$ChainRetention,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$CandidateCore,[switch]$Udp)
+param([switch]$RetentionOnly,[switch]$InboundLoss,[switch]$ProxyChain,[switch]$ChainRetention,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$CandidateCore,[switch]$Udp,[switch]$Rebind)
 $ErrorActionPreference='Stop'
 if($InboundLoss -and -not ($RetentionOnly -or $ChainRetention)){throw 'Incoming loss requires retention capture'}
 if($ChainRetention -and -not $ProxyChain){throw 'Chain retention requires proxy-chain capture'}
 if($CandidateCore -and -not $ProxyChain){throw 'Candidate core requires proxy-chain scenario'}
 if($Udp -and (-not $ProxyChain -or $ChainRetention -or $CandidateCore)){throw 'UDP capture requires standalone proxy-chain lifecycle'}
+if($Rebind -and (-not $ProxyChain -or $Udp -or $ChainRetention -or $CandidateCore)){throw 'Rebind capture requires standalone proxy chain'}
 if($ProxyChain -and $RetentionOnly){throw 'Choose one capture scenario'}
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
@@ -55,10 +56,11 @@ try{
    $captureArguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\CitaLab\NativeAwg\Run-GuestProxy.ps1';if($ChainRetention){$captureArguments+=' -Retention -FaultMilliseconds '+$FaultMilliseconds;if($InboundLoss){$captureArguments+=' -InboundLoss'}}
    if($CandidateCore){$captureArguments+=' -CandidateCore'}
    if($Udp){$captureArguments+=' -Udp'}
+   if($Rebind){$captureArguments+=' -Retention -CandidateCore -Migration Rebind'}
    $p=Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $captureArguments -RedirectStandardOutput (Join-Path $root 'proxy-capture.out') -RedirectStandardError (Join-Path $root 'proxy-capture.err') -PassThru;$null=$p.Handle
    try{if(-not $p.WaitForExit(60000)){throw 'Proxy test deadline'};if($p.ExitCode -ne 0){throw 'Proxy acceptance failed'}}finally{if(-not $p.HasExited){$p.Kill();$p.WaitForExit()};$p.Dispose()}
   } $port
-  $receipt=if($Udp){'proxy-udp.json'}elseif($ChainRetention){'proxy-retention.json'}else{'proxy-result.json'}
+  $receipt=if($Rebind){'proxy-migration.json'}elseif($Udp){'proxy-udp.json'}elseif($ChainRetention){'proxy-retention.json'}else{'proxy-result.json'}
   $report.proxyProbe=[IO.File]::ReadAllText((Join-Path $root $receipt))|ConvertFrom-Json
   $report.success=[bool]($report.proxy.tunnelUdp -gt 0 -and $report.proxy.otherTcp -eq 0 -and $report.proxy.otherUdp -eq 0 -and $report.proxyProbe.success)
  }elseif($RetentionOnly){
@@ -76,7 +78,7 @@ try{
 }catch{$report.error=$_.Exception.Message}
 finally{
  if($capture){try{Command @('stop');$capture=$false}catch{$report.cleanupError='Capture stop unconfirmed'}}
- $file=if($Udp){'capture-proxy-udp.json'}elseif($ChainRetention){'capture-chain-retention.json'}elseif($ProxyChain){'capture-proxy.json'}elseif($RetentionOnly){'capture-retention.json'}else{'capture-result.json'}
+ $file=if($Rebind){'capture-migration.json'}elseif($Udp){'capture-proxy-udp.json'}elseif($ChainRetention){'capture-chain-retention.json'}elseif($ProxyChain){'capture-proxy.json'}elseif($RetentionOnly){'capture-retention.json'}else{'capture-result.json'}
  $report.captureStopped=-not $capture;$report.finishedUtc=[datetime]::UtcNow.ToString('o');$report|ConvertTo-Json -Depth 8|Set-Content (Join-Path $root $file) -Encoding UTF8
 }
 if(-not $report.success){exit 1}

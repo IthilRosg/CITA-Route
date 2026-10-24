@@ -22,6 +22,7 @@ type udpClientResult struct {
 	InvalidFramesNoReply bool   `json:"invalidFramesNoReply"`
 	NoReplyAfterClose    bool   `json:"noReplyAfterClose"`
 	HeldOwnerStop        bool   `json:"heldOwnerStop"`
+	ResumedAssociation   bool   `json:"resumedAssociation"`
 }
 
 func openUDPAssociation(ctx context.Context, port int, token string) (net.Conn, *net.UDPConn, error) {
@@ -114,12 +115,16 @@ func proxyUDPClient(input io.Reader, output io.Writer) int {
 		Token  string
 		Server string
 		Hold   bool
+		Resume bool
 	}
 	r := udpClientResult{Stage: "UdpAssociation"}
 	defer func() { json.NewEncoder(output).Encode(r) }()
 	decoder := json.NewDecoder(io.LimitReader(input, 4096))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&spec) != nil || spec.Port < 1 || spec.Port > 65535 || (spec.Token != "" && !validHex(spec.Token, 32)) {
+		return 1
+	}
+	if spec.Resume && !spec.Hold {
 		return 1
 	}
 	server, e := netip.ParseAddr(spec.Server)
@@ -169,13 +174,29 @@ func proxyUDPClient(input io.Reader, output io.Writer) int {
 		if decoder.Decode(&command) != nil || !command.Continue {
 			return 1
 		}
-		r.HeldOwnerStop = true
+		if spec.Resume {
+			for i := 0; i < 3; i++ {
+				if !queryThroughAssociation(socket, target, 3*time.Second) {
+					return 1
+				}
+				r.Queries++
+			}
+			r.ResumedAssociation = true
+			control.Close()
+			time.Sleep(150 * time.Millisecond)
+		} else {
+			r.HeldOwnerStop = true
+		}
 	} else {
 		control.Close()
 		time.Sleep(150 * time.Millisecond)
 	}
 	r.NoReplyAfterClose = !queryThroughAssociation(socket, target, 700*time.Millisecond)
-	r.Success = r.Queries == 3 && r.AssociationReused && r.WrongSourceNoReply && r.InvalidFramesNoReply && r.NoReplyAfterClose
+	expected := 3
+	if spec.Resume {
+		expected = 6
+	}
+	r.Success = r.Queries == expected && r.AssociationReused && r.WrongSourceNoReply && r.InvalidFramesNoReply && r.NoReplyAfterClose && (!spec.Resume || r.ResumedAssociation)
 	if !r.Success {
 		return 1
 	}

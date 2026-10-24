@@ -289,7 +289,11 @@ The next laboratory checkpoint, bounded authenticated UDP association and its
 TCP-owned lifetime, is also accepted: see [UDP-CHECKPOINT.md](UDP-CHECKPOINT.md).
 Normal TCP-only modes remain unchanged; UDP requires an explicit lab launch.
 
-Following gates: address/NAT changes, real TUN integration and application
+The bounded same-subnet guest IPv4 / outer-port migration checkpoint is now
+accepted: see [MIGRATION-CHECKPOINT.md](MIGRATION-CHECKPOINT.md). TCP is through
+the core; UDP continuity there is direct-native, not yet through core/TUN.
+
+Following gates: provider/public-address changes, real TUN integration and application
 workloads; production owner leases, profile/generation handoff
 and rollback. Echoing an identity in this lab is not yet production fencing.
 Only then optional production transport selection and UI. Keep WireSock as the

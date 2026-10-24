@@ -63,3 +63,42 @@ func TestLossControlOwnerAndBudget(t *testing.T) {
 		t.Fatal("Stale owner affected live transport")
 	}
 }
+func TestMigrationControlIsSingleUseAndOwned(t *testing.T) {
+	session := strings.Repeat("c", 32)
+	command := lossCommand{Session: session, Generation: 4, Action: "Rebind"}
+	if !validLossCommand(command, session, 4, false) || validLossCommand(command, session, 5, false) || validLossCommand(command, session, 4, true) {
+		t.Fatal("Migration owner/single-use boundary failed")
+	}
+	var input, output bytes.Buffer
+	json.NewEncoder(&input).Encode(command)
+	json.NewEncoder(&input).Encode(command)
+	bind := newFaultBind(&stubBind{})
+	bind.opens.Store(1)
+	var calls, dials atomic.Int64
+	proxyLossControl(&input, &output, session, 4, bind, &dials, func() error { calls.Add(1); bind.opens.Add(1); return nil })
+	if calls.Load() != 1 {
+		t.Fatal("Repeated rebind reached device")
+	}
+	var result lossSnapshot
+	if json.NewDecoder(&output).Decode(&result) != nil || result.BindOpens != 2 {
+		t.Fatal("Rebind acknowledgement preceded completion")
+	}
+}
+func TestMigrationRefusesMissingOrFailedRebind(t *testing.T) {
+	session := strings.Repeat("d", 32)
+	c := lossCommand{Session: session, Generation: 2, Action: "Rebind"}
+	var dials atomic.Int64
+	for _, failed := range []bool{false, true} {
+		var input, output bytes.Buffer
+		json.NewEncoder(&input).Encode(c)
+		bind := newFaultBind(&stubBind{})
+		if failed {
+			proxyLossControl(&input, &output, session, 2, bind, &dials, func() error { return errProxy })
+		} else {
+			proxyLossControl(&input, &output, session, 2, bind, &dials)
+		}
+		if output.Len() != 0 {
+			t.Fatal("Unavailable/failed rebind acknowledged")
+		}
+	}
+}
