@@ -27,7 +27,8 @@ if($Action -eq 'Begin'){
   $state.routeAdded=$true;$state|ConvertTo-Json|Set-Content -LiteralPath $path -Encoding UTF8
   New-NetRoute -InterfaceIndex $index -DestinationPrefix '0.0.0.0/0' -NextHop $state.gateway -PolicyStore ActiveStore|Out-Null
  }
- $state.changed=[bool](-not (Get-NetIPAddress -InterfaceIndex $index -IPAddress $original -ErrorAction SilentlyContinue) -and (@(Find-NetRoute -RemoteIPAddress '1.1.1.1'|Where-Object {$_.IPAddress}).IPAddress -contains $temporary))
+ # Probe the physical next hop, not a public /32 that the scoped TUN may own.
+ $state.changed=[bool](-not (Get-NetIPAddress -InterfaceIndex $index -IPAddress $original -ErrorAction SilentlyContinue) -and (@(Find-NetRoute -RemoteIPAddress $state.gateway|Where-Object {$_.IPAddress}).IPAddress -contains $temporary))
  $state|ConvertTo-Json|Set-Content -LiteralPath $path -Encoding UTF8
  if(-not $state.changed){throw 'Source-address change not confirmed'}
  [pscustomobject]$state;return

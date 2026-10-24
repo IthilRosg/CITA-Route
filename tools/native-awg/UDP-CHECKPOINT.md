@@ -105,6 +105,7 @@ users' machines. WireSock remains the released transport.
 
 The subsequent controlled same-subnet address / outer-port change checkpoint
 is accepted; see [MIGRATION-CHECKPOINT.md](MIGRATION-CHECKPOINT.md), including
-its direct-native UDP limitation. Following work is the real TUN path,
-with separate TCP and UDP acceptance and recovery limits. Application workloads
+its direct-native UDP limitation. The subsequent real scoped TUN path is also
+accepted with explicit UDP recovery limits: [TUN-CHECKPOINT.md](TUN-CHECKPOINT.md).
+Application workloads
 and production owner/generation handoff follow before proposing a release.

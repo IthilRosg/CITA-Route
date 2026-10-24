@@ -98,7 +98,8 @@ rebind is initiated by the lab parent after a controlled event; production
 network observation, debouncing, retries and service owner admission are not
 implemented by this checkpoint. Existing WireSock/product paths are unchanged.
 
-Next: actual TUN/app stream behavior and full-core UDP lifecycle during network
-change, then bounded automatic recovery and production profile/generation
+The subsequent scoped TUN/full-core checkpoint is accepted, including UDP
+recovery (not seamless retention): see [TUN-CHECKPOINT.md](TUN-CHECKPOINT.md).
+Next: bounded automatic recovery and production profile/generation
 handoff. Preserve default reset for unrelated traffic and explicit Stop. Do
 not turn these laboratory results into a universal seamless-migration claim.

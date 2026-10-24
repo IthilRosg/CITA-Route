@@ -135,6 +135,12 @@ func probeLoss(input io.Reader, retain bool, inboundOnly bool) (r result) {
 	return r
 }
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--os-dns-probe" {
+		os.Exit(osUDPProbe(os.Stdin, os.Stdout))
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--tun-client" {
+		os.Exit(tunClient(os.Stdin, os.Stdout))
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--serve-proxy-migration-lab" {
 		os.Exit(proxyMainTransport(os.Stdin, os.Stdout, true, true))
 	}

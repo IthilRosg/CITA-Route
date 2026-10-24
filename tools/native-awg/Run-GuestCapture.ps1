@@ -1,10 +1,11 @@
-param([switch]$RetentionOnly,[switch]$InboundLoss,[switch]$ProxyChain,[switch]$ChainRetention,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$CandidateCore,[switch]$Udp,[switch]$Rebind)
+param([switch]$RetentionOnly,[switch]$InboundLoss,[switch]$ProxyChain,[switch]$ChainRetention,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$CandidateCore,[switch]$Udp,[switch]$Rebind,[switch]$Tun)
 $ErrorActionPreference='Stop'
 if($InboundLoss -and -not ($RetentionOnly -or $ChainRetention)){throw 'Incoming loss requires retention capture'}
 if($ChainRetention -and -not $ProxyChain){throw 'Chain retention requires proxy-chain capture'}
 if($CandidateCore -and -not $ProxyChain){throw 'Candidate core requires proxy-chain scenario'}
 if($Udp -and (-not $ProxyChain -or $ChainRetention -or $CandidateCore)){throw 'UDP capture requires standalone proxy-chain lifecycle'}
 if($Rebind -and (-not $ProxyChain -or $Udp -or $ChainRetention -or $CandidateCore)){throw 'Rebind capture requires standalone proxy chain'}
+if($Tun -and -not $Rebind){throw 'Scoped TUN capture requires rebind scenario'}
 if($ProxyChain -and $RetentionOnly){throw 'Choose one capture scenario'}
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
@@ -20,7 +21,7 @@ function Capture([string]$name,[scriptblock]$work,[int]$port){
  Command @('etl2pcap',$etl,'--out',$pcap)
  $info=New-Object Diagnostics.ProcessStartInfo;$info.FileName=$exe;$info.Arguments='--capture-summary';$info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardInput=$true;$info.RedirectStandardOutput=$true
  $p=[Diagnostics.Process]::Start($info);$output=$p.StandardOutput.ReadToEndAsync()
- try{$p.StandardInput.WriteLine((@{File=$pcap;Local=$script:local;Endpoint=$script:endpoint;Port=$port}|ConvertTo-Json -Compress));$p.StandardInput.Close();if(-not $p.WaitForExit(10000)){$p.Kill();throw 'Capture summary deadline'};$summary=$output.GetAwaiter().GetResult()|ConvertFrom-Json;if($p.ExitCode -ne 0){throw 'Unsupported/malformed capture cannot certify absence of traffic'};return $summary}finally{$p.Dispose()}
+ try{$spec=@{File=$pcap;Local=$script:local;Endpoint=$script:endpoint;Port=$port};if($Tun){$spec.Protected=@(@('1.1.1.1',$script:controlDns)|Sort-Object -Unique)};$p.StandardInput.WriteLine(($spec|ConvertTo-Json -Compress));$p.StandardInput.Close();if(-not $p.WaitForExit(10000)){$p.Kill();throw 'Capture summary deadline'};$summary=$output.GetAwaiter().GetResult()|ConvertFrom-Json;if($p.ExitCode -ne 0){throw 'Unsupported/malformed capture cannot certify absence of traffic'};return $summary}finally{$p.Dispose()}
 }
 function Probe([bool]$unavailable,[switch]$Retention){
  $arguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\CitaLab\NativeAwg\Run-GuestProbe.ps1';if($unavailable){$arguments+=' -WrongPresharedKey'}
@@ -49,20 +50,24 @@ try{
  if($config -notmatch '(?m)^DNS\s*=\s*(\d+\.\d+\.\d+\.\d+)'){throw 'Literal DNS required for UDP positive control'}
  $script:controlDns=$Matches[1];$config=$null
  $report.positiveControlUdpQueries=3
- $report.control=Capture 'control' {& curl.exe --silent --show-error --ipv4 --noproxy '*' --connect-timeout 3 --max-time 8 https://www.cloudflare.com/cdn-cgi/trace *> (Join-Path $root 'private\control-response.txt');if($LASTEXITCODE -ne 0){throw 'Direct control request failed'};for($queryIndex=0;$queryIndex -lt 3;$queryIndex++){DirectUdpControl;Start-Sleep -Milliseconds 100}} $port
+ $controlUrl=if($Tun){'https://1.1.1.1/cdn-cgi/trace'}else{'https://www.cloudflare.com/cdn-cgi/trace'}
+ $report.control=Capture 'control' {& curl.exe --silent --show-error --ipv4 --noproxy '*' --connect-timeout 3 --max-time 8 $controlUrl *> (Join-Path $root 'private\control-response.txt');if($LASTEXITCODE -ne 0){throw 'Direct control request failed'};for($queryIndex=0;$queryIndex -lt 3;$queryIndex++){DirectUdpControl;Start-Sleep -Milliseconds 100}} $port
  if($report.control.otherTcp -le 0 -or $report.control.otherUdp -le 0){throw 'Capture positive control did not observe both direct TCP and UDP'}
+ if($Tun -and ($report.control.protectedTcp -le 0 -or $report.control.protectedUdp -le 0)){throw 'Protected TCP/UDP direct positive controls not observed'}
  if($ProxyChain){
   $report.proxy=Capture 'proxy' {
    $captureArguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\CitaLab\NativeAwg\Run-GuestProxy.ps1';if($ChainRetention){$captureArguments+=' -Retention -FaultMilliseconds '+$FaultMilliseconds;if($InboundLoss){$captureArguments+=' -InboundLoss'}}
    if($CandidateCore){$captureArguments+=' -CandidateCore'}
    if($Udp){$captureArguments+=' -Udp'}
    if($Rebind){$captureArguments+=' -Retention -CandidateCore -Migration Rebind'}
+   if($Tun){$captureArguments+=' -Tun'}
    $p=Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $captureArguments -RedirectStandardOutput (Join-Path $root 'proxy-capture.out') -RedirectStandardError (Join-Path $root 'proxy-capture.err') -PassThru;$null=$p.Handle
    try{if(-not $p.WaitForExit(60000)){throw 'Proxy test deadline'};if($p.ExitCode -ne 0){throw 'Proxy acceptance failed'}}finally{if(-not $p.HasExited){$p.Kill();$p.WaitForExit()};$p.Dispose()}
   } $port
   $receipt=if($Rebind){'proxy-migration.json'}elseif($Udp){'proxy-udp.json'}elseif($ChainRetention){'proxy-retention.json'}else{'proxy-result.json'}
   $report.proxyProbe=[IO.File]::ReadAllText((Join-Path $root $receipt))|ConvertFrom-Json
   $report.success=[bool]($report.proxy.tunnelUdp -gt 0 -and $report.proxy.otherTcp -eq 0 -and $report.proxy.otherUdp -eq 0 -and $report.proxyProbe.success)
+  if($Tun){$report.scope='Destination-scoped physical-NIC source-IPv4 observation for the TUN /32 test targets, with target-specific direct TCP/UDP positive controls. Other direct traffic remains counted and unattributed; not universal leak proof.';$report.success=[bool]($report.proxy.tunnelUdp -gt 0 -and $report.proxy.protectedTcp -eq 0 -and $report.proxy.protectedUdp -eq 0 -and $report.proxyProbe.success)}
  }elseif($RetentionOnly){
   $report.retention=Capture 'retention' {Probe $false -Retention} $port
   $report.retentionProbe=[IO.File]::ReadAllText((Join-Path $root 'probe-retention.json'))|ConvertFrom-Json
@@ -78,7 +83,7 @@ try{
 }catch{$report.error=$_.Exception.Message}
 finally{
  if($capture){try{Command @('stop');$capture=$false}catch{$report.cleanupError='Capture stop unconfirmed'}}
- $file=if($Rebind){'capture-migration.json'}elseif($Udp){'capture-proxy-udp.json'}elseif($ChainRetention){'capture-chain-retention.json'}elseif($ProxyChain){'capture-proxy.json'}elseif($RetentionOnly){'capture-retention.json'}else{'capture-result.json'}
+ $file=if($Tun){'capture-tun.json'}elseif($Rebind){'capture-migration.json'}elseif($Udp){'capture-proxy-udp.json'}elseif($ChainRetention){'capture-chain-retention.json'}elseif($ProxyChain){'capture-proxy.json'}elseif($RetentionOnly){'capture-retention.json'}else{'capture-result.json'}
  $report.captureStopped=-not $capture;$report.finishedUtc=[datetime]::UtcNow.ToString('o');$report|ConvertTo-Json -Depth 8|Set-Content (Join-Path $root $file) -Encoding UTF8
 }
 if(-not $report.success){exit 1}

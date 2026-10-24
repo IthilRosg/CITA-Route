@@ -1,4 +1,4 @@
-param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention,[switch]$CandidateCore,[switch]$ActiveOwnerStop,[switch]$DisableRetentionLease,[switch]$Udp,[ValidateSet('None','Rebind','GuestIPv4')][string]$Migration='None')
+param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention,[switch]$CandidateCore,[switch]$ActiveOwnerStop,[switch]$DisableRetentionLease,[switch]$Udp,[ValidateSet('None','Rebind','GuestIPv4')][string]$Migration='None',[switch]$Tun,[switch]$TunOwnerCrash)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
@@ -8,6 +8,7 @@ $linkAdapter=$null;$linkRestore=$null
 $directClient=$null
 $migrationUdp=$null
 $ipStatePath=$null
+$tunRescue=$null
 function Topology{
  $text=@(Get-NetRoute -AddressFamily IPv4|ForEach-Object {'route|'+$_.InterfaceIndex+'|'+$_.DestinationPrefix+'|'+$_.NextHop+'|'+$_.RouteMetric})+@(Get-NetAdapter -IncludeHidden|ForEach-Object {'nic|'+$_.InterfaceGuid+'|'+$_.Name+'|'+$_.Status})
  $sha=[Security.Cryptography.SHA256]::Create();try{return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes((($text|Sort-Object)-join "`n"))))).Replace('-','')}finally{$sha.Dispose()}
@@ -34,6 +35,7 @@ function ReadResetEvent{
  $eventText=$script:resetEvent.GetAwaiter().GetResult()
  if($eventText -notmatch '^CITA_LAB_INTERFACE_RESET closed=(\d+) retained=(\d+)$'){throw 'Unexpected core reset receipt'}
  $event=@{closed=[int]$Matches[1];retained=[int]$Matches[2]}
+ if($Tun){$barrier=$router.StandardError.ReadLineAsync();if(-not $barrier.Wait(10000) -or $barrier.Result -ne 'CITA_LAB_INTERFACE_RESET_DONE'){throw 'TUN callbacks completion not observed'};$event.callbacksCompleted=$true}
  $script:resetEvent=$router.StandardError.ReadLineAsync();return $event
 }
 try{
@@ -43,7 +45,10 @@ try{
  if($ActiveOwnerStop -and $Retention){throw 'Active owner stop is separate from loss test'}
  if($DisableRetentionLease -and -not $CandidateCore){throw 'Lease-off control requires candidate core'}
  if($Udp -and ($Retention -or $CandidateCore -or $DirectRetention)){throw 'UDP lifecycle is a separate non-retention lab mode'}
- if($Migration -ne 'None' -and (-not $Retention -or -not $CandidateCore -or $LinkInterruption -or $InboundLoss -or $DisableRetentionLease)){throw 'Migration requires standalone candidate TCP retention'}
+ if($Migration -ne 'None' -and (-not $Retention -or -not $CandidateCore -or $LinkInterruption -or $InboundLoss -or ($DisableRetentionLease -and -not $Tun))){throw 'Migration requires standalone candidate TCP retention'}
+ if($Tun -and ($Migration -eq 'None' -or -not $CandidateCore)){throw 'Scoped TUN requires migration scenario'}
+ if($TunOwnerCrash -and (-not $Tun -or $Migration -ne 'Rebind')){throw 'Active TUN crash requires rebind scenario'}
+ if($Tun -and (Get-NetAdapter -Name 'Cita-NativeLab' -IncludeHidden -ErrorAction SilentlyContinue)){throw 'Lab TUN already exists'}
  if(Get-Process smart-router,vpn-bridge,RoutePilot,native-awg-lab,native-core-lab -ErrorAction SilentlyContinue){throw 'Guest must be idle'}
  $report.nativeSha256=(Get-FileHash -LiteralPath $exe).Hash
  . C:\CitaLab\PlatformNext\WireSockCli.ps1
@@ -75,12 +80,27 @@ try{
   $configuration.outbounds+=@{type='direct';tag='direct'}
   $configuration.route.rules=@(@{inbound=@('lab-direct');action='route';outbound='direct'})
  }
+ if($Tun){
+  $configuration.inbounds+=@{type='tun';tag='native-tun';interface_name='Cita-NativeLab';address=@('172.30.127.1/30');route_address=@('1.1.1.1/32',($script:udpServer+'/32'))|Sort-Object -Unique;auto_route=$true;strict_route=$false;dns_mode='disabled';stack='gvisor';mtu=1400}
+  $configuration.outbounds+=@{type='socks';tag='native-udp';server='127.0.0.1';server_port=[int]$ready.port;version='5';username='cita';password=$token;network='udp'}
+  $configuration.route.rules=@(@{network='udp';action='route';outbound='native-udp'})+$configuration.route.rules
+  $report.scope='Ordinary OS TCP/TLS and UDP through scoped IPv4 /32 TUN routes and native AWG; no application proxy or TLS override'
+ }
  $path=Join-Path $private 'core.json';[IO.File]::WriteAllText($path,($configuration|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false));$configuration=$null
  $core=if($CandidateCore -or $Udp){'C:\CitaLab\NativeAwg\native-core-lab.exe'}else{'C:\CitaLab\PlatformNext\runtime\smart-router.exe'}
  $report.coreSha256=(Get-FileHash -LiteralPath $core).Hash
  $routerInfo=ProcessInfo $core ('run -c "'+$path+'"');if($Udp){$routerInfo.EnvironmentVariables['CITA_NATIVE_UDP_LAB']='1'}
+ if($Tun){$routerInfo.EnvironmentVariables['CITA_NATIVE_TUN_LAB']='1'}
  $router=[Diagnostics.Process]::Start($routerInfo);$routerOutput=$router.StandardOutput.ReadToEndAsync()
  if($CandidateCore){$script:resetEvent=$router.StandardError.ReadLineAsync()}else{$routerErrors=$router.StandardError.ReadToEndAsync()}
+ if($Tun){
+  $rescueCode="Start-Sleep -Seconds 90;if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){exit 1};`$p=Get-Process -Id $($router.Id) -ErrorAction SilentlyContinue;if(`$p -and `$p.StartTime.ToUniversalTime().Ticks -eq $($router.StartTime.ToUniversalTime().Ticks)){Stop-Process -Id `$p.Id -Force}"
+  $tunRescue=[Diagnostics.Process]::Start((ProcessInfo 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' ('-NoProfile -NonInteractive -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($rescueCode)))))
+  for($i=0;$i -lt 100;$i++){if(Get-NetRoute -DestinationPrefix '1.1.1.1/32' -ErrorAction SilentlyContinue|Where-Object {$_.InterfaceAlias -eq 'Cita-NativeLab'}){break};if($router.HasExited){throw 'TUN core exited'};Start-Sleep -Milliseconds 100}
+  $report.tunRoute=[bool](Get-NetRoute -DestinationPrefix '1.1.1.1/32' -ErrorAction SilentlyContinue|Where-Object {$_.InterfaceAlias -eq 'Cita-NativeLab'});if(-not $report.tunRoute){throw 'TUN route deadline'}
+  $report.tunRoutePrefixes=@(Get-NetRoute -InterfaceAlias 'Cita-NativeLab' -AddressFamily IPv4|ForEach-Object {$_.DestinationPrefix}|Sort-Object -Unique)
+  if($report.tunRoutePrefixes|Where-Object {$_ -in @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1')}){throw 'TUN route scope wider than approved'}
+ }
  Start-Sleep -Milliseconds 700;$chain=Client $port ''; $report.routerChainHttps=[bool]($chain.exitCode -eq 0 -and $chain.result.success -and $chain.result.egressHash -eq $reference.serverEgressHash)
  $owner.Refresh();$router.Refresh();$report.resourceSample=@{nativePrivateBytes=$owner.PrivateMemorySize64;nativeWorkingSetBytes=$owner.WorkingSet64;routerPrivateBytes=$router.PrivateMemorySize64;routerWorkingSetBytes=$router.WorkingSet64;scope='Single post-HTTPS process sample, not steady-state or a comparison with WireSock'}
  if($Udp){
@@ -100,11 +120,14 @@ try{
   if(-not $activeReady.Wait(18000) -or ($activeReady.Result|ConvertFrom-Json).stage -ne 'RetentionClientReady'){throw 'Active baseline unavailable'}
  }
  if($Retention){
-  $stage='ChainRetention';$retaining=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-retention-client'));$clientErrors=$retaining.StandardError.ReadToEndAsync();$clientReady=$retaining.StandardOutput.ReadLineAsync()
+  $clientMode=if($Tun){'--tun-client'}else{'--proxy-retention-client'}
+  $stage='ChainRetention';$retaining=[Diagnostics.Process]::Start((ProcessInfo $exe $clientMode));$clientErrors=$retaining.StandardError.ReadToEndAsync();$clientReady=$retaining.StandardOutput.ReadLineAsync()
   $retentionSpec=@{Port=$port;FaultMilliseconds=$FaultMilliseconds;HoldForFinal=[bool]($CandidateCore -and $LinkInterruption)};if($DirectRetention){$retentionSpec.Port=[int]$ready.port;$retentionSpec.Token=$token}
-  $retaining.StandardInput.WriteLine(($retentionSpec|ConvertTo-Json -Compress));$retentionSpec=$null;if(-not $clientReady.Wait(18000)){throw 'Retention warmup deadline'}
-  if(($clientReady.Result|ConvertFrom-Json).stage -ne 'RetentionClientReady'){throw 'Retention warmup failed'}
-  if($Migration -ne 'None'){
+  if($Tun){$retentionSpec=@{DnsServer=$script:udpServer;HoldForFinal=[bool]$TunOwnerCrash}}
+  $retaining.StandardInput.WriteLine(($retentionSpec|ConvertTo-Json -Compress));$retentionSpec=$null;$warmupBudget=if($Tun){30000}else{18000};if(-not $clientReady.Wait($warmupBudget)){throw 'Retention warmup deadline'}
+  $warmupResult=$clientReady.Result|ConvertFrom-Json
+  if($warmupResult.stage -ne 'RetentionClientReady'){$report.clientWarmup=$warmupResult;throw 'Retention warmup failed'}
+  if($Migration -ne 'None' -and -not $Tun){
    $migrationUdp=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-udp-client'));$migrationErrors=$migrationUdp.StandardError.ReadToEndAsync();$migrationReady=$migrationUdp.StandardOutput.ReadLineAsync()
    $migrationUdp.StandardInput.WriteLine((@{Port=[int]$ready.port;Token=$token;Server=$script:udpServer;Hold=$true;Resume=$true}|ConvertTo-Json -Compress))
    if(-not $migrationReady.Wait(15000) -or ($migrationReady.Result|ConvertFrom-Json).stage -ne 'UdpClientReady'){throw 'Migration UDP baseline unavailable'}
@@ -142,7 +165,7 @@ try{
    $report.rebind=Control 'Rebind'
   }else{$pause=Control 'Pause'}
   $retaining.StandardInput.WriteLine('{"Continue":true}')
-  if($CandidateCore -and $LinkInterruption){$afterLossLine=$retaining.StandardOutput.ReadLineAsync()}else{$retaining.StandardInput.Close();$clientOutput=$retaining.StandardOutput.ReadToEndAsync()}
+  if(($CandidateCore -and $LinkInterruption) -or $TunOwnerCrash){$afterLossLine=$retaining.StandardOutput.ReadLineAsync()}else{$retaining.StandardInput.Close();$clientOutput=$retaining.StandardOutput.ReadToEndAsync()}
   if($directClient){$directClient.StandardInput.WriteLine('{"Continue":true}');$directClient.StandardInput.Close();$directOutput=$directClient.StandardOutput.ReadToEndAsync()}
   if($migrationUdp){$migrationUdp.StandardInput.WriteLine('{"Continue":true}');$migrationUdp.StandardInput.Close();$migrationOutput=$migrationUdp.StandardOutput.ReadToEndAsync()}
   if($LinkInterruption){
@@ -156,10 +179,15 @@ try{
    # A third GET must still reuse TCP AFTER an actual core reset receipt.
    $retaining.StandardInput.WriteLine('{"Continue":true}');$retaining.StandardInput.Close();$clientOutput=$retaining.StandardOutput.ReadToEndAsync()
   }
+  if($TunOwnerCrash){
+   $stage='ActiveTunCrash';if(-not $afterLossLine.Wait(18000) -or ($afterLossLine.Result|ConvertFrom-Json).stage -ne 'RetentionAfterLoss'){throw 'TUN active stream barrier failed'}
+   $beforeCrash=Control 'Snapshot';$owner.Kill();$owner.WaitForExit()
+   $retaining.StandardInput.WriteLine('{"Continue":true}');$retaining.StandardInput.Close();$clientOutput=$retaining.StandardOutput.ReadToEndAsync()
+  }
   if(-not $retaining.WaitForExit(30000)){throw 'Retention response deadline'}
   $client=$clientOutput.GetAwaiter().GetResult()|ConvertFrom-Json
   if($migrationUdp){if(-not $migrationUdp.WaitForExit(15000)){throw 'Migration UDP response deadline'};$report.migrationUdp=$migrationOutput.GetAwaiter().GetResult()|ConvertFrom-Json}
-  $afterLoss=Control 'Snapshot'
+  $afterLoss=if($TunOwnerCrash){$beforeCrash}else{Control 'Snapshot'}
   if($directClient){
    if(-not $directClient.WaitForExit(30000)){throw 'Mixed direct result deadline'}
    $report.directAfterLink=$directOutput.GetAwaiter().GetResult()|ConvertFrom-Json
@@ -169,12 +197,13 @@ try{
   $report.retention=@{client=$client;before=$baseline;after=$afterLoss;faultMilliseconds=$FaultMilliseconds;incomingOnly=[bool]$InboundLoss;linkInterruption=[bool]$LinkInterruption;coreBypassed=[bool]$DirectRetention}
   $report.retention.success=[bool]($retaining.ExitCode -eq 0 -and $client.success -and $client.egressHash -eq $reference.serverEgressHash -and $baseline.dials -eq $afterLoss.dials -and $baseline.bindOpens -eq 1 -and $afterLoss.bindOpens -eq 1 -and $dropped -and $client.requestMilliseconds -ge ($FaultMilliseconds-500))
   if($Migration -ne 'None'){$report.retention.Remove('faultMilliseconds');$report.migrationElapsedMilliseconds=$migrationTimer.ElapsedMilliseconds;$report.migrationMode=$Migration;$report.retention.success=[bool]($client.success -and $client.egressHash -eq $reference.serverEgressHash -and $baseline.dials -eq $afterLoss.dials -and $baseline.bindOpens -eq 1 -and $afterLoss.bindOpens -eq 2 -and $baseline.outerPort -ne $afterLoss.outerPort -and $baseline.udpDials -eq 1 -and $afterLoss.udpDials -eq 1 -and $report.migrationUdp.success -and $report.migrationUdp.resumedAssociation)}
+  if($Tun){$report.tun=$true;$udpBound=$baseline.udpDials+$(if($Migration -eq 'GuestIPv4'){1}else{0});$report.retention.success=[bool]($client.success -and $client.tcpFromTun -and $client.udpFromTun -and $client.egressHash -eq $reference.serverEgressHash -and $baseline.dials -eq $afterLoss.dials -and $baseline.bindOpens -eq 1 -and $afterLoss.bindOpens -eq 2 -and $baseline.outerPort -ne $afterLoss.outerPort -and $baseline.udpDials -ge 1 -and $baseline.udpDials -le 2 -and $afterLoss.udpDials -ge $baseline.udpDials -and $afterLoss.udpDials -le $udpBound -and $client.udpBefore -eq 3 -and $client.udpAfter -eq 3);$report.udpContinuity=if($afterLoss.udpDials -eq $baseline.udpDials){'Retained'}else{'RecoveredWithNewCoreAssociation'}}
   if($Migration -eq 'GuestIPv4' -and (-not $report.guestIpChanged -or $report.interfaceReset.retained -lt 1)){$report.retention.success=$false}
   if($CandidateCore -and $LinkInterruption -and -not $DisableRetentionLease -and $report.interfaceReset.retained -lt 1){$report.retention.success=$false}
  }
- $stage='OwnerEof';if($CrashOwner){$stage='OwnerCrash';$owner.Kill()}else{$owner.StandardInput.Close()};$report.ownerStopped=[bool]$owner.WaitForExit(6000);$report.ownerExitClean=[bool]($report.ownerStopped -and $owner.ExitCode -eq 0)
- $report.ownerScenario=if($CrashOwner){'KilledTransport'}else{'ClosedOwnerStdin'}
- $report.expectedOwnerExit=[bool]($report.ownerStopped -and (($CrashOwner -and $owner.ExitCode -ne 0) -or (-not $CrashOwner -and $report.ownerExitClean)))
+ $stage='OwnerEof';$crashCase=[bool]($CrashOwner -or $TunOwnerCrash);if(-not $owner.HasExited){if($crashCase){$stage='OwnerCrash';$owner.Kill()}else{$owner.StandardInput.Close()}};$report.ownerStopped=[bool]$owner.WaitForExit(6000);$report.ownerExitClean=[bool]($report.ownerStopped -and $owner.ExitCode -eq 0)
+ $report.ownerScenario=if($crashCase){'KilledTransport'}else{'ClosedOwnerStdin'}
+ $report.expectedOwnerExit=[bool]($report.ownerStopped -and (($crashCase -and $owner.ExitCode -ne 0) -or (-not $crashCase -and $report.ownerExitClean)))
  if($ActiveOwnerStop){
   $stage='ActiveOwnerStopped';$retaining.StandardInput.WriteLine('{"Continue":true}');$retaining.StandardInput.Close();$activeOutput=$retaining.StandardOutput.ReadToEndAsync()
   if(-not $retaining.WaitForExit(18000)){throw 'Active stop client deadline'}
@@ -182,15 +211,24 @@ try{
   if($Udp){$report.activeStreamClosed=[bool]($retaining.ExitCode -eq 0 -and $report.activeOwnerResult.success -and $report.activeOwnerResult.noReplyAfterClose)}else{$report.activeStreamClosed=[bool]($retaining.ExitCode -eq 1 -and -not $report.activeOwnerResult.success -and -not $report.activeOwnerResult.sameExit)}
  }
  $after=Client $port '';$report.noFallbackAfterOwnerStop=[bool]($after.exitCode -eq 1 -and -not $after.result.success)
+ if($Tun){
+  $probe=[Diagnostics.Process]::Start((ProcessInfo 'C:\Windows\System32\curl.exe' '--noproxy "*" --connect-timeout 2 --max-time 4 --silent --output NUL https://1.1.1.1/cdn-cgi/trace'))
+  $probeOut=$probe.StandardOutput.ReadToEndAsync();$probeError=$probe.StandardError.ReadToEndAsync()
+  try{if(-not $probe.WaitForExit(6000)){$probe.Kill();$probe.WaitForExit();throw 'TUN failed-transport probe deadline'};$report.tunNoFallback=[bool]($probe.ExitCode -ne 0 -and (Get-NetRoute -DestinationPrefix '1.1.1.1/32' -ErrorAction SilentlyContinue|Where-Object {$_.InterfaceAlias -eq 'Cita-NativeLab'}))}finally{$probe.Dispose()}
+  $dnsProbe=[Diagnostics.Process]::Start((ProcessInfo $exe '--os-dns-probe'));$dnsOutput=$dnsProbe.StandardOutput.ReadToEndAsync();$dnsError=$dnsProbe.StandardError.ReadToEndAsync()
+  try{$dnsProbe.StandardInput.WriteLine((@{Server=$script:udpServer}|ConvertTo-Json -Compress));$dnsProbe.StandardInput.Close();if(-not $dnsProbe.WaitForExit(4000)){$dnsProbe.Kill();$dnsProbe.WaitForExit();throw 'TUN UDP refusal deadline'};$dnsResult=$dnsOutput.GetAwaiter().GetResult()|ConvertFrom-Json;$report.tunUdpNoFallback=[bool]($dnsProbe.ExitCode -eq 1 -and -not $dnsResult.success)}finally{$dnsProbe.Dispose()}
+ }
  $report.success=[bool]($report.generationMatched -and $report.wrongSecretRefused -and $report.noSecretRefused -and $report.nativeHttps -and $report.routerChainHttps -and $report.expectedOwnerExit -and $report.noFallbackAfterOwnerStop)
- if($DisableRetentionLease -and $LinkInterruption){
+ if($DisableRetentionLease -and ($LinkInterruption -or ($Tun -and $Migration -eq 'GuestIPv4'))){
   $report.expectedDefaultReset=[bool](-not $report.retention.client.success -and $report.retention.client.dialsAfter -gt $report.retention.client.dialsBefore -and $report.retention.after.dials -gt $report.retention.before.dials)
   $report.expectedDefaultReset=[bool]($report.expectedDefaultReset -and $report.interfaceReset.retained -eq 0 -and $report.interfaceReset.closed -gt 0)
   if(-not $report.expectedDefaultReset){$report.success=$false}
+ }elseif($TunOwnerCrash){$report.expectedActiveTunClose=[bool](-not $report.retention.client.success -and -not $report.retention.client.sameExit -and $report.retention.client.udpBefore -eq 3 -and $report.retention.client.udpAfter -eq 3);if(-not $report.expectedActiveTunClose){$report.success=$false}
  }elseif($Retention -and -not $report.retention.success){$report.success=$false}
  if($CandidateCore -and $LinkInterruption -and -not $report.directResetObserved){$report.success=$false}
  if($ActiveOwnerStop -and -not $report.activeStreamClosed){$report.success=$false}
  if($Udp -and (-not $report.udpWrongSecretRefused -or -not $report.udpNoSecretRefused -or -not $report.nativeUdp.result.success -or -not $report.coreUdp.result.success)){$report.success=$false}
+ if($Tun -and (-not $report.tunNoFallback -or -not $report.tunUdpNoFallback)){$report.success=$false}
  $report.candidateCore=[bool]$CandidateCore
  $report.retentionLeaseEnabled=[bool]($CandidateCore -and -not $DisableRetentionLease)
 }catch{$report.failedStage=$stage;$report.errorType=$_.Exception.GetType().Name}
@@ -204,6 +242,7 @@ finally{
  }
  if($linkRestore){$linkRestore.Dispose()}
  foreach($process in @($migrationUdp,$directClient,$retaining,$router,$owner)){if($process){if(-not $process.HasExited){$process.Kill();$process.WaitForExit()};$process.Dispose()}}
+ if($tunRescue){if(-not $tunRescue.HasExited){$tunRescue.Kill();$tunRescue.WaitForExit()};$tunRescue.Dispose()}
  $token=$null;$report.finishedUtc=[datetime]::UtcNow.ToString('o')
  # Delete just this run's credential-bearing file, never another run's folder.
  try{if($path -and (Test-Path -LiteralPath $path)){Remove-Item -LiteralPath $path -Force};$report.credentialFileRemoved=[bool](-not $path -or -not (Test-Path -LiteralPath $path))}catch{$report.credentialFileRemoved=$false}

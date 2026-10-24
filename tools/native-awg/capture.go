@@ -12,6 +12,7 @@ import (
 type captureSpec struct {
 	File, Local, Endpoint string
 	Port                  uint16
+	Protected             []string
 }
 type captureResult struct {
 	Success        bool `json:"success"`
@@ -23,6 +24,8 @@ type captureResult struct {
 	IPv4           int  `json:"ipv4"`
 	AllUDP         int  `json:"allUdp"`
 	OtherSourceUDP int  `json:"otherSourceUdp"`
+	ProtectedTCP   int  `json:"protectedTcp"`
+	ProtectedUDP   int  `json:"protectedUdp"`
 }
 
 var errCapture = errors.New("unsupported or malformed capture")
@@ -38,6 +41,17 @@ func analyzeCapture(data []byte, s captureSpec) (r captureResult, e error) {
 	}
 	if len(data) > 32*1024*1024 {
 		return r, errCapture
+	}
+	protected := map[netip.Addr]bool{}
+	if len(s.Protected) > 8 {
+		return r, errCapture
+	}
+	for _, value := range s.Protected {
+		ip, err := netip.ParseAddr(value)
+		if err != nil || !publicTarget(ip) || ip == endpoint || protected[ip] {
+			return r, errCapture
+		}
+		protected[ip] = true
 	}
 	var links []uint16
 	section := false
@@ -128,7 +142,13 @@ func analyzeCapture(data []byte, s captureSpec) (r captureResult, e error) {
 			switch packet[9] {
 			case 6:
 				r.OtherTCP++
+				if protected[netip.AddrFrom4(dest)] {
+					r.ProtectedTCP++
+				}
 			case 17:
+				if protected[netip.AddrFrom4(dest)] {
+					r.ProtectedUDP++
+				}
 				if netip.AddrFrom4(dest) == endpoint && port == s.Port {
 					r.TunnelUDP++
 				} else {
