@@ -316,3 +316,9 @@ The isolated native child-process owner is described in
 fences child epochs, bounds crash restarts, and joins shutdown before confirming
 Stop. It is a laboratory integration boundary, not an installed service backend;
 existing TCP/UDP application streams are not preserved after process death.
+
+The subsequent [UDP lifetime checkpoint](UDP-LIFETIME-CHECKPOINT.md) fixes stale
+native SOCKS UDP associations on child death. A controlled opt-in/off W11
+comparison restores queries from the same OS UDP socket while retaining direct
+TCP. This is local UDP recovery with a new internal association, not preservation
+of server-side UDP session identity or VPN TCP across a process crash.

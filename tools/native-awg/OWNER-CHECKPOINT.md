@@ -106,3 +106,8 @@ application UDP/QUIC/call workloads. Owner-crash EOF with a responsive child
 does not establish forced teardown of a hung child. The intermittent UDP
 warmup/control failures documented in `RECOVERY-CHECKPOINT.md` remain separate
 unresolved observations; a process-restart success does not fix them.
+
+Subsequent gate: [UDP-LIFETIME-CHECKPOINT.md](UDP-LIFETIME-CHECKPOINT.md)
+accepts targeted cleanup on the dead association's own TCP control EOF. The
+same OS UDP socket resumes after child replacement, with direct TCP retained.
+It does not preserve the server-side UDP tuple or change the earlier limits.

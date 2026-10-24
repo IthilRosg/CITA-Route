@@ -1,4 +1,4 @@
-param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention,[switch]$CandidateCore,[switch]$ActiveOwnerStop,[switch]$DisableRetentionLease,[switch]$Udp,[ValidateSet('None','Rebind','GuestIPv4')][string]$Migration='None',[switch]$Tun,[switch]$TunOwnerCrash,[switch]$AutoRecovery,[switch]$Supervised,[switch]$OwnerStopRace)
+param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention,[switch]$CandidateCore,[switch]$ActiveOwnerStop,[switch]$DisableRetentionLease,[switch]$Udp,[ValidateSet('None','Rebind','GuestIPv4')][string]$Migration='None',[switch]$Tun,[switch]$TunOwnerCrash,[switch]$AutoRecovery,[switch]$Supervised,[switch]$OwnerStopRace,[switch]$UDPLifetime)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
@@ -62,6 +62,7 @@ try{
  if($AutoRecovery -and (-not $Tun -or $Migration -ne 'Rebind' -or $TunOwnerCrash -or $DisableRetentionLease)){throw 'Recovery requires standalone leased TUN rebind case'}
  if($Supervised -and (-not $Tun -or $Migration -ne 'Rebind' -or $TunOwnerCrash -or $AutoRecovery -or $DisableRetentionLease)){throw 'Supervision requires standalone leased TUN case'}
  if($OwnerStopRace -and -not $Supervised){throw 'Stop race requires supervisor'}
+ if($UDPLifetime -and -not $Supervised){throw 'UDP lifetime checkpoint requires supervised TUN'}
  if($Tun -and (Get-NetAdapter -Name 'Cita-NativeLab' -IncludeHidden -ErrorAction SilentlyContinue)){throw 'Lab TUN already exists'}
  if(Get-Process smart-router,vpn-bridge,RoutePilot,native-awg-lab,native-core-lab -ErrorAction SilentlyContinue){throw 'Guest must be idle'}
  $report.nativeSha256=(Get-FileHash -LiteralPath $exe).Hash
@@ -99,6 +100,7 @@ try{
  if($Tun){
   $configuration.inbounds+=@{type='tun';tag='native-tun';interface_name='Cita-NativeLab';address=@('172.30.127.1/30');route_address=@('1.1.1.1/32',($script:udpServer+'/32'))|Sort-Object -Unique;auto_route=$true;strict_route=$false;dns_mode='disabled';stack='gvisor';mtu=1400}
   $configuration.outbounds+=@{type='socks';tag='native-udp';server='127.0.0.1';server_port=[int]$ready.port;version='5';username='cita';password=$token;network='udp'}
+  if($UDPLifetime){$configuration.outbounds[-1].cita_native_udp_lifetime=$true}
   $configuration.route.rules=@(@{network='udp';action='route';outbound='native-udp'})+$configuration.route.rules
   $report.scope='Ordinary OS TCP/TLS and UDP through scoped IPv4 /32 TUN routes and native AWG; no application proxy or TLS override'
  }
@@ -107,6 +109,7 @@ try{
  $report.coreSha256=(Get-FileHash -LiteralPath $core).Hash
  $routerInfo=ProcessInfo $core ('run -c "'+$path+'"');if($Udp){$routerInfo.EnvironmentVariables['CITA_NATIVE_UDP_LAB']='1'}
  if($Tun){$routerInfo.EnvironmentVariables['CITA_NATIVE_TUN_LAB']='1'}
+ if($UDPLifetime){$routerInfo.EnvironmentVariables['CITA_NATIVE_UDP_LIFETIME_LAB']='1'}
  $router=[Diagnostics.Process]::Start($routerInfo);$routerOutput=$router.StandardOutput.ReadToEndAsync()
  if($CandidateCore){$script:resetEvent=$router.StandardError.ReadLineAsync()}else{$routerErrors=$router.StandardError.ReadToEndAsync()}
  if($Tun){
@@ -148,7 +151,7 @@ try{
    $migrationUdp.StandardInput.WriteLine((@{Port=[int]$ready.port;Token=$token;Server=$script:udpServer;Hold=$true;Resume=$true}|ConvertTo-Json -Compress))
    if(-not $migrationReady.Wait(15000) -or ($migrationReady.Result|ConvertFrom-Json).stage -ne 'UdpClientReady'){throw 'Migration UDP baseline unavailable'}
   }
-  if($CandidateCore -and $LinkInterruption){
+  if($CandidateCore -and ($LinkInterruption -or ($Supervised -and $UDPLifetime))){
    $directClient=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-retention-client'));$directErrors=$directClient.StandardError.ReadToEndAsync();$directReady=$directClient.StandardOutput.ReadLineAsync()
    $directClient.StandardInput.WriteLine('{"Port":20939,"FaultMilliseconds":3000}')
    if(-not $directReady.Wait(18000) -or ($directReady.Result|ConvertFrom-Json).stage -ne 'RetentionClientReady'){throw 'Mixed direct baseline unavailable'}
@@ -230,6 +233,7 @@ try{
    if(-not $directClient.WaitForExit(30000)){throw 'Mixed direct result deadline'}
    $report.directAfterLink=$directOutput.GetAwaiter().GetResult()|ConvertFrom-Json
    $report.directResetObserved=[bool]($report.directAfterLink.dialsBefore -eq 1 -and $report.directAfterLink.dialsAfter -gt 1 -and -not $report.directAfterLink.success)
+   if($UDPLifetime){$report.directRetained=[bool]($report.directAfterLink.success -and $report.directAfterLink.dialsAfter -eq 1)}
   }
   $dropped=if($LinkInterruption){$report.linkDisabled}else{if($InboundLoss){$afterLoss.droppedIncoming -gt $baseline.droppedIncoming}else{$afterLoss.droppedOutgoing -gt $baseline.droppedOutgoing}}
   $report.retention=@{client=$client;before=$baseline;after=$afterLoss;faultMilliseconds=$FaultMilliseconds;incomingOnly=[bool]$InboundLoss;linkInterruption=[bool]$LinkInterruption;coreBypassed=[bool]$DirectRetention}
@@ -264,6 +268,8 @@ try{
  }elseif($Supervised){
   if($OwnerStopRace){$report.supervisionPassed=[bool]($report.stopDuringBackoff -and $report.stopAck.state -eq 'Stopped' -and -not $report.retention.client.sameExit)}
   else{$report.supervisionPassed=[bool]($report.oldStreamClosed -and $report.childRestarted -and $report.restartBudgetEnforced -and $report.freshAfterCrash.success -and $report.freshAfterCrash.egressHash -eq $reference.serverEgressHash -and $report.freshAfterCrash.tcpFromTun -and $report.freshAfterCrash.udpFromTun)}
+  if($UDPLifetime -and -not $OwnerStopRace){$report.sameSocketUdpRecovered=[bool]($report.retention.client.udpBefore -eq 3 -and $report.retention.client.udpAfter -eq 3 -and -not $report.retention.client.dnsFailure);if(-not $report.sameSocketUdpRecovered){$report.supervisionPassed=$false}}
+  if($UDPLifetime -and -not $report.directRetained){$report.supervisionPassed=$false}
   if(-not $report.supervisionPassed){$report.success=$false}
  }elseif($TunOwnerCrash){$report.expectedActiveTunClose=[bool](-not $report.retention.client.success -and -not $report.retention.client.sameExit -and $report.retention.client.udpBefore -eq 3 -and $report.retention.client.udpAfter -eq 3);if(-not $report.expectedActiveTunClose){$report.success=$false}
  }elseif($Retention -and -not $report.retention.success){$report.success=$false}
