@@ -1,4 +1,4 @@
-param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention,[switch]$CandidateCore,[switch]$ActiveOwnerStop,[switch]$DisableRetentionLease,[switch]$Udp,[ValidateSet('None','Rebind','GuestIPv4')][string]$Migration='None',[switch]$Tun,[switch]$TunOwnerCrash)
+param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention,[switch]$CandidateCore,[switch]$ActiveOwnerStop,[switch]$DisableRetentionLease,[switch]$Udp,[ValidateSet('None','Rebind','GuestIPv4')][string]$Migration='None',[switch]$Tun,[switch]$TunOwnerCrash,[switch]$AutoRecovery)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
@@ -48,6 +48,7 @@ try{
  if($Migration -ne 'None' -and (-not $Retention -or -not $CandidateCore -or $LinkInterruption -or $InboundLoss -or ($DisableRetentionLease -and -not $Tun))){throw 'Migration requires standalone candidate TCP retention'}
  if($Tun -and ($Migration -eq 'None' -or -not $CandidateCore)){throw 'Scoped TUN requires migration scenario'}
  if($TunOwnerCrash -and (-not $Tun -or $Migration -ne 'Rebind')){throw 'Active TUN crash requires rebind scenario'}
+ if($AutoRecovery -and (-not $Tun -or $Migration -ne 'Rebind' -or $TunOwnerCrash -or $DisableRetentionLease)){throw 'Recovery requires standalone leased TUN rebind case'}
  if($Tun -and (Get-NetAdapter -Name 'Cita-NativeLab' -IncludeHidden -ErrorAction SilentlyContinue)){throw 'Lab TUN already exists'}
  if(Get-Process smart-router,vpn-bridge,RoutePilot,native-awg-lab,native-core-lab -ErrorAction SilentlyContinue){throw 'Guest must be idle'}
  $report.nativeSha256=(Get-FileHash -LiteralPath $exe).Hash
@@ -61,6 +62,7 @@ try{
  $mode=if($Retention){'--serve-proxy-loss-lab'}else{'--serve-proxy'}
  if($Udp){$mode='--serve-proxy-udp-lab';$peerText=[IO.File]::ReadAllText((Join-Path $root 'private\peer.conf'));if($peerText -notmatch '(?m)^DNS\s*=\s*(\d+\.\d+\.\d+\.\d+)'){throw 'UDP lab requires literal DNS'};$script:udpServer=$Matches[1];$peerText=$null}
  if($Migration -ne 'None'){$mode='--serve-proxy-migration-lab';$peerText=[IO.File]::ReadAllText((Join-Path $root 'private\peer.conf'));if($peerText -notmatch '(?m)^DNS\s*=\s*(\d+\.\d+\.\d+\.\d+)'){throw 'Migration requires literal DNS'};$script:udpServer=$Matches[1];$peerText=$null}
+ if($AutoRecovery){$mode='--serve-proxy-recovery-lab'}
  $owner=[Diagnostics.Process]::Start((ProcessInfo $exe $mode));$ownerErrors=$owner.StandardError.ReadToEndAsync();$line=$owner.StandardOutput.ReadLineAsync()
  $owner.StandardInput.WriteLine((@{Config=[IO.File]::ReadAllText((Join-Path $root 'private\peer.conf'));Token=$token;Session=$session;Generation=1}|ConvertTo-Json -Compress))
  if(-not $line.Wait(6000)){throw 'Readiness deadline'};$ready=$line.Result|ConvertFrom-Json
@@ -139,6 +141,10 @@ try{
   }
   if($CandidateCore -and $LinkInterruption){while($script:resetEvent.IsCompleted){$null=ReadResetEvent}}
   $baseline=Control 'Snapshot'
+  if($AutoRecovery){
+   for($i=0;$i -lt 12 -and $baseline.recovery.state -ne 'Healthy';$i++){Start-Sleep -Seconds 1;$baseline=Control 'Snapshot'}
+   if($baseline.recovery.state -ne 'Healthy' -or $baseline.recovery.attempts -ne 0){throw 'Recovery baseline not verified'}
+  }
   if($Migration -ne 'None'){$migrationTimer=[Diagnostics.Stopwatch]::StartNew()}
   if($LinkInterruption){
    $stage='GuestLinkInterruption'
@@ -156,7 +162,7 @@ try{
    $disabled=Get-NetAdapter -IncludeHidden|Where-Object {[guid]$_.InterfaceGuid -eq [guid]$adapterGuid}
    $report.linkDisabled=[bool]($disabled.AdminStatus -eq 'Down')
    if(-not $report.linkDisabled){throw 'Adapter disable not confirmed'}
-  }elseif($Migration -eq 'Rebind'){$report.rebind=Control 'Rebind'}elseif($Migration -eq 'GuestIPv4'){
+  }elseif($AutoRecovery){$report.blackhole=Control 'Blackhole';$stage='AutomaticEncryptedSocketRecovery'}elseif($Migration -eq 'Rebind'){$report.rebind=Control 'Rebind'}elseif($Migration -eq 'GuestIPv4'){
    while($script:resetEvent.IsCompleted){$null=ReadResetEvent}
    $ipStatePath=Join-Path $root ('private\ip-'+$session+'.json')
    $stage='GuestIPv4Change';$ipState=& (Join-Path $root 'Guest-IPv4Migration.ps1') -Action Begin -StatePath $ipStatePath
@@ -188,6 +194,12 @@ try{
   $client=$clientOutput.GetAwaiter().GetResult()|ConvertFrom-Json
   if($migrationUdp){if(-not $migrationUdp.WaitForExit(15000)){throw 'Migration UDP response deadline'};$report.migrationUdp=$migrationOutput.GetAwaiter().GetResult()|ConvertFrom-Json}
   $afterLoss=if($TunOwnerCrash){$beforeCrash}else{Control 'Snapshot'}
+  if($AutoRecovery){
+   for($i=0;$i -lt 12 -and ($afterLoss.recovery.state -ne 'Healthy' -or $afterLoss.recovery.successes -lt 1);$i++){Start-Sleep -Seconds 1;$afterLoss=Control 'Snapshot'}
+   $report.automaticRecovery=[bool]($afterLoss.recovery.state -eq 'Healthy' -and $afterLoss.recovery.attempts -eq 1 -and $afterLoss.recovery.successes -eq 1)
+   $report.recoveryStatus=$afterLoss.recovery
+   $report.recoveryElapsedMilliseconds=$migrationTimer.ElapsedMilliseconds
+  }
   if($directClient){
    if(-not $directClient.WaitForExit(30000)){throw 'Mixed direct result deadline'}
    $report.directAfterLink=$directOutput.GetAwaiter().GetResult()|ConvertFrom-Json
@@ -229,9 +241,10 @@ try{
  if($ActiveOwnerStop -and -not $report.activeStreamClosed){$report.success=$false}
  if($Udp -and (-not $report.udpWrongSecretRefused -or -not $report.udpNoSecretRefused -or -not $report.nativeUdp.result.success -or -not $report.coreUdp.result.success)){$report.success=$false}
  if($Tun -and (-not $report.tunNoFallback -or -not $report.tunUdpNoFallback)){$report.success=$false}
+ if($AutoRecovery -and -not $report.automaticRecovery){$report.success=$false}
  $report.candidateCore=[bool]$CandidateCore
  $report.retentionLeaseEnabled=[bool]($CandidateCore -and -not $DisableRetentionLease)
-}catch{$report.failedStage=$stage;$report.errorType=$_.Exception.GetType().Name}
+}catch{$report.failedStage=$stage;$report.errorType=$_.Exception.GetType().Name;if($AutoRecovery -and $owner -and -not $owner.HasExited){try{$report.recoveryAtFailure=Control 'Snapshot'}catch{}}}
 finally{
  if($ipStatePath -and (Test-Path -LiteralPath $ipStatePath)){try{$ipRestored=& (Join-Path $root 'Guest-IPv4Migration.ps1') -Action Restore -StatePath $ipStatePath;$report.guestIpRestored=[bool]$ipRestored.restored}catch{$report.guestIpRestored=$false};if(-not $report.guestIpRestored){$report.success=$false}}
  if($linkAdapter){

@@ -303,3 +303,10 @@ workloads; production owner leases, profile/generation handoff
 and rollback. Echoing an identity in this lab is not yet production fencing.
 Only then optional production transport selection and UI. Keep WireSock as the
 production default until those independent gates pass.
+
+The bounded automatic encrypted-socket recovery checkpoint is accepted in its
+explicit laboratory launch mode; see [RECOVERY-CHECKPOINT.md](RECOVERY-CHECKPOINT.md).
+It retains the AWG device and application streams while reopening the outer UDP
+socket. External process supervision and production agent integration remain
+separate gates. An intermittent UDP manual-control failure is preserved and
+still needs instrumentation; a bounded unchanged-binary repeat passed.

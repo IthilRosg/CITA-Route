@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -106,6 +107,9 @@ func proxyMainMode(input io.Reader, output io.Writer, lossLab bool) int {
 	return proxyMainTransport(input, output, lossLab, false)
 }
 func proxyMainTransport(input io.Reader, output io.Writer, lossLab, udpLab bool) int {
+	return proxyTransport(input, output, lossLab, udpLab, false)
+}
+func proxyTransport(input io.Reader, output io.Writer, lossLab, udpLab, recoveryLab bool) int {
 	var spec proxyStart
 	decoder := json.NewDecoder(io.LimitReader(input, 131073))
 	decoder.DisallowUnknownFields()
@@ -154,6 +158,35 @@ func proxyMainTransport(input io.Reader, output io.Writer, lossLab, udpLab bool)
 		return 1
 	}
 	dial := restrictedDial(network)
+	if recoveryLab {
+		fault.recovery = newTransportRecovery()
+		healthTransport := &http.Transport{DialContext: dial, Proxy: nil, DisableKeepAlives: true, TLSHandshakeTimeout: time.Second, ResponseHeaderTimeout: time.Second}
+		healthClient := &http.Client{Transport: healthTransport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		probe := func(ctx context.Context) bool {
+			results := make(chan bool, 2)
+			go func() { results <- udpDNSDeadline(network, c.dns[0], 1500*time.Millisecond) }()
+			go func() {
+				req, _ := http.NewRequestWithContext(ctx, "GET", "https://1.1.1.1/cdn-cgi/trace", nil)
+				resp, err := healthClient.Do(req)
+				ok := false
+				if err == nil {
+					body, e := io.ReadAll(io.LimitReader(resp.Body, 8193))
+					resp.Body.Close()
+					ok = e == nil && resp.StatusCode == 200 && len(body) <= 8192 && traceHash(body) != ""
+				}
+				results <- ok
+			}()
+			// Both checks finish before the next cycle; either success prevents repair.
+			one, two := <-results, <-results
+			return one || two
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			runTransportRecovery(ctx, fault.recovery, probe, func() error { return dev.IpcSet("listen_port=0\n") })
+		}()
+		defer func() { cancel(); <-done; healthTransport.CloseIdleConnections() }()
+	}
 	var dials atomic.Int64
 	var udpOptions []udpTunnelDial
 	if udpLab {

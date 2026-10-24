@@ -21,15 +21,16 @@ type lossCommand struct {
 	IncomingOnly bool
 }
 type lossSnapshot struct {
-	Stage           string `json:"stage"`
-	Session         string `json:"session"`
-	Generation      uint64 `json:"generation"`
-	Dials           int64  `json:"dials"`
-	BindOpens       int64  `json:"bindOpens"`
-	DroppedOutgoing int64  `json:"droppedOutgoing"`
-	DroppedIncoming int64  `json:"droppedIncoming"`
-	OuterPort       int64  `json:"outerPort"`
-	UdpDials        int64  `json:"udpDials"`
+	Stage           string          `json:"stage"`
+	Session         string          `json:"session"`
+	Generation      uint64          `json:"generation"`
+	Dials           int64           `json:"dials"`
+	BindOpens       int64           `json:"bindOpens"`
+	DroppedOutgoing int64           `json:"droppedOutgoing"`
+	DroppedIncoming int64           `json:"droppedIncoming"`
+	OuterPort       int64           `json:"outerPort"`
+	UdpDials        int64           `json:"udpDials"`
+	Recovery        *recoveryStatus `json:"recovery,omitempty"`
 }
 
 func validLossCommand(c lossCommand, session string, generation uint64, used bool) bool {
@@ -42,6 +43,9 @@ func validLossCommand(c lossCommand, session string, generation uint64, used boo
 	if c.Action == "Rebind" {
 		return !used && c.Milliseconds == 0 && !c.IncomingOnly
 	}
+	if c.Action == "Blackhole" {
+		return !used && c.Milliseconds == 0 && !c.IncomingOnly
+	}
 	return c.Action == "Pause" && !used && (c.Milliseconds == 3000 || c.Milliseconds == 10000)
 }
 
@@ -49,10 +53,10 @@ func validLossCommand(c lossCommand, session string, generation uint64, used boo
 // Bounded commands, one fault, allowlisted durations, matching owner identity; no TCP
 // management listener and no such commands on the ordinary proxy launch path.
 func proxyLossControl(input io.Reader, output io.Writer, session string, generation uint64, bind *faultBind, dials *atomic.Int64, rebind ...func() error) {
-	decoder := json.NewDecoder(io.LimitReader(input, 4096))
+	decoder := json.NewDecoder(io.LimitReader(input, 8192))
 	decoder.DisallowUnknownFields()
 	used := false
-	for count := 0; count < 8; count++ {
+	for count := 0; count < 32; count++ {
 		var c lossCommand
 		if decoder.Decode(&c) != nil || !validLossCommand(c, session, generation, used) {
 			return
@@ -62,9 +66,16 @@ func proxyLossControl(input io.Reader, output io.Writer, session string, generat
 			bind.inboundOnly.Store(c.IncomingOnly)
 			bind.pause(time.Duration(c.Milliseconds) * time.Millisecond)
 		}
+		if c.Action == "Blackhole" {
+			if bind.recovery == nil {
+				return
+			}
+			used = true
+			bind.blackholePort.Store(bind.port.Load())
+		}
 		r := lossSnapshot{Stage: c.Action, Session: session, Generation: generation, Dials: dials.Load(), BindOpens: bind.opens.Load(), DroppedOutgoing: bind.droppedSend.Load(), DroppedIncoming: bind.droppedReceive.Load()}
 		if c.Action == "Rebind" {
-			if len(rebind) != 1 {
+			if len(rebind) != 1 || bind.recovery != nil {
 				return
 			}
 			used = true
@@ -75,6 +86,10 @@ func proxyLossControl(input io.Reader, output io.Writer, session string, generat
 		}
 		r.OuterPort = bind.port.Load()
 		r.UdpDials = bind.udpDials.Load()
+		if bind.recovery != nil {
+			status := bind.recovery.snapshot()
+			r.Recovery = &status
+		}
 		if json.NewEncoder(output).Encode(r) != nil {
 			return
 		}

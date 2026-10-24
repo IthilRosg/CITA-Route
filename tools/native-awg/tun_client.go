@@ -16,11 +16,12 @@ import (
 // Guest runner installs only /32 routes for 1.1.1.1 and the approved DNS server.
 type tunClientResult struct {
 	chainRetention
-	UDPBefore    int  `json:"udpBefore"`
-	UDPAfter     int  `json:"udpAfter"`
-	UDPLocalPort int  `json:"udpLocalPort"`
-	TcpFromTun   bool `json:"tcpFromTun"`
-	UdpFromTun   bool `json:"udpFromTun"`
+	UDPBefore    int    `json:"udpBefore"`
+	UDPAfter     int    `json:"udpAfter"`
+	UDPLocalPort int    `json:"udpLocalPort"`
+	TcpFromTun   bool   `json:"tcpFromTun"`
+	UdpFromTun   bool   `json:"udpFromTun"`
+	DNSFailure   string `json:"dnsFailure,omitempty"`
 }
 
 func tunClient(input io.Reader, output io.Writer) int {
@@ -51,6 +52,7 @@ func tunClient(input io.Reader, output io.Writer) int {
 		return e == nil && prefix.Contains(ip)
 	}
 	var calls atomic.Int64
+	defer func() { r.DialsAfter = calls.Load() }()
 	var source atomic.Bool
 	transport := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, kind, address string) (net.Conn, error) {
 		calls.Add(1)
@@ -88,17 +90,36 @@ func tunClient(input io.Reader, output io.Writer) int {
 	dns := func() bool {
 		packet, id, e := dnsQuery()
 		if e != nil {
+			r.DNSFailure = "QueryCreation"
 			return false
 		}
 		if udp.SetDeadline(time.Now().Add(4*time.Second)) != nil {
+			r.DNSFailure = "Deadline"
 			return false
 		}
 		if _, e = udp.Write(packet); e != nil {
+			r.DNSFailure = "Write"
 			return false
 		}
 		buffer := make([]byte, 1233)
 		n, e := udp.Read(buffer)
-		return e == nil && n <= 1232 && validDNS(buffer[:n], id)
+		if e != nil {
+			if timeout, ok := e.(net.Error); ok && timeout.Timeout() {
+				r.DNSFailure = "ReadTimeout"
+			} else {
+				r.DNSFailure = "ReadError"
+			}
+			return false
+		}
+		if n > 1232 {
+			r.DNSFailure = "Oversize"
+			return false
+		}
+		if !validDNS(buffer[:n], id) {
+			r.DNSFailure = "InvalidResponse"
+			return false
+		}
+		return true
 	}
 	r.EgressHash = get(ctx)
 	r.TcpFromTun = source.Load()

@@ -32,6 +32,9 @@ func validDNS(data []byte, id uint16) bool {
 
 // Explicit DNS/UDP request, using only the tunnel stack, never Windows DNS.
 func udpDNS(network *netstack.Net, server netip.Addr) bool {
+	return udpDNSDeadline(network, server, 3*time.Second)
+}
+func udpDNSDeadline(network *netstack.Net, server netip.Addr, timeout time.Duration) bool {
 	var nonce [2]byte
 	if _, e := rand.Read(nonce[:]); e != nil {
 		return false
@@ -47,7 +50,7 @@ func udpDNS(network *netstack.Net, server netip.Addr) bool {
 		return false
 	}
 	defer socket.Close()
-	if socket.SetDeadline(time.Now().Add(3*time.Second)) != nil {
+	if socket.SetDeadline(time.Now().Add(timeout)) != nil {
 		return false
 	}
 	if _, e = socket.Write(packet); e != nil {

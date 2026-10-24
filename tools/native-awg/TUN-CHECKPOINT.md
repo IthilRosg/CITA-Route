@@ -112,3 +112,7 @@ continuous traffic/loss measurement, game/QUIC/call session continuity, sleep,
 automatic agent recovery, updates/profile handoff and whole-core crash safety.
 The next work is bounded automatic service recovery and preserving UDP session
 identity where needed before exposing an optional production transport.
+
+Subsequent lab result: [RECOVERY-CHECKPOINT.md](RECOVERY-CHECKPOINT.md) verifies
+bounded automatic outer-socket repair without recreating the TUN/AWG device.
+Service/process recovery and production integration are still outstanding.

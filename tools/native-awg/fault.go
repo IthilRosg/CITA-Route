@@ -18,10 +18,14 @@ type faultBind struct {
 	inboundOnly    atomic.Bool
 	port           atomic.Int64
 	udpDials       atomic.Int64
+	blackholePort  atomic.Int64
+	recovery       *transportRecovery
 }
 
 func newFaultBind(bind conn.Bind) *faultBind { return &faultBind{Bind: bind, origin: time.Now()} }
-func (b *faultBind) blocked() bool           { return time.Since(b.origin).Nanoseconds() < b.until.Load() }
+func (b *faultBind) blocked() bool {
+	return time.Since(b.origin).Nanoseconds() < b.until.Load() || b.blackholePort.Load() != 0 && b.blackholePort.Load() == b.port.Load()
+}
 func (b *faultBind) pause(duration time.Duration) {
 	b.until.Store(time.Since(b.origin).Nanoseconds() + int64(duration))
 }
