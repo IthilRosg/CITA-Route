@@ -146,8 +146,9 @@ or profile handoff. Current explicit suspend/Stop behavior intentionally
 continues to close sockets. Packet observations are restricted to a selected
 source IPv4/NIC capture; they are not universal leak proof.
 
-Keep WireSock as the released default. The next checkpoint is authenticated
-UDP association with bounded resources and TCP-owned lifetime, then address
+Keep WireSock as the released default. The subsequent authenticated UDP
+association/lifetime checkpoint is now accepted; see
+[UDP-CHECKPOINT.md](UDP-CHECKPOINT.md). Following work is address
 change/TUN integration and the real service's owner/profile/generation
 handoff. Each needs independent acceptance before a UI transport switch or
 release is proposed.

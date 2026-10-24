@@ -1,8 +1,9 @@
 # Native AWG transport laboratory
 
 Experimental and separate from the production CITA transport. No automatic
-fallback to host TCP/DNS, no listener, system adapter, routes or OS DNS settings.
-The first milestone is a single verified HTTPS request via an internal netstack.
+fallback to host TCP/DNS or changes to system adapters, routes or OS DNS settings.
+Probe modes have no listener; proxy lab modes bind IPv4 loopback only. The first
+milestone was a single verified HTTPS request via an internal netstack.
 
 Pinned engine: `github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828`, commit
 `b5928efb6ca19f0153958460c3d141f04abc5c2e`, module checksum
@@ -15,14 +16,15 @@ Build from this directory with workspace-local GOMODCACHE/GOCACHE:
 The workspace build helper `Build.ps1` checks the toolchain, verifies dependencies,
 runs tests/vet, and builds without changing the module manifest.
 Configuration is read from stdin, never command arguments. JSON result contains
-only fixed stages, elapsed time and a SHA-256 digest of the observed exit address.
+fixed stages, counters, readiness metadata and a SHA-256 digest of the observed exit address.
 Upstream errors/logs are suppressed because they can contain configuration values.
 
 Initial supported scope: one IPv4 peer, literal IPv4 endpoint, IPv4 addresses/DNS,
 default IPv4 AllowedIPs, MTU 576–1420, basic WG keys/keepalive and listed AWG
 J/S/H/I parameters (validated further by the engine). Hostname bootstrap, IPv6,
-scripts, multiple peers and WireSock extensions are explicitly refused. No local
-proxy or production credential handling is provided yet. The guest runner is
+scripts, multiple peers and WireSock extensions are explicitly refused.
+Production credential/service handling is not provided yet; isolated proxy
+modes are described below. The guest runner is
 restricted to the approved W11 lab UUID and requires idle CITA/WireSock.
 
 A successful HTTPS request is NOT packet-capture leak proof, UDP acceptance,
@@ -132,7 +134,7 @@ The token/config are absent from argv, readiness and native logs. Loopback
 SOCKS5 username/password authentication is local access control, not encryption
 against an administrator or protection from process-memory inspection.
 
-The server supports authenticated TCP CONNECT only, at most 32 handlers, a
+The default proxy mode supports authenticated TCP CONNECT only, at most 32 handlers, a
 5-second handshake and 8-second dial budget. UDP ASSOCIATE, BIND, IPv6 and
 nonpublic targets (including CGNAT/Tailscale) are refused. Domain resolution
 stays inside the AWG netstack; all returned addresses are validated and one
@@ -283,8 +285,12 @@ sleep/resume and no direct fallback. The bounded same-adapter W11 gate is now
 accepted as described in the linked checkpoint. This does not establish
 arbitrary NIC/address migration or make the prototype ready for production.
 
-Following gates: address/NAT changes; authenticated UDP association
-and resource/stream limits; production owner leases, profile/generation handoff
+The next laboratory checkpoint, bounded authenticated UDP association and its
+TCP-owned lifetime, is also accepted: see [UDP-CHECKPOINT.md](UDP-CHECKPOINT.md).
+Normal TCP-only modes remain unchanged; UDP requires an explicit lab launch.
+
+Following gates: address/NAT changes, real TUN integration and application
+workloads; production owner leases, profile/generation handoff
 and rollback. Echoing an identity in this lab is not yet production fencing.
 Only then optional production transport selection and UI. Keep WireSock as the
 production default until those independent gates pass.

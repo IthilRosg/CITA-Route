@@ -103,6 +103,9 @@ func proxyMain(input io.Reader, output io.Writer) int {
 	return proxyMainMode(input, output, false)
 }
 func proxyMainMode(input io.Reader, output io.Writer, lossLab bool) int {
+	return proxyMainTransport(input, output, lossLab, false)
+}
+func proxyMainTransport(input io.Reader, output io.Writer, lossLab, udpLab bool) int {
 	var spec proxyStart
 	decoder := json.NewDecoder(io.LimitReader(input, 131073))
 	decoder.DisallowUnknownFields()
@@ -162,10 +165,15 @@ func proxyMainMode(input io.Reader, output io.Writer, lossLab bool) int {
 			return dial(ctx, kind, address)
 		})
 	}
+	if udpLab {
+		return serveProxy(ctx, listener, spec.Token, dial, func(target netip.AddrPort) (net.Conn, error) {
+			return network.DialUDPAddrPort(netip.AddrPort{}, target)
+		})
+	}
 	return serveProxy(ctx, listener, spec.Token, dial)
 }
 
-func serveProxy(ctx context.Context, listener net.Listener, token string, dial tunnelDial) int {
+func serveProxy(ctx context.Context, listener net.Listener, token string, dial tunnelDial, udp ...udpTunnelDial) int {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	active := map[net.Conn]struct{}{}
@@ -213,7 +221,7 @@ func serveProxy(ctx context.Context, listener net.Listener, token string, dial t
 		go func() {
 			defer workers.Done()
 			defer func() { <-slots; gate.Lock(); delete(active, local); gate.Unlock(); local.Close() }()
-			handleProxy(ctx, local, token, dial)
+			handleProxy(ctx, local, token, dial, udp...)
 		}()
 	}
 	// Unexpected listener failure also cancels dialers and all established relays.
@@ -231,7 +239,7 @@ func serveProxy(ctx context.Context, listener net.Listener, token string, dial t
 	return 1
 }
 
-func handleProxy(ctx context.Context, local net.Conn, token string, dial tunnelDial) {
+func handleProxy(ctx context.Context, local net.Conn, token string, dial tunnelDial, udp ...udpTunnelDial) {
 	local.SetDeadline(time.Now().Add(5 * time.Second))
 	var hello [2]byte
 	if _, e := io.ReadFull(local, hello[:]); e != nil || hello[0] != 5 || hello[1] == 0 {
@@ -282,6 +290,10 @@ func handleProxy(ctx context.Context, local net.Conn, token string, dial tunnelD
 		return
 	}
 	reply := func(code byte) bool { _, e := local.Write([]byte{5, code, 0, 1, 0, 0, 0, 0, 0, 0}); return e == nil }
+	if request[1] == 3 && len(udp) == 1 {
+		handleUDPAssociation(ctx, local, request[3], udp[0])
+		return
+	}
 	if request[1] != 1 {
 		reply(7)
 		return

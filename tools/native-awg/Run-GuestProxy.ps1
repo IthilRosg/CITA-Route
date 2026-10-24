@@ -1,4 +1,4 @@
-param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention,[switch]$CandidateCore,[switch]$ActiveOwnerStop,[switch]$DisableRetentionLease)
+param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention,[switch]$CandidateCore,[switch]$ActiveOwnerStop,[switch]$DisableRetentionLease,[switch]$Udp)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
@@ -16,6 +16,10 @@ function ProcessInfo([string]$file,[string]$arguments){
 function Client([int]$port,[string]$token){
  $p=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-client'));$output=$p.StandardOutput.ReadToEndAsync();$errors=$p.StandardError.ReadToEndAsync()
  try{$p.StandardInput.WriteLine((@{Port=$port;Token=$token}|ConvertTo-Json -Compress));$p.StandardInput.Close();if(-not $p.WaitForExit(18000)){$p.Kill();$p.WaitForExit();throw 'Client deadline'};$result=$output.GetAwaiter().GetResult()|ConvertFrom-Json;$null=$errors.GetAwaiter().GetResult();return @{exitCode=$p.ExitCode;result=$result}}finally{if(-not $p.HasExited){$p.Kill();$p.WaitForExit()};$p.Dispose()}
+}
+function UdpClient([int]$port,[string]$token){
+ $p=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-udp-client'));$output=$p.StandardOutput.ReadToEndAsync();$errors=$p.StandardError.ReadToEndAsync()
+ try{$p.StandardInput.WriteLine((@{Port=$port;Token=$token;Server=$script:udpServer}|ConvertTo-Json -Compress));$p.StandardInput.Close();if(-not $p.WaitForExit(20000)){throw 'UDP client deadline'};$result=$output.GetAwaiter().GetResult()|ConvertFrom-Json;$null=$errors.GetAwaiter().GetResult();return @{exitCode=$p.ExitCode;result=$result}}finally{if(-not $p.HasExited){$p.Kill();$p.WaitForExit()};$p.Dispose()}
 }
 function Control([string]$action){
  $ack=$owner.StandardOutput.ReadLineAsync()
@@ -36,6 +40,7 @@ try{
  if($DirectRetention -and -not $Retention){throw 'Direct diagnostic requires retention'}
  if($ActiveOwnerStop -and $Retention){throw 'Active owner stop is separate from loss test'}
  if($DisableRetentionLease -and -not $CandidateCore){throw 'Lease-off control requires candidate core'}
+ if($Udp -and ($Retention -or $CandidateCore -or $DirectRetention)){throw 'UDP lifecycle is a separate non-retention lab mode'}
  if(Get-Process smart-router,vpn-bridge,RoutePilot,native-awg-lab,native-core-lab -ErrorAction SilentlyContinue){throw 'Guest must be idle'}
  $report.nativeSha256=(Get-FileHash -LiteralPath $exe).Hash
  . C:\CitaLab\PlatformNext\WireSockCli.ps1
@@ -46,6 +51,7 @@ try{
  $rng=[Security.Cryptography.RandomNumberGenerator]::Create();$bytes=New-Object byte[] 32;try{$rng.GetBytes($bytes);$token=([BitConverter]::ToString($bytes)).Replace('-','').ToLowerInvariant()}finally{$rng.Dispose();[Array]::Clear($bytes,0,32)}
  $session=[guid]::NewGuid().ToString('N');$stage='OwnerStart'
  $mode=if($Retention){'--serve-proxy-loss-lab'}else{'--serve-proxy'}
+ if($Udp){$mode='--serve-proxy-udp-lab';$peerText=[IO.File]::ReadAllText((Join-Path $root 'private\peer.conf'));if($peerText -notmatch '(?m)^DNS\s*=\s*(\d+\.\d+\.\d+\.\d+)'){throw 'UDP lab requires literal DNS'};$script:udpServer=$Matches[1];$peerText=$null}
  $owner=[Diagnostics.Process]::Start((ProcessInfo $exe $mode));$ownerErrors=$owner.StandardError.ReadToEndAsync();$line=$owner.StandardOutput.ReadLineAsync()
  $owner.StandardInput.WriteLine((@{Config=[IO.File]::ReadAllText((Join-Path $root 'private\peer.conf'));Token=$token;Session=$session;Generation=1}|ConvertTo-Json -Compress))
  if(-not $line.Wait(6000)){throw 'Readiness deadline'};$ready=$line.Result|ConvertFrom-Json
@@ -58,6 +64,7 @@ try{
  # Its lab inbound has no authentication and is reachable only on loopback.
  $stage='RouterChain';$port=20938
  $configuration=@{log=@{disabled=$true};inbounds=@(@{type='socks';tag='lab';listen='127.0.0.1';listen_port=$port});outbounds=@(@{type='socks';tag='native-vpn';server='127.0.0.1';server_port=[int]$ready.port;version='5';username='cita';password=$token;network='tcp'});route=@{final='native-vpn'}}
+ if($Udp){$configuration.outbounds[0].Remove('network');$report.scope='Authenticated loopback UDP ASSOCIATE lifecycle, direct native proxy and existing CITA core; IPv4 public DNS samples, not QUIC/game acceptance'}
  if($CandidateCore){
   if(-not $DisableRetentionLease){$configuration.outbounds[0].cita_native_retention=@{session=$session;generation=1}}
   $configuration.inbounds+=@{type='socks';tag='lab-direct';listen='127.0.0.1';listen_port=20939}
@@ -65,13 +72,25 @@ try{
   $configuration.route.rules=@(@{inbound=@('lab-direct');action='route';outbound='direct'})
  }
  $path=Join-Path $private 'core.json';[IO.File]::WriteAllText($path,($configuration|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false));$configuration=$null
- $core=if($CandidateCore){'C:\CitaLab\NativeAwg\native-core-lab.exe'}else{'C:\CitaLab\PlatformNext\runtime\smart-router.exe'}
+ $core=if($CandidateCore -or $Udp){'C:\CitaLab\NativeAwg\native-core-lab.exe'}else{'C:\CitaLab\PlatformNext\runtime\smart-router.exe'}
  $report.coreSha256=(Get-FileHash -LiteralPath $core).Hash
- $router=[Diagnostics.Process]::Start((ProcessInfo $core ('run -c "'+$path+'"')));$routerOutput=$router.StandardOutput.ReadToEndAsync()
+ $routerInfo=ProcessInfo $core ('run -c "'+$path+'"');if($Udp){$routerInfo.EnvironmentVariables['CITA_NATIVE_UDP_LAB']='1'}
+ $router=[Diagnostics.Process]::Start($routerInfo);$routerOutput=$router.StandardOutput.ReadToEndAsync()
  if($CandidateCore){$script:resetEvent=$router.StandardError.ReadLineAsync()}else{$routerErrors=$router.StandardError.ReadToEndAsync()}
  Start-Sleep -Milliseconds 700;$chain=Client $port ''; $report.routerChainHttps=[bool]($chain.exitCode -eq 0 -and $chain.result.success -and $chain.result.egressHash -eq $reference.serverEgressHash)
  $owner.Refresh();$router.Refresh();$report.resourceSample=@{nativePrivateBytes=$owner.PrivateMemorySize64;nativeWorkingSetBytes=$owner.WorkingSet64;routerPrivateBytes=$router.PrivateMemorySize64;routerWorkingSetBytes=$router.WorkingSet64;scope='Single post-HTTPS process sample, not steady-state or a comparison with WireSock'}
- if($ActiveOwnerStop){
+ if($Udp){
+  $stage='UdpAuthentication';$badUdp=UdpClient $ready.port ('0'*64);$noneUdp=UdpClient $ready.port ''
+  $report.udpWrongSecretRefused=[bool]($badUdp.exitCode -eq 1 -and -not $badUdp.result.success);$report.udpNoSecretRefused=[bool]($noneUdp.exitCode -eq 1 -and -not $noneUdp.result.success)
+  $stage='NativeUdp';$report.nativeUdp=UdpClient $ready.port $token
+  $stage='CoreUdp';$report.coreUdp=UdpClient $port ''
+  if($ActiveOwnerStop){
+   $stage='ActiveUdpBaseline';$retaining=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-udp-client'));$activeErrors=$retaining.StandardError.ReadToEndAsync();$activeReady=$retaining.StandardOutput.ReadLineAsync()
+   $retaining.StandardInput.WriteLine((@{Port=$port;Server=$script:udpServer;Hold=$true}|ConvertTo-Json -Compress))
+   if(-not $activeReady.Wait(18000) -or ($activeReady.Result|ConvertFrom-Json).stage -ne 'UdpClientReady'){throw 'Held UDP baseline unavailable'}
+  }
+ }
+ if($ActiveOwnerStop -and -not $Udp){
   $stage='ActiveOwnerBaseline';$retaining=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-retention-client'));$activeErrors=$retaining.StandardError.ReadToEndAsync();$activeReady=$retaining.StandardOutput.ReadLineAsync()
   $retaining.StandardInput.WriteLine((@{Port=$port;FaultMilliseconds=3000}|ConvertTo-Json -Compress))
   if(-not $activeReady.Wait(18000) -or ($activeReady.Result|ConvertFrom-Json).stage -ne 'RetentionClientReady'){throw 'Active baseline unavailable'}
@@ -138,7 +157,7 @@ try{
   $stage='ActiveOwnerStopped';$retaining.StandardInput.WriteLine('{"Continue":true}');$retaining.StandardInput.Close();$activeOutput=$retaining.StandardOutput.ReadToEndAsync()
   if(-not $retaining.WaitForExit(18000)){throw 'Active stop client deadline'}
   $report.activeOwnerResult=$activeOutput.GetAwaiter().GetResult()|ConvertFrom-Json
-  $report.activeStreamClosed=[bool]($retaining.ExitCode -eq 1 -and -not $report.activeOwnerResult.success -and -not $report.activeOwnerResult.sameExit)
+  if($Udp){$report.activeStreamClosed=[bool]($retaining.ExitCode -eq 0 -and $report.activeOwnerResult.success -and $report.activeOwnerResult.noReplyAfterClose)}else{$report.activeStreamClosed=[bool]($retaining.ExitCode -eq 1 -and -not $report.activeOwnerResult.success -and -not $report.activeOwnerResult.sameExit)}
  }
  $after=Client $port '';$report.noFallbackAfterOwnerStop=[bool]($after.exitCode -eq 1 -and -not $after.result.success)
  $report.success=[bool]($report.generationMatched -and $report.wrongSecretRefused -and $report.noSecretRefused -and $report.nativeHttps -and $report.routerChainHttps -and $report.expectedOwnerExit -and $report.noFallbackAfterOwnerStop)
@@ -149,6 +168,7 @@ try{
  }elseif($Retention -and -not $report.retention.success){$report.success=$false}
  if($CandidateCore -and $LinkInterruption -and -not $report.directResetObserved){$report.success=$false}
  if($ActiveOwnerStop -and -not $report.activeStreamClosed){$report.success=$false}
+ if($Udp -and (-not $report.udpWrongSecretRefused -or -not $report.udpNoSecretRefused -or -not $report.nativeUdp.result.success -or -not $report.coreUdp.result.success)){$report.success=$false}
  $report.candidateCore=[bool]$CandidateCore
  $report.retentionLeaseEnabled=[bool]($CandidateCore -and -not $DisableRetentionLease)
 }catch{$report.failedStage=$stage;$report.errorType=$_.Exception.GetType().Name}
@@ -169,7 +189,7 @@ finally{
  if(-not $report.processesStopped){$report.success=$false}
  if($before){$report.topologyUnchanged=[bool]($before -eq (Topology));if(-not $report.topologyUnchanged){$report.success=$false}}
  $report.finishedUtc=[datetime]::UtcNow.ToString('o')
- $file=if($Retention){'proxy-retention.json'}else{'proxy-result.json'}
+ $file=if($Udp){'proxy-udp.json'}elseif($Retention){'proxy-retention.json'}else{'proxy-result.json'}
  $report|ConvertTo-Json -Depth 8|Set-Content (Join-Path $root $file) -Encoding UTF8
 }
 if(-not $report.success){exit 1}
