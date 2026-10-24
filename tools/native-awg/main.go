@@ -135,6 +135,12 @@ func probeLoss(input io.Reader, retain bool, inboundOnly bool) (r result) {
 	return r
 }
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--serve-proxy-loss-lab" {
+		os.Exit(proxyMainMode(os.Stdin, os.Stdout, true))
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--proxy-retention-client" {
+		os.Exit(proxyRetentionClient(os.Stdin, os.Stdout))
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--serve-proxy" {
 		os.Exit(proxyMain(os.Stdin, os.Stdout))
 	}

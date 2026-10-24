@@ -1,6 +1,7 @@
-param([switch]$RetentionOnly,[switch]$InboundLoss,[switch]$ProxyChain)
+param([switch]$RetentionOnly,[switch]$InboundLoss,[switch]$ProxyChain,[switch]$ChainRetention)
 $ErrorActionPreference='Stop'
-if($InboundLoss -and -not $RetentionOnly){throw 'Incoming loss requires retention capture'}
+if($InboundLoss -and -not ($RetentionOnly -or $ChainRetention)){throw 'Incoming loss requires retention capture'}
+if($ChainRetention -and -not $ProxyChain){throw 'Chain retention requires proxy-chain capture'}
 if($ProxyChain -and $RetentionOnly){throw 'Choose one capture scenario'}
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
@@ -44,14 +45,17 @@ try{
  $script:endpoint=$Matches[1];$port=[int]$Matches[2]
  if($config -notmatch '(?m)^DNS\s*=\s*(\d+\.\d+\.\d+\.\d+)'){throw 'Literal DNS required for UDP positive control'}
  $script:controlDns=$Matches[1];$config=$null
- $report.control=Capture 'control' {& curl.exe --silent --show-error --ipv4 --noproxy '*' --connect-timeout 3 --max-time 8 https://www.cloudflare.com/cdn-cgi/trace *> (Join-Path $root 'private\control-response.txt');if($LASTEXITCODE -ne 0){throw 'Direct control request failed'};DirectUdpControl} $port
+ $report.positiveControlUdpQueries=3
+ $report.control=Capture 'control' {& curl.exe --silent --show-error --ipv4 --noproxy '*' --connect-timeout 3 --max-time 8 https://www.cloudflare.com/cdn-cgi/trace *> (Join-Path $root 'private\control-response.txt');if($LASTEXITCODE -ne 0){throw 'Direct control request failed'};for($queryIndex=0;$queryIndex -lt 3;$queryIndex++){DirectUdpControl;Start-Sleep -Milliseconds 100}} $port
  if($report.control.otherTcp -le 0 -or $report.control.otherUdp -le 0){throw 'Capture positive control did not observe both direct TCP and UDP'}
  if($ProxyChain){
   $report.proxy=Capture 'proxy' {
-   $p=Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\CitaLab\NativeAwg\Run-GuestProxy.ps1' -RedirectStandardOutput (Join-Path $root 'proxy-capture.out') -RedirectStandardError (Join-Path $root 'proxy-capture.err') -PassThru;$null=$p.Handle
+   $captureArguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\CitaLab\NativeAwg\Run-GuestProxy.ps1';if($ChainRetention){$captureArguments+=' -Retention';if($InboundLoss){$captureArguments+=' -InboundLoss'}}
+   $p=Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $captureArguments -RedirectStandardOutput (Join-Path $root 'proxy-capture.out') -RedirectStandardError (Join-Path $root 'proxy-capture.err') -PassThru;$null=$p.Handle
    try{if(-not $p.WaitForExit(60000)){throw 'Proxy test deadline'};if($p.ExitCode -ne 0){throw 'Proxy acceptance failed'}}finally{if(-not $p.HasExited){$p.Kill();$p.WaitForExit()};$p.Dispose()}
   } $port
-  $report.proxyProbe=[IO.File]::ReadAllText((Join-Path $root 'proxy-result.json'))|ConvertFrom-Json
+  $receipt=if($ChainRetention){'proxy-retention.json'}else{'proxy-result.json'}
+  $report.proxyProbe=[IO.File]::ReadAllText((Join-Path $root $receipt))|ConvertFrom-Json
   $report.success=[bool]($report.proxy.tunnelUdp -gt 0 -and $report.proxy.otherTcp -eq 0 -and $report.proxy.otherUdp -eq 0 -and $report.proxyProbe.success)
  }elseif($RetentionOnly){
   $report.retention=Capture 'retention' {Probe $false -Retention} $port
@@ -68,7 +72,7 @@ try{
 }catch{$report.error=$_.Exception.Message}
 finally{
  if($capture){try{Command @('stop');$capture=$false}catch{$report.cleanupError='Capture stop unconfirmed'}}
- $file=if($ProxyChain){'capture-proxy.json'}elseif($RetentionOnly){'capture-retention.json'}else{'capture-result.json'}
+ $file=if($ChainRetention){'capture-chain-retention.json'}elseif($ProxyChain){'capture-proxy.json'}elseif($RetentionOnly){'capture-retention.json'}else{'capture-result.json'}
  $report.captureStopped=-not $capture;$report.finishedUtc=[datetime]::UtcNow.ToString('o');$report|ConvertTo-Json -Depth 8|Set-Content (Join-Path $root $file) -Encoding UTF8
 }
 if(-not $report.success){exit 1}

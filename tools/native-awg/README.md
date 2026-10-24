@@ -172,7 +172,50 @@ failure. The VM uses real sockets and the actual CITA core. Credential-bearing
 core configuration is confined to the protected guest folder and removed in
 cleanup. No production config generator, service or installer was modified.
 
-Next gates: internal TCP retention through the full core/proxy chain; network
+## Full core/proxy TCP retention, 24 October 2026
+
+The explicit `--serve-proxy-loss-lab` launch mode adds a bounded stdin control
+channel after bootstrap. The normal `--serve-proxy` launch cannot inject loss.
+Commands must match the immutable session/generation, allow at most one fixed
+3000 ms pause, and stay within eight commands / 4096 input bytes. Unknown,
+malformed or mismatched commands stop the lab owner. Snapshots return counters,
+never configuration or authentication tokens. Unit tests reject stale owners,
+repeated pauses, unknown actions and longer fault durations.
+
+`--proxy-retention-client` first completes HTTPS through the CITA core and keeps
+HTTP/1.1 TCP alive. The parent starts the fault only after that baseline, waits
+for the owner's acknowledgement, then releases a second fixed anonymous GET.
+Acceptance requires reuse and no additional client/core TCP dial, no additional
+AWG bind open, observed loss in the chosen direction and unchanged exit digest.
+The runner also requires at least 2500 ms request duration, allowing bounded
+parent/pipe overhead between the fixed 3000 ms pause and release. Successful
+HTTP auto-retry cannot hide a replacement connection: any extra dial fails.
+
+W11 full-chain results, isolated samples rather than latency guarantees:
+
+| Packet loss | Pause | Request | Client dials | Native TCP dials | Bind opens |
+| --- | --- | --- | --- | --- | --- |
+| Both directions | 3000 ms | 3357 ms | 1 → 1 | 3 → 3 | 1 → 1 |
+| Incoming only | 3000 ms | 4046 ms | 1 → 1 | 3 → 3 | 1 → 1 |
+
+The native dial total includes two earlier independent baseline HTTPS checks.
+Five outgoing / ten incoming datagrams respectively were suppressed. Captures
+observed 9 / 20 endpoint UDP packets and zero other outgoing TCP/UDP from the
+selected local IPv4 source, with successful direct TCP/UDP positive controls.
+Both runs preserved routes/adapters, stopped processes/capture, and removed the
+temporary credential file. Receipts: `native-awg-chain-retention.json` and
+`native-awg-chain-retention-inbound-repeat.json` under `runtime/vm-lab/w11/`.
+
+The first incoming capture stopped before the proxy test because its single
+positive-control UDP transmission was not observed. That result is rejected.
+The control now sends three independent socket DNS queries, 100 ms apart,
+and still requires observed direct TCP and UDP. This improves observability;
+it does not make NIC capture lossless or extend the IPv4/source-address scope.
+Reproduce: `Run-GuestCapture.ps1 -ProxyChain -ChainRetention`, optionally adding
+`-InboundLoss`. This is same-address silent packet loss, not NIC removal, NAT
+rebinding, server restart or preservation of an arbitrary application stream.
+
+Next gates: network
 adapter/address change and longer-outage recovery; authenticated UDP association
 and resource/stream limits; production owner leases, profile/generation handoff
 and rollback. Echoing an identity in this lab is not yet production fencing.

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
@@ -99,6 +100,9 @@ func restrictedDial(network *netstack.Net) tunnelDial {
 }
 
 func proxyMain(input io.Reader, output io.Writer) int {
+	return proxyMainMode(input, output, false)
+}
+func proxyMainMode(input io.Reader, output io.Writer, lossLab bool) int {
 	var spec proxyStart
 	decoder := json.NewDecoder(io.LimitReader(input, 131073))
 	decoder.DisallowUnknownFields()
@@ -112,12 +116,20 @@ func proxyMain(input io.Reader, output io.Writer) int {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { _, _ = io.Copy(io.Discard, input); cancel() }()
+	if !lossLab {
+		go func() { _, _ = io.Copy(io.Discard, input); cancel() }()
+	}
 	tun, network, e := netstack.CreateNetTUN(c.address, c.dns, c.mtu)
 	if e != nil {
 		return 1
 	}
-	dev := device.NewDevice(tun, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
+	bind := conn.NewDefaultBind()
+	fault := newFaultBind(bind)
+	var outer conn.Bind = bind
+	if lossLab {
+		outer = fault
+	}
+	dev := device.NewDevice(tun, outer, device.NewLogger(device.LogLevelSilent, ""))
 	defer dev.Close()
 	if dev.IpcSet(c.ipc) != nil {
 		return 1
@@ -138,7 +150,19 @@ func proxyMain(input io.Reader, output io.Writer) int {
 	if json.NewEncoder(output).Encode(ready) != nil {
 		return 1
 	}
-	return serveProxy(ctx, listener, spec.Token, restrictedDial(network))
+	dial := restrictedDial(network)
+	var dials atomic.Int64
+	if lossLab {
+		go func() {
+			defer cancel()
+			proxyLossControl(io.MultiReader(decoder.Buffered(), input), output, spec.Session, spec.Generation, fault, &dials)
+		}()
+		return serveProxy(ctx, listener, spec.Token, func(ctx context.Context, kind, address string) (net.Conn, error) {
+			dials.Add(1)
+			return dial(ctx, kind, address)
+		})
+	}
+	return serveProxy(ctx, listener, spec.Token, dial)
 }
 
 func serveProxy(ctx context.Context, listener net.Listener, token string, dial tunnelDial) int {
