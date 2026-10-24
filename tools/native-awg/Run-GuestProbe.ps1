@@ -1,4 +1,4 @@
-param([switch]$UnavailableEndpoint,[switch]$WrongPresharedKey)
+param([switch]$UnavailableEndpoint,[switch]$WrongPresharedKey,[switch]$Retention,[switch]$InboundLoss)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
@@ -10,6 +10,7 @@ function Topology{
 $process=$null
 try{
  if($UnavailableEndpoint -and $WrongPresharedKey){throw 'Choose one negative scenario'}
+ if($Retention -and ($UnavailableEndpoint -or $WrongPresharedKey)){throw 'Retention requires the original working configuration'}
  if(Get-Process smart-router,vpn-bridge,RoutePilot,native-awg-lab -ErrorAction SilentlyContinue){throw 'Guest must be idle'}
  $cli='C:\Program Files\WireSock Secure Connect\command-line\wiresock-connect-cli.exe'
  . C:\CitaLab\PlatformNext\WireSockCli.ps1
@@ -17,6 +18,8 @@ try{
  $before=Topology
  $info=New-Object Diagnostics.ProcessStartInfo
  $info.FileName=$exe;$info.Arguments='--probe';$info.UseShellExecute=$false;$info.CreateNoWindow=$true
+ if($Retention){$info.Arguments='--retention'}
+ if($InboundLoss){if(-not $Retention){throw 'Incoming loss requires retention mode'};$info.Arguments='--retention-inbound'}
  $info.RedirectStandardInput=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
  $process=[Diagnostics.Process]::Start($info)
  $output=$process.StandardOutput.ReadToEndAsync();$errorOutput=$process.StandardError.ReadToEndAsync()
@@ -46,10 +49,11 @@ try{
   $report.success=[bool]($report.expectedFailureObserved -and $report.topologyUnchanged)
   $report.scope=if($WrongPresharedKey){'Deliberately wrong in-memory PSK, original endpoint: HTTPS must fail; no profile or topology change.'}else{'Unavailable same-server UDP port: HTTPS must fail; no OS topology changes. Not packet-capture leak proof.'}
  }else{$report.success=[bool]($process.ExitCode -eq 0 -and $report.expectedVpnExit -and $report.topologyUnchanged)}
+ if($Retention){$report.scope='Three-second encrypted-transport loss injection, same netstack/device/socket; persistent HTTP/1.1 TCP verified by dial/reuse counters. Not physical network loss or reboot.'}
 }catch{$report.error=$_.Exception.Message}
 finally{
  if($process){if(-not $process.HasExited){$process.Kill();$process.WaitForExit()};$process.Dispose()}
- $name=if($WrongPresharedKey){'probe-wrong-key.json'}elseif($UnavailableEndpoint){'probe-unavailable.json'}else{'probe-result.json'}
+ $name=if($Retention){'probe-retention.json'}elseif($WrongPresharedKey){'probe-wrong-key.json'}elseif($UnavailableEndpoint){'probe-unavailable.json'}else{'probe-result.json'}
  $report.finishedUtc=[datetime]::UtcNow.ToString('o');$report|ConvertTo-Json -Depth 5|Set-Content (Join-Path $root $name) -Encoding UTF8
 }
 if(-not $report.success){exit 1}

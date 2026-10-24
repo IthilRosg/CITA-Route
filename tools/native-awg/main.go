@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
@@ -19,16 +21,23 @@ import (
 )
 
 type result struct {
-	Schema       int    `json:"schema"`
-	Success      bool   `json:"success"`
-	Stage        string `json:"stage"`
-	Milliseconds int64  `json:"milliseconds"`
-	EgressHash   string `json:"egressHash,omitempty"`
-	Engine       string `json:"engine"`
-	UDPDNS       bool   `json:"udpDnsVerified"`
+	Schema       int              `json:"schema"`
+	Success      bool             `json:"success"`
+	Stage        string           `json:"stage"`
+	Milliseconds int64            `json:"milliseconds"`
+	EgressHash   string           `json:"egressHash,omitempty"`
+	Engine       string           `json:"engine"`
+	UDPDNS       bool             `json:"udpDnsVerified"`
+	Retention    *retentionResult `json:"retention,omitempty"`
 }
 
 func probe(input io.Reader) (r result) {
+	return probeMode(input, false)
+}
+func probeMode(input io.Reader, retain bool) (r result) {
+	return probeLoss(input, retain, false)
+}
+func probeLoss(input io.Reader, retain bool, inboundOnly bool) (r result) {
 	r = result{Schema: 1, Stage: "Configuration", Engine: "amneziawg-go/v3@v3.1.20260828"}
 	began := time.Now()
 	defer func() { r.Milliseconds = time.Since(began).Milliseconds() }()
@@ -46,7 +55,9 @@ func probe(input io.Reader) (r result) {
 	if e != nil {
 		return r
 	}
-	dev := device.NewDevice(tun, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
+	bind := newFaultBind(conn.NewDefaultBind())
+	bind.inboundOnly.Store(inboundOnly)
+	dev := device.NewDevice(tun, bind, device.NewLogger(device.LogLevelSilent, ""))
 	defer dev.Close()
 	r.Stage = "EngineConfiguration"
 	// Upstream errors can include configuration values; never serialize/log them.
@@ -60,7 +71,12 @@ func probe(input io.Reader) (r result) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 22*time.Second)
 	defer cancel()
-	transport := &http.Transport{DialContext: network.DialContext, DisableKeepAlives: true, ForceAttemptHTTP2: false, MaxResponseHeaderBytes: 16384, TLSHandshakeTimeout: 7 * time.Second, ResponseHeaderTimeout: 7 * time.Second}
+	var dials atomic.Int64
+	dial := func(ctx context.Context, kind, address string) (net.Conn, error) {
+		dials.Add(1)
+		return network.DialContext(ctx, kind, address)
+	}
+	transport := &http.Transport{DialContext: dial, DisableKeepAlives: !retain, ForceAttemptHTTP2: false, MaxResponseHeaderBytes: 16384, TLSHandshakeTimeout: 7 * time.Second, ResponseHeaderTimeout: 10 * time.Second, MaxConnsPerHost: 1}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	req, e := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.cloudflare.com/cdn-cgi/trace", nil)
@@ -77,6 +93,7 @@ func probe(input io.Reader) (r result) {
 		return r
 	}
 	body, e := io.ReadAll(io.LimitReader(response.Body, 8193))
+	response.Body.Close()
 	if e != nil || len(body) > 8192 {
 		return r
 	}
@@ -100,6 +117,16 @@ func probe(input io.Reader) (r result) {
 		r.UDPDNS = udpDNS(network, c.dns[0])
 	}
 	r.Success = found && r.UDPDNS
+	if r.Success && retain {
+		r.Stage = "RetainingTcp"
+		retention := retainTCP(ctx, client, bind, &dials, r.EgressHash)
+		r.Retention = &retention
+		r.Success = retention.Success
+		if r.Success {
+			r.Stage = "RetainedTcpAfterLoss"
+		}
+		return r
+	}
 	if found {
 		if r.Success {
 			r.Stage = "VerifiedHttpsAndUdpDns"
@@ -111,11 +138,11 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--capture-summary" {
 		os.Exit(captureMain())
 	}
-	if len(os.Args) != 2 || os.Args[1] != "--probe" {
+	if len(os.Args) != 2 || (os.Args[1] != "--probe" && os.Args[1] != "--retention" && os.Args[1] != "--retention-inbound") {
 		fmt.Fprintln(os.Stderr, "Experimental VM-only probe; configuration is read from stdin.")
 		os.Exit(2)
 	}
-	r := probe(os.Stdin)
+	r := probeLoss(os.Stdin, os.Args[1] != "--probe", os.Args[1] == "--retention-inbound")
 	_ = json.NewEncoder(os.Stdout).Encode(r)
 	if !r.Success {
 		os.Exit(1)

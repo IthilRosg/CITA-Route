@@ -81,6 +81,47 @@ Parser regression tests refuse scripts/unknown extensions, duplicate keys,
 multiple peers, unsafe endpoints and unsupported scope. Engine refusal test
 checks that a malicious configuration value is absent from serialized results.
 
-Next gates: physical-interface capture with positive controls; explicit UDP
-acceptance; interrupted transport while preserving an internal TCP connection;
-only then authenticated local proxy integration, production lifecycle and UI.
+## TCP retention acceptance, 24 October 2026
+
+`--retention` keeps HTTP/1.1 alive and discards encrypted datagrams for three
+seconds without closing the bind, device or netstack. `--retention-inbound`
+discards only received datagrams, allowing the request to reach the server.
+The second GET must reuse the original TCP connection, with exactly one total
+HTTP dial and one bind open, and return the original expected exit digest.
+No application traffic is replayed by the test. The fixed idempotent GET could
+be retried by Go's HTTP transport, but any new dial makes acceptance fail.
+
+W11 VM results, single samples rather than latency guarantees:
+
+| Loss | Fault | Request elapsed | TCP dials / bind opens | Dropped datagrams |
+| --- | --- | --- | --- | --- |
+| Both directions | 3000 ms | 3350 ms | 1 / 1 | 5 outgoing |
+| Incoming only, accepted repeat | 3000 ms | 4038 ms | 1 / 1 | 10 incoming |
+
+Both accepted runs preserved the expected exit and OS topology. Each capture
+included a direct TCP/UDP positive control, then observed endpoint UDP and zero
+other outgoing TCP/UDP for the selected local IPv4 source. Capture stopped.
+Local ignored receipts: `runtime/vm-lab/w11/native-awg-retention.json` and
+`runtime/vm-lab/w11/native-awg-retention-inbound-repeat.json`.
+
+The first incoming-only run retained TCP (4026 ms), but its NIC capture also
+contained other TCP/UDP traffic. Its combined acceptance is false; it is not
+counted as packet-boundary evidence. No process attribution was collected, so
+the additional traffic is not classified as either native leakage or background
+traffic. The quiet repeat passed the existing strict criterion without relaxing
+filters or changing the VM network.
+
+Reproduce inside the guarded VM: `Run-GuestCapture.ps1 -RetentionOnly`, then
+`Run-GuestCapture.ps1 -RetentionOnly -InboundLoss`. Config stays in stdin;
+captures remain inside the protected guest folder. Local tests also cover
+bounded send/receive suppression and resumption without reopening the bind.
+
+These are synthetic packet-loss tests. They do not establish physical NIC
+removal, address/NAT change, server restart, long loss, UDP stream continuity,
+process crash recovery or arbitrary application survival.
+
+Next gates: authenticated loopback proxy integration in the isolated lab;
+explicit cancellation and owner/generation control; adapter/address change
+and longer-outage recovery with preserved internal sockets; only then optional
+production transport selection and UI. Keep WireSock as the production default
+until those independent gates pass.
