@@ -60,10 +60,18 @@ internal sealed class Peer : IDisposable
     readonly UdpClient udp;
     readonly IPEndPoint tcpEndpoint,udpEndpoint;
     int initialError;
-    internal Peer(IPAddress address,int tcpPort,int udpPort)
+    internal Peer(IPAddress address,int tcpPort,int udpPort,int bindIndex=0,bool tunnelFixture=false)
     {
-        if(!IPAddress.IsLoopback(address))throw new IOException("Transport lab probes are loopback-only.");
+        if(!IPAddress.IsLoopback(address) && !(tunnelFixture&&address.Equals(IPAddress.Parse("198.18.123.1"))&&WireSockExperiment.Disposable))
+            throw new IOException("Transport lab probes require loopback or the isolated synthetic tunnel destination.");
         tcp=new(address.AddressFamily);udp=new(address.AddressFamily);
+        if(bindIndex>0)
+        {
+            int index=IPAddress.HostToNetworkOrder(bindIndex);
+            // Windows IP_UNICAST_IF = 31; .NET has no named enum member.
+            tcp.Client.SetSocketOption(SocketOptionLevel.IP,(SocketOptionName)31,index);
+            udp.Client.SetSocketOption(SocketOptionLevel.IP,(SocketOptionName)31,index);
+        }
         tcpEndpoint=new(address,tcpPort);udpEndpoint=new(address,udpPort);
     }
     internal async Task Connect()
@@ -101,8 +109,10 @@ internal sealed class Peer : IDisposable
     public void Dispose(){tcp.Dispose();udp.Dispose();}
     internal static async Task Run(string[] args,bool once)
     {
-        if(args.Length!=4 || args[1] is not("4" or "6"))throw new ArgumentException("Invalid loopback probe.");
-        using var peer=new Peer(args[1]=="4"?IPAddress.Loopback:IPAddress.IPv6Loopback,int.Parse(args[2]),int.Parse(args[3]));
+        bool tunnel=args.Length==5&&args[0]=="--tunnel-peer";
+        if(!tunnel && (args.Length!=4 || args[1] is not("4" or "6")))throw new ArgumentException("Invalid loopback probe.");
+        using var peer=new Peer(tunnel?IPAddress.Parse("198.18.123.1"):args[1]=="4"?IPAddress.Loopback:IPAddress.IPv6Loopback,
+            int.Parse(args[2]),int.Parse(args[3]),tunnel?int.Parse(args[4]):0,tunnel);
         await peer.Connect();
         if(once){Console.WriteLine(JsonSerializer.Serialize(await peer.Check()));return;}
         Console.WriteLine("READY");
