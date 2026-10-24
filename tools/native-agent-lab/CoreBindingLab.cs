@@ -42,7 +42,7 @@ internal static class CoreBindingLab
         foreach(string arg in new[]{"-NoProfile","-NonInteractive","-Command","for($i=0;$i -lt 50;$i++){if(Get-NetRoute -InterfaceAlias Cita-NativeLab -DestinationPrefix 1.1.1.1/32 -ErrorAction SilentlyContinue){exit 0};Start-Sleep -Milliseconds 200};exit 1"})info.ArgumentList.Add(arg);
         using var p=Process.Start(info)!;_=p.StandardOutput.BaseStream.CopyToAsync(Stream.Null);_=p.StandardError.BaseStream.CopyToAsync(Stream.Null);await p.WaitForExitAsync(stop);Assert(p.ExitCode==0,"Scoped TUN route readiness");
     }
-    internal static async Task<int> Run(string root,string configPath,string owner)
+    internal static async Task<int> Run(string root,string configPath,string owner,bool twoServers=false)
     {
         var observations=new List<object>();bool success=false;string? errorType=null;
         Process? direct=null;
@@ -52,6 +52,8 @@ internal static class CoreBindingLab
             string native=Path.Combine(root,"native-awg-lab.exe"),core=Path.Combine(root,"native-core-lab.exe"),peer=await File.ReadAllTextAsync(Path.Combine(root,"private","peer.conf"),stop);
             string dns=Regex.Match(peer,@"(?mi)^\s*DNS\s*=\s*([0-9.]+)").Groups[1].Value;
             using var reference=JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root,"..","server-egress-reference.json"),stop));string expected=reference.RootElement.GetProperty("serverEgressHash").GetString()!;
+            string secondPeer=twoServers?await File.ReadAllTextAsync(Path.Combine(root,"private","second-server.conf"),stop):peer;
+            string secondExit=twoServers?(await File.ReadAllTextAsync(Path.Combine(root,"private","second-server-egress.txt"),stop)).Trim():expected;
             var activationEntered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             await using var binding=new NativeCoreBinding(core,configPath,native,owner,expected,quarantined:async(ack,ct)=>
             {
@@ -69,7 +71,7 @@ internal static class CoreBindingLab
                     for(int n=0;n<30;n++){var state=await candidate.SendAsync(Command(spec,"Snapshot"),ct);string phase=state.GetProperty("state").GetString()!;if(phase=="Exhausted"||state.GetProperty("epoch").GetInt32()==i+2&&phase=="RunningUnverified")break;await Task.Delay(100,ct);}
                 }
                 var exhausted=await candidate.SendAsync(Command(spec,"Snapshot"),ct);Assert(exhausted.GetProperty("state").GetString()=="Exhausted","Failure candidate not exhausted");
-            });
+            },expectedEgress:spec=>Generation(spec)==2?secondExit:expected);
             stage="core-start";await binding.StartAsync(stop);int corePid=binding.ProcessId;
             using(var identity=Process.GetProcessById(corePid)){await File.WriteAllTextAsync(Path.Combine(root,"private","binding-core-pid.json"),JsonSerializer.Serialize(new{pid=corePid,ticks=identity.StartTime.ToUniversalTime().Ticks}),stop);}
             await RouteReady(stop);Assert(await Closed(native,dns,stop),"Initially closed outbound bypassed");
@@ -77,11 +79,12 @@ internal static class CoreBindingLab
             var a=Spec(peer,1);stage="activate-A";var readyA=await profiles.SwitchAsync(a,stop);
             var baseline=await Tun(native,dns,null,stop);Assert(baseline.GetProperty("success").GetBoolean(),"Profile A TUN traffic");
             direct=Start(native,"--proxy-retention-client");await direct.StandardInput.WriteLineAsync("{\"Port\":20939,\"FaultMilliseconds\":3000,\"LiteralIPv4\":true,\"HoldForFinal\":true}");var directReady=await NativeAwgBackend.ReadReply(direct.StandardOutput,stop);Assert(directReady.GetProperty("stage").GetString()=="RetentionClientReady","Direct baseline");
-            var b=Spec(peer,2);stage="switch-B";var old=await Tun(native,dns,async()=>{await profiles.SwitchAsync(b,stop);},stop);
+            var b=Spec(secondPeer,2);stage="switch-B";var old=await Tun(native,dns,async()=>{await profiles.SwitchAsync(b,stop);},stop);
             Assert(old.GetProperty("dialsAfter").GetInt64()>1&&old.GetProperty("udpAfter").GetInt32()==3,"Old VPN flow did not rebind");
             var stale=await binding.CommandAsync("Activate",Session(a),Generation(a),readyA.GetProperty("port").GetInt32(),a.GetProperty("Token").GetString()!,false,stop);Assert(!stale.GetProperty("success").GetBoolean()&&stale.GetProperty("currentGeneration").GetUInt64()==2&&stale.GetProperty("state").GetString()=="Active","Stale core Activate changed B");
             bool refusedAsError=false;try{await binding.CommandAsync("Activate",Session(a),Generation(a),readyA.GetProperty("port").GetInt32(),a.GetProperty("Token").GetString()!,true,stop);}catch(InvalidDataException){refusedAsError=true;}Assert(refusedAsError,"Core refusal was not reported");
             var goodB=await Tun(native,dns,null,stop);Assert(goodB.GetProperty("success").GetBoolean(),"Profile B TUN traffic");
+            Assert(string.Equals(goodB.GetProperty("egressHash").GetString(),secondExit,StringComparison.OrdinalIgnoreCase),"Profile B exit mismatch");
             await direct.StandardInput.WriteLineAsync("{\"Continue\":true}");var directMiddle=await NativeAwgBackend.ReadReply(direct.StandardOutput,stop);Assert(directMiddle.GetProperty("stage").GetString()=="RetentionAfterLoss","Direct failed at B");
             var c=Spec(peer,3);bool refused=false;stage="reject-C";
             var rejected=await Tun(native,dns,async()=>{try{await profiles.SwitchAsync(c,stop);}catch(InvalidDataException){refused=true;}},stop);
@@ -95,7 +98,7 @@ internal static class CoreBindingLab
             await direct.StandardInput.WriteLineAsync("{\"Continue\":true}");direct.StandardInput.Close();var directFinal=await NativeAwgBackend.ReadReply(direct.StandardOutput,stop);await direct.WaitForExitAsync(stop);
             Assert(directFinal.GetProperty("success").GetBoolean()&&directFinal.GetProperty("dialsAfter").GetInt64()==1,"Direct TCP reset during handoff");
             Assert(binding.ProcessId==corePid,"Core process replaced");await RouteReady(stop);
-            observations.Add(new{phase="accepted",coreProcessRetained=true,profileATraffic=true,profileBTraffic=true,staleActivateRefused=true,failedCandidateClosed=true,directTcpDials=1,samePeerSequentialLeases=true});success=true;
+            observations.Add(new{phase="accepted",coreProcessRetained=true,profileATraffic=true,profileBTraffic=true,staleActivateRefused=true,failedCandidateClosed=true,directTcpDials=1,samePeerSequentialLeases=!twoServers,distinctServerProfiles=twoServers});success=true;
         }
         catch(Exception e){errorType=e.GetType().Name;}
         finally{if(direct!=null){if(!direct.HasExited){direct.Kill();await direct.WaitForExitAsync();}direct.Dispose();}}

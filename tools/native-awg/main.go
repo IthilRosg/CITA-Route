@@ -29,6 +29,8 @@ type result struct {
 	Engine       string           `json:"engine"`
 	UDPDNS       bool             `json:"udpDnsVerified"`
 	HTTPStatus   int              `json:"httpStatus,omitempty"`
+	FailurePhase string           `json:"failurePhase,omitempty"`
+	EgressIPv4   string           `json:"egressIPv4,omitempty"`
 	Retention    *retentionResult `json:"retention,omitempty"`
 }
 
@@ -136,6 +138,9 @@ func probeLoss(input io.Reader, retain bool, inboundOnly bool) (r result) {
 	return r
 }
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--handshake-only-lab" {
+		os.Exit(handshakeOnly(os.Stdin, os.Stdout))
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--validate-profile-lab" {
 		os.Exit(validateProfile(os.Stdin, os.Stdout))
 	}

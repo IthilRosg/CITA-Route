@@ -14,16 +14,17 @@ import (
 )
 
 type udpClientResult struct {
-	Success              bool   `json:"success"`
-	Stage                string `json:"stage"`
-	Queries              int    `json:"queries"`
-	AssociationReused    bool   `json:"associationReused"`
-	WrongSourceNoReply   bool   `json:"wrongSourceNoReply"`
-	InvalidFramesNoReply bool   `json:"invalidFramesNoReply"`
-	NoReplyAfterClose    bool   `json:"noReplyAfterClose"`
-	HeldOwnerStop        bool   `json:"heldOwnerStop"`
-	ResumedAssociation   bool   `json:"resumedAssociation"`
-	DNSFailure           string `json:"dnsFailure,omitempty"`
+	Success              bool                  `json:"success"`
+	Stage                string                `json:"stage"`
+	Queries              int                   `json:"queries"`
+	AssociationReused    bool                  `json:"associationReused"`
+	WrongSourceNoReply   bool                  `json:"wrongSourceNoReply"`
+	InvalidFramesNoReply bool                  `json:"invalidFramesNoReply"`
+	NoReplyAfterClose    bool                  `json:"noReplyAfterClose"`
+	HeldOwnerStop        bool                  `json:"heldOwnerStop"`
+	ResumedAssociation   bool                  `json:"resumedAssociation"`
+	DNSFailure           string                `json:"dnsFailure,omitempty"`
+	DNSProbes            []dnsExchangeEvidence `json:"dnsProbes,omitempty"`
 }
 
 func openUDPAssociation(ctx context.Context, port int, token string) (net.Conn, *net.UDPConn, error) {
@@ -98,36 +99,14 @@ func dnsQuery() ([]byte, uint16, error) {
 	return packet, id, e
 }
 func queryThroughAssociation(socket *net.UDPConn, target netip.AddrPort, timeout time.Duration, diagnostic ...*string) bool {
-	fail := func(reason string) bool {
-		if len(diagnostic) == 1 {
-			*diagnostic[0] = reason
-		}
-		return false
+	return queryThroughAssociationEvidence(socket, target, timeout, nil, diagnostic...)
+}
+func queryThroughAssociationEvidence(socket *net.UDPConn, target netip.AddrPort, timeout time.Duration, evidence *dnsExchangeEvidence, diagnostic ...*string) bool {
+	ok, reason := exchangeDNS(socket, target, true, timeout, evidence)
+	if len(diagnostic) == 1 {
+		*diagnostic[0] = reason
 	}
-	payload, id, e := dnsQuery()
-	if e != nil {
-		return fail("QueryCreation")
-	}
-	socket.SetDeadline(time.Now().Add(timeout))
-	if _, e = socket.Write(udpFrame(target, payload)); e != nil {
-		return fail("WriteError")
-	}
-	buffer := make([]byte, udpPayloadLimit+11)
-	n, e := socket.Read(buffer)
-	if e != nil {
-		if timeout, ok := e.(net.Error); ok && timeout.Timeout() {
-			return fail("ReadTimeout")
-		}
-		return fail("ReadError")
-	}
-	reply, data, ok := parseUDPFrame(buffer[:n])
-	if !ok || reply != target {
-		return fail("InvalidFrame")
-	}
-	if !validDNS(data, id) {
-		return fail("DNSRejected")
-	}
-	return true
+	return ok
 }
 func proxyUDPClient(input io.Reader, output io.Writer) int {
 	var spec struct {
@@ -163,7 +142,10 @@ func proxyUDPClient(input io.Reader, output io.Writer) int {
 	defer socket.Close()
 	r.Stage = "UdpQueries"
 	for i := 0; i < 3; i++ {
-		if !queryThroughAssociation(socket, target, 3*time.Second, &r.DNSFailure) {
+		var evidence dnsExchangeEvidence
+		ok := queryThroughAssociationEvidence(socket, target, 3*time.Second, &evidence, &r.DNSFailure)
+		r.DNSProbes = append(r.DNSProbes, evidence)
+		if !ok {
 			return 1
 		}
 		r.Queries++
@@ -198,7 +180,10 @@ func proxyUDPClient(input io.Reader, output io.Writer) int {
 		}
 		if spec.Resume {
 			for i := 0; i < 3; i++ {
-				if !queryThroughAssociation(socket, target, 3*time.Second, &r.DNSFailure) {
+				var evidence dnsExchangeEvidence
+				ok := queryThroughAssociationEvidence(socket, target, 3*time.Second, &evidence, &r.DNSFailure)
+				r.DNSProbes = append(r.DNSProbes, evidence)
+				if !ok {
 					return 1
 				}
 				r.Queries++

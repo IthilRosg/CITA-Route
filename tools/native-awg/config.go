@@ -20,6 +20,9 @@ var errConfig = errors.New("unsupported or invalid configuration")
 // Lab deliberately supports one IPv4 peer with a literal endpoint. No scripts,
 // OS routes/DNS changes, hostname bootstrap or silently ignored extensions.
 func parseConfig(text string) (config, error) {
+	return parseConfigMode(text, true)
+}
+func parseConfigMode(text string, requireControlTarget bool) (config, error) {
 	c := config{mtu: 1400}
 	section := ""
 	iface := map[string]string{}
@@ -72,6 +75,7 @@ func parseConfig(text string) (config, error) {
 		return c, errConfig
 	}
 	allowedIface := map[string]bool{"privatekey": true, "address": true, "dns": true, "mtu": true, "jc": true, "jmin": true, "jmax": true, "s1": true, "s2": true, "s3": true, "s4": true, "h1": true, "h2": true, "h3": true, "h4": true, "i1": true, "i2": true, "i3": true, "i4": true, "i5": true}
+	allowedIface["headerprotectionkey"] = true
 	for k := range iface {
 		if !allowedIface[k] {
 			return c, errConfig
@@ -121,17 +125,50 @@ func parseConfig(text string) (config, error) {
 	if e != nil || !endpoint.Addr().Is4() || endpoint.Addr().IsUnspecified() || endpoint.Addr().IsLoopback() || endpoint.Addr().IsMulticast() || endpoint.Port() == 0 {
 		return c, errConfig
 	}
-	if peer["allowedips"] != "0.0.0.0/0" {
+	// Preserve split IPv4 policies exactly; never widen an imported policy to
+	// 0/0 merely to make a laboratory probe pass. The lab requires its fixed
+	// HTTPS target to be routed by this peer, and still rejects IPv6 here.
+	parts := strings.Split(peer["allowedips"], ",")
+	if len(parts) == 0 || len(parts) > 64 {
+		return c, errConfig
+	}
+	allowed := make([]netip.Prefix, 0, len(parts))
+	seenAllowed := map[netip.Prefix]bool{}
+	probeAllowed := false
+	for _, part := range parts {
+		prefix, e := netip.ParsePrefix(strings.TrimSpace(part))
+		if e != nil || !prefix.Addr().Is4() {
+			return c, errConfig
+		}
+		prefix = prefix.Masked()
+		if seenAllowed[prefix] {
+			return c, errConfig
+		}
+		seenAllowed[prefix] = true
+		allowed = append(allowed, prefix)
+		probeAllowed = probeAllowed || prefix.Contains(netip.MustParseAddr("1.1.1.1"))
+	}
+	if requireControlTarget && !probeAllowed {
 		return c, errConfig
 	}
 	var ipc strings.Builder
 	ipc.WriteString("private_key=" + private + "\n")
+	if header, ok := iface["headerprotectionkey"]; ok {
+		value, e := keyHex(header)
+		if e != nil {
+			return c, errConfig
+		}
+		ipc.WriteString("header_protection_key=" + value + "\n")
+	}
 	for _, k := range []string{"jc", "jmin", "jmax", "s1", "s2", "s3", "s4", "h1", "h2", "h3", "h4", "i1", "i2", "i3", "i4", "i5"} {
 		if value, ok := iface[k]; ok {
 			ipc.WriteString(k + "=" + value + "\n")
 		}
 	}
-	ipc.WriteString("replace_peers=true\npublic_key=" + public + "\nendpoint=" + endpoint.String() + "\nallowed_ip=0.0.0.0/0\n")
+	ipc.WriteString("replace_peers=true\npublic_key=" + public + "\nendpoint=" + endpoint.String() + "\n")
+	for _, prefix := range allowed {
+		ipc.WriteString("allowed_ip=" + prefix.String() + "\n")
+	}
 	if psk, ok := peer["presharedkey"]; ok {
 		value, e := keyHex(psk)
 		if e != nil {

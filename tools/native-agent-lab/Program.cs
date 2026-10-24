@@ -1,7 +1,16 @@
 using System.Text.Json;
 using RoutePilot.Agent;
 
+if(args.Length==2 && args[0]=="--startup-lab")return await StartupLab.Run(Path.GetFullPath(args[1]));
+if(args.Length==2 && args[0]=="--servers-lab")return await ServersLab.Run(Path.GetFullPath(args[1]));
+if(args.Length==2 && args[0]=="--workload-lab")return await WorkloadLab.Run(Path.GetFullPath(args[1]));
+if(args.Length==2 && args[0]=="--export-second-exit-lab")return await WorkloadLab.ExportSource(Path.GetFullPath(args[1]));
+if(args.Length==4 && args[0]=="--core-workload-lab")return await WorkloadLab.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]),args[3]);
+
 if(args.Length==4 && args[0]=="--core-binding-lab")return await CoreBindingLab.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]),args[3]);
+if(args.Length==4 && args[0]=="--core-two-servers-lab")return await CoreBindingLab.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]),args[3],true);
+if(args.Length==4 && args[0]=="--core-safety-lab")return await CoreSafetyLab.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]),args[3]);
+if(args.Length==4 && args[0]=="--core-network-lab")return await CoreNetworkLab.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]),args[3]);
 
 if(args.Length==2 && args[0]=="--profiles-lab")return await ProfilesLab.Run(Path.GetFullPath(args[1]));
 if(args.Length==2 && args[0]=="--profiles-races-lab")return await ProfilesLab.Run(Path.GetFullPath(args[1]),true);

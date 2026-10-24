@@ -30,6 +30,7 @@ type lossSnapshot struct {
 	DroppedIncoming int64           `json:"droppedIncoming"`
 	OuterPort       int64           `json:"outerPort"`
 	UdpDials        int64           `json:"udpDials"`
+	UdpBudgetDrops  int64           `json:"udpBudgetDrops"`
 	Recovery        *recoveryStatus `json:"recovery,omitempty"`
 }
 
@@ -99,6 +100,7 @@ func proxyLossControl(input io.Reader, output io.Writer, session string, generat
 		}
 		r.OuterPort = bind.port.Load()
 		r.UdpDials = bind.udpDials.Load()
+		r.UdpBudgetDrops = udpBudgetDrops.Load()
 		if bind.recovery != nil {
 			status := bind.recovery.snapshot()
 			r.Recovery = &status

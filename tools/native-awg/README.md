@@ -339,3 +339,9 @@ The [live core binding checkpoint](LIVE-CORE-BINDING-CHECKPOINT.md) now accepts
 quarantine/activation of the native outbound under one running core/TUN, stale
 activation refusal, failed/cancelled candidate closure and a held direct TCP
 stream. It remains an isolated IPv4 gate with one peer, not production selection.
+
+The subsequent [five-stage validation](FIVE-STAGE-CHECKPOINT.md) adds real
+different-server handoff, AWG 3.1 header protection, bounded DNS retransmission,
+network/sleep experiments, independent VM core-failure protection, automatic
+core recovery and concurrent TLS/QUIC capacity measurements. It also records
+remaining production and hardware limits explicitly.

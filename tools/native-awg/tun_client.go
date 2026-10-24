@@ -16,12 +16,14 @@ import (
 // Guest runner installs only /32 routes for 1.1.1.1 and the approved DNS server.
 type tunClientResult struct {
 	chainRetention
-	UDPBefore    int    `json:"udpBefore"`
-	UDPAfter     int    `json:"udpAfter"`
-	UDPLocalPort int    `json:"udpLocalPort"`
-	TcpFromTun   bool   `json:"tcpFromTun"`
-	UdpFromTun   bool   `json:"udpFromTun"`
-	DNSFailure   string `json:"dnsFailure,omitempty"`
+	UDPBefore    int                   `json:"udpBefore"`
+	UDPAfter     int                   `json:"udpAfter"`
+	UDPLocalPort int                   `json:"udpLocalPort"`
+	TcpFromTun   bool                  `json:"tcpFromTun"`
+	UdpFromTun   bool                  `json:"udpFromTun"`
+	DNSFailure   string                `json:"dnsFailure,omitempty"`
+	DNSQueries   []uint16              `json:"dnsQueryIds,omitempty"`
+	DNSProbes    []dnsExchangeEvidence `json:"dnsProbes,omitempty"`
 }
 
 func tunClient(input io.Reader, output io.Writer) int {
@@ -88,38 +90,12 @@ func tunClient(input io.Reader, output io.Writer) int {
 	r.UdpFromTun = localTun(udp.LocalAddr())
 	r.UDPLocalPort = udp.LocalAddr().(*net.UDPAddr).Port
 	dns := func() bool {
-		packet, id, e := dnsQuery()
-		if e != nil {
-			r.DNSFailure = "QueryCreation"
-			return false
-		}
-		if udp.SetDeadline(time.Now().Add(4*time.Second)) != nil {
-			r.DNSFailure = "Deadline"
-			return false
-		}
-		if _, e = udp.Write(packet); e != nil {
-			r.DNSFailure = "Write"
-			return false
-		}
-		buffer := make([]byte, 1233)
-		n, e := udp.Read(buffer)
-		if e != nil {
-			if timeout, ok := e.(net.Error); ok && timeout.Timeout() {
-				r.DNSFailure = "ReadTimeout"
-			} else {
-				r.DNSFailure = "ReadError"
-			}
-			return false
-		}
-		if n > 1232 {
-			r.DNSFailure = "Oversize"
-			return false
-		}
-		if !validDNS(buffer[:n], id) {
-			r.DNSFailure = "InvalidResponse"
-			return false
-		}
-		return true
+		var evidence dnsExchangeEvidence
+		ok, reason := exchangeDNS(udp, netip.AddrPortFrom(server, 53), false, 4*time.Second, &evidence)
+		r.DNSQueries = append(r.DNSQueries, evidence.ID)
+		r.DNSProbes = append(r.DNSProbes, evidence)
+		r.DNSFailure = reason
+		return ok
 	}
 	r.EgressHash = get(ctx)
 	r.TcpFromTun = source.Load()

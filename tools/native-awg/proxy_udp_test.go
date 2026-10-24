@@ -96,7 +96,7 @@ func TestUDPFrameBoundary(t *testing.T) {
 	}
 	var budget datagramBudget
 	now := time.Now()
-	for i := 0; i < 128; i++ {
+	for i := 0; i < udpDatagramBurst; i++ {
 		if !budget.allow(now) {
 			t.Fatal("Burst budget incorrect")
 		}
@@ -108,6 +108,24 @@ func TestUDPFrameBoundary(t *testing.T) {
 		t.Fatal("Budget did not refill")
 	}
 }
+func TestChildWideUDPBudgetCannotMultiplyAcrossAssociations(t *testing.T) {
+	var associations [4]datagramBudget
+	shared := datagramBudget{rate: 8192, burst: 512}
+	now := time.Now()
+	accepted := 0
+	for i := 0; i < 1024; i++ {
+		if associations[i%4].allow(now) && shared.allow(now) {
+			accepted++
+		}
+	}
+	if accepted != 512 || shared.allow(now) || shared.allow(now.Add(-time.Second)) {
+		t.Fatal("Associations bypassed the child-wide packet cap")
+	}
+	if !shared.allow(now.Add(time.Second)) {
+		t.Fatal("Child-wide budget failed to refill")
+	}
+}
+
 func TestUDPRelayPinFlowLimitAndTcpLifetime(t *testing.T) {
 	control, peer := net.Pipe()
 	defer peer.Close()

@@ -40,3 +40,45 @@ func TestConfigBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestHeaderProtectionKeyMapping(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	encoded := base64.StdEncoding.EncodeToString(key)
+	text := strings.Replace(fixture(), "S1=0", "HeaderProtectionKey="+encoded+"\nS1=0", 1)
+	c, e := parseConfig(text)
+	if e != nil || !strings.Contains(c.ipc, "header_protection_key=0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20\n") {
+		t.Fatal("AWG3 header key was not passed to the engine")
+	}
+	for _, value := range []string{"not-a-key", base64.StdEncoding.EncodeToString(key[:31])} {
+		if _, e := parseConfig(strings.Replace(text, encoded, value, 1)); e == nil || strings.Contains(e.Error(), value) {
+			t.Fatal("Invalid header key accepted or disclosed")
+		}
+	}
+}
+
+func TestSplitIPv4PolicyIsPreservedWithoutBroadening(t *testing.T) {
+	text := strings.Replace(fixture(), "AllowedIPs=0.0.0.0/0", "AllowedIPs=1.1.1.0/24, 9.9.9.9/32", 1)
+	c, e := parseConfig(text)
+	if e != nil || !strings.Contains(c.ipc, "allowed_ip=1.1.1.0/24\nallowed_ip=9.9.9.9/32\n") || strings.Contains(c.ipc, "allowed_ip=0.0.0.0/0") {
+		t.Fatal("Split policy was widened or lost")
+	}
+	for _, value := range []string{"1.1.1.0/24,::/0", "1.1.1.0/24,1.1.1.0/24", "1.1.1.0/24,invalid"} {
+		if _, e := parseConfig(strings.Replace(text, "1.1.1.0/24, 9.9.9.9/32", value, 1)); e == nil {
+			t.Fatal("Unsafe split policy accepted")
+		}
+	}
+}
+
+func TestHandshakeDiagnosticPreservesRestrictedPolicy(t *testing.T) {
+	text := strings.Replace(fixture(), "AllowedIPs=0.0.0.0/0", "AllowedIPs=9.9.9.9/32", 1)
+	if _, e := parseConfig(text); e == nil {
+		t.Fatal("Normal lab lost its control-target requirement")
+	}
+	c, e := parseConfigMode(text, false)
+	if e != nil || !strings.Contains(c.ipc, "allowed_ip=9.9.9.9/32\n") || strings.Contains(c.ipc, "allowed_ip=0.0.0.0/0") {
+		t.Fatal("Handshake diagnostic widened restricted policy")
+	}
+}

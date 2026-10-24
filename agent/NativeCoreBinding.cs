@@ -19,14 +19,15 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
     readonly SemaphoreSlim gate=new(1);
     readonly Func<JsonElement,CancellationToken,Task>? quarantined;
     readonly Func<NativeAwgBackend,JsonElement,CancellationToken,Task>? beforeValidation;
+    readonly Func<JsonElement,string>? expectedEgress;
     Process? process;
     string session="";
     ulong generation;
     bool faulted;
     internal JsonElement LastState{get;private set;}
-    internal int ProcessId=>process?.Id??0;
-    internal NativeCoreBinding(string coreImage,string config,string nativeImage,string owner,string expectedExit,Func<JsonElement,CancellationToken,Task>? quarantined=null,Func<NativeAwgBackend,JsonElement,CancellationToken,Task>? beforeValidation=null)
-    {this.coreImage=Path.GetFullPath(coreImage);this.config=Path.GetFullPath(config);this.nativeImage=Path.GetFullPath(nativeImage);this.owner=owner;this.expectedExit=expectedExit;this.quarantined=quarantined;this.beforeValidation=beforeValidation;}
+    internal int ProcessId{get{try{return process?.Id??0;}catch(InvalidOperationException){return 0;}}}
+    internal NativeCoreBinding(string coreImage,string config,string nativeImage,string owner,string expectedExit,Func<JsonElement,CancellationToken,Task>? quarantined=null,Func<NativeAwgBackend,JsonElement,CancellationToken,Task>? beforeValidation=null,Func<JsonElement,string>? expectedEgress=null)
+    {this.coreImage=Path.GetFullPath(coreImage);this.config=Path.GetFullPath(config);this.nativeImage=Path.GetFullPath(nativeImage);this.owner=owner;this.expectedExit=expectedExit;this.quarantined=quarantined;this.beforeValidation=beforeValidation;this.expectedEgress=expectedEgress;}
     internal async Task StartAsync(CancellationToken stop)
     {
         var info=new ProcessStartInfo(coreImage){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};info.ArgumentList.Add("run");info.ArgumentList.Add("-c");info.ArgumentList.Add(config);
@@ -78,8 +79,12 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
     {
         var id=NativeAwgBackend.ValidateStart(spec);int port=ready.GetProperty("port").GetInt32();string token=spec.GetProperty("Token").GetString()!;
         if(beforeValidation!=null)await beforeValidation(candidate,spec,stop);
+        // The expectation belongs to the trusted controller, never to imported
+        // configuration. Different server profiles can legitimately have different exits.
+        string expected=expectedEgress?.Invoke(spec)??expectedExit;
+        if(expected.Length!=64||!expected.All(Uri.IsHexDigit))throw new InvalidDataException("Candidate exit expectation unavailable.");
         var https=await ProbeAsync("--proxy-client",new{Port=port,Token=token,LiteralIPv4=true},stop);
-        if(!https.GetProperty("success").GetBoolean()||https.GetProperty("egressHash").GetString()!=expectedExit)throw new InvalidDataException("Candidate HTTPS validation failed.");
+        if(!https.GetProperty("success").GetBoolean()||!string.Equals(https.GetProperty("egressHash").GetString(),expected,StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Candidate HTTPS validation failed.");
         var match=Regex.Match(spec.GetProperty("Config").GetString()!,@"(?mi)^\s*DNS\s*=\s*([0-9.]+)");if(!match.Success)throw new InvalidDataException("Candidate DNS unavailable.");
         var udp=await ProbeAsync("--proxy-udp-client",new{Port=port,Token=token,Server=match.Groups[1].Value},stop);
         if(!udp.GetProperty("success").GetBoolean())throw new InvalidDataException("Candidate UDP validation failed.");

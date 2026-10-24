@@ -7,35 +7,51 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const udpPayloadLimit = 1232
 const udpFlowLimit = 8
+const udpDatagramBurst = 256
+const udpDatagramsPerSecond = 4096
+
+var udpBudgetDrops atomic.Int64
+
+// A child-wide bound prevents opening more associations from multiplying load.
+var udpAggregateBudget = datagramBudget{rate: 8192, burst: 512}
 
 type udpTunnelDial func(netip.AddrPort) (net.Conn, error)
 type udpFlow struct{ socket net.Conn }
 type datagramBudget struct {
-	gate    sync.Mutex
-	tokens  float64
-	updated time.Time
+	gate        sync.Mutex
+	tokens      float64
+	updated     time.Time
+	rate, burst float64
 }
 
 func (b *datagramBudget) allow(now time.Time) bool {
 	b.gate.Lock()
 	defer b.gate.Unlock()
+	if b.rate == 0 {
+		b.rate = udpDatagramsPerSecond
+	}
+	if b.burst == 0 {
+		b.burst = udpDatagramBurst
+	}
 	if b.updated.IsZero() {
-		b.tokens = 128
+		b.tokens = b.burst
 		b.updated = now
 	}
 	if now.After(b.updated) {
-		b.tokens += now.Sub(b.updated).Seconds() * 1024
-		if b.tokens > 128 {
-			b.tokens = 128
+		b.tokens += now.Sub(b.updated).Seconds() * b.rate
+		if b.tokens > b.burst {
+			b.tokens = b.burst
 		}
 		b.updated = now
 	}
 	if b.tokens < 1 {
+		udpBudgetDrops.Add(1)
 		return false
 	}
 	b.tokens--
@@ -164,6 +180,9 @@ func relayUDP(parent context.Context, control net.Conn, relay net.PacketConn, so
 		if sourcePort == 0 {
 			sourcePort = uint16(source.Port)
 		}
+		if !udpAggregateBudget.allow(time.Now()) {
+			continue
+		}
 		// Copy before a reader goroutine can outlive the next ReadFrom iteration.
 		client := &net.UDPAddr{IP: append(net.IP(nil), source.IP...), Port: source.Port}
 		gate.Lock()
@@ -208,7 +227,7 @@ func relayUDP(parent context.Context, control net.Conn, relay net.PacketConn, so
 						}
 						continue
 					}
-					if !budget.allow(time.Now()) {
+					if !budget.allow(time.Now()) || !udpAggregateBudget.allow(time.Now()) {
 						continue
 					}
 					if relay.SetWriteDeadline(time.Now().Add(time.Second)) != nil {

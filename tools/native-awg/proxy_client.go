@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"golang.org/x/net/proxy"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"net/netip"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +22,7 @@ func proxyClient(input io.Reader, output io.Writer) int {
 		Port        int
 		Token       string
 		LiteralIPv4 bool
+		ExportExit  bool
 	}
 	decoder := json.NewDecoder(io.LimitReader(input, 2048))
 	decoder.DisallowUnknownFields()
@@ -54,10 +60,21 @@ func proxyClient(input io.Reader, output io.Writer) int {
 		return 1
 	}
 	began := time.Now()
+	var phase atomic.Int32
+	request = request.WithContext(httptrace.WithClientTrace(request.Context(), &httptrace.ClientTrace{
+		TLSHandshakeStart: func() { phase.Store(1) },
+		TLSHandshakeDone: func(_ tls.ConnectionState, e error) {
+			if e == nil {
+				phase.Store(2)
+			}
+		},
+		GotFirstResponseByte: func() { phase.Store(3) },
+	}))
 	response, e := client.Do(request)
 	r.Milliseconds = time.Since(began).Milliseconds()
 	if e != nil {
 		r.Stage = "ProxyConnectFailed"
+		r.FailurePhase = []string{"ProxyDial", "TlsHandshake", "ResponseHeaders", "ResponseRead"}[phase.Load()]
 		return 1
 	}
 	defer response.Body.Close()
@@ -65,9 +82,20 @@ func proxyClient(input io.Reader, output io.Writer) int {
 	r.Stage = "ProxyHttpResponse"
 	body, e := io.ReadAll(io.LimitReader(response.Body, 8193))
 	if e != nil || len(body) > 8192 || response.StatusCode != 200 {
+		r.FailurePhase = "ResponseBodyOrStatus"
 		return 1
 	}
 	r.EgressHash = traceHash(body)
+	if spec.ExportExit && r.EgressHash != "" {
+		for _, line := range strings.Split(string(body), "\n") {
+			if strings.HasPrefix(line, "ip=") {
+				ip, e := netip.ParseAddr(strings.TrimSpace(strings.TrimPrefix(line, "ip=")))
+				if e == nil && ip.Is4() && publicTarget(ip) {
+					r.EgressIPv4 = ip.String()
+				}
+			}
+		}
+	}
 	r.Success = r.EgressHash != ""
 	if !r.Success {
 		return 1

@@ -5,4 +5,5 @@
     <AssemblyName>Cita.NativeAgentLab</AssemblyName><NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
   <ItemGroup><Compile Include="../../agent/NativeAwgBackend.cs" Link="NativeAwgBackend.cs" /><Compile Include="../../agent/NativeAwgProfiles.cs" Link="NativeAwgProfiles.cs" /><Compile Include="../../agent/NativeCoreBinding.cs" Link="NativeCoreBinding.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../agent/NativeCoreRecovery.cs" Link="NativeCoreRecovery.cs" /></ItemGroup>
 </Project>

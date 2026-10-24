@@ -1,0 +1,341 @@
+{
+  "scope": "Experimental isolated W11 lab; historical acceptance receipts retain their own artifact hashes, not blanket certification of later revisions",
+  "ipv6Verified": false,
+  "schema": 1,
+  "additionalPublicFixtureAccess": "User authorized source-IP-only test; those trials were cleaned. Accepted full-TUN run used exact verified private AWG peer; no public input permission needed.",
+  "automaticGuestTimerWakeVerified": false,
+  "cases": [
+    {
+      "latestAttempt": {
+        "finishedUtc": "2026-10-24T21:26:07.8471083Z",
+        "receipt": "native-awg-startup-8dee5aff124d4454b115ed68801ba9c2.json",
+        "success": true
+      },
+      "case": "startup",
+      "accepted": {
+        "hashesMatched": true,
+        "receipt": "native-awg-startup-8dee5aff124d4454b115ed68801ba9c2.json",
+        "success": true,
+        "finishedUtc": "2026-10-24T21:26:07.8471083Z",
+        "nativeSha256": "EB2990F108A334A63DB0825ECE0F78CAF5FC6E49466FAAB23AC7490A57C0F8D2",
+        "agentBackendSha256": "F0CA6C56864E9F21B73B7504A9533A359460443AA9028746DD51392E1000A13F",
+        "cleanupVerified": true,
+        "coreSha256": null
+      }
+    },
+    {
+      "latestAttempt": {
+        "finishedUtc": "2026-10-24T20:56:41.8924394Z",
+        "receipt": "native-awg-servers-ad1980f30dd249a99d726fbf86a02a9d.json",
+        "success": true
+      },
+      "case": "profiles-backend",
+      "accepted": {
+        "hashesMatched": true,
+        "receipt": "native-awg-servers-ad1980f30dd249a99d726fbf86a02a9d.json",
+        "success": true,
+        "finishedUtc": "2026-10-24T20:56:41.8924394Z",
+        "nativeSha256": "D6464724AF2920AB21B509E7B9C62EB32EE9DBF9B40384C0880526EED1E875A4",
+        "agentBackendSha256": "34A42894C2750DBF33E076E3296CF74D2B8F1D7036E5FAD3203539714006689B",
+        "cleanupVerified": true,
+        "coreSha256": null
+      }
+    },
+    {
+      "latestAttempt": {
+        "finishedUtc": "2026-10-24T21:30:10.5118689Z",
+        "receipt": "native-awg-core-two-servers-65d5815387464a61bf2c0a4cfbf2c8d8.json",
+        "success": true
+      },
+      "case": "profiles-tun",
+      "accepted": {
+        "hashesMatched": true,
+        "receipt": "native-awg-core-two-servers-65d5815387464a61bf2c0a4cfbf2c8d8.json",
+        "success": true,
+        "finishedUtc": "2026-10-24T21:30:10.5118689Z",
+        "nativeSha256": "EB2990F108A334A63DB0825ECE0F78CAF5FC6E49466FAAB23AC7490A57C0F8D2",
+        "agentBackendSha256": "F0CA6C56864E9F21B73B7504A9533A359460443AA9028746DD51392E1000A13F",
+        "cleanupVerified": true,
+        "coreSha256": "ABBDE3B2767DECD7F4684E83366C8E98D8A573C99B8ED5D72D81204841E47B84"
+      }
+    },
+    {
+      "latestAttempt": {
+        "finishedUtc": "2026-10-24T22:01:16.0874866Z",
+        "receipt": "native-awg-core-network-668c124891324528a67d30abc9f72fa6.json",
+        "success": true
+      },
+      "case": "network",
+      "accepted": {
+        "hashesMatched": true,
+        "receipt": "native-awg-core-network-668c124891324528a67d30abc9f72fa6.json",
+        "success": true,
+        "finishedUtc": "2026-10-24T22:01:16.0874866Z",
+        "nativeSha256": "FE36BA99308166A55D410B55EC0D0087B9937C23FC1AA0023176964FE5C45902",
+        "sleepEvidence": {
+          "startedUtc": "2026-10-24T22:00:00.6703272Z",
+          "automaticWakeVerified": false,
+          "sleepEventSeen": true,
+          "success": true,
+          "elapsedMs": 34163,
+          "wakeTimerSignaled": true,
+          "performed": true,
+          "finishedUtc": "2026-10-24T22:00:35.9815483Z"
+        },
+        "agentBackendSha256": "FF536E733AA3D6F46214591E5971362666D280F853DC68C8DC813365D67E2834",
+        "observations": [
+          {
+            "phase": "link-interruption",
+            "recoveredAfterSleep": false,
+            "tcpRetained": true
+          },
+          {
+            "phase": "changed-source-probe",
+            "recoveredAfterSleep": null,
+            "tcpRetained": null
+          },
+          {
+            "phase": "ipv4-change",
+            "recoveredAfterSleep": false,
+            "tcpRetained": true
+          },
+          {
+            "phase": "os-s1-sleep",
+            "recoveredAfterSleep": true,
+            "tcpRetained": false
+          },
+          {
+            "phase": "vm-suspend-resume",
+            "recoveredAfterSleep": false,
+            "tcpRetained": true
+          }
+        ],
+        "cleanupVerified": true,
+        "coreSha256": "ABBDE3B2767DECD7F4684E83366C8E98D8A573C99B8ED5D72D81204841E47B84"
+      }
+    },
+    {
+      "latestAttempt": {
+        "finishedUtc": "2026-10-24T22:02:37.2180742Z",
+        "receipt": "native-awg-core-safety-258893b9636d4693981919b3a6f1eec2.json",
+        "success": true
+      },
+      "case": "core-safety",
+      "accepted": {
+        "hashesMatched": true,
+        "receipt": "native-awg-core-safety-258893b9636d4693981919b3a6f1eec2.json",
+        "success": true,
+        "finishedUtc": "2026-10-24T22:02:37.2180742Z",
+        "nativeSha256": "40DB9BC3A7584F65D5673E3C74E1503A76B6199DC6295EED693A32F15B3556F7",
+        "agentBackendSha256": "F10E715AFF20384E7C79FF48F36889C4B812F961D1AA72196EC9AC824853633D",
+        "observations": [
+          {
+            "phase": "repair-quarantine",
+            "detectionMs": 1579,
+            "protectedHttpsAndUdpClosed": true
+          },
+          {
+            "phase": "core-crash",
+            "automaticRecoveryMs": 7369,
+            "newCore": true,
+            "backendRetained": true
+          },
+          {
+            "phase": "repair-quarantine",
+            "detectionMs": 5293,
+            "protectedHttpsAndUdpClosed": true
+          },
+          {
+            "phase": "core-hang",
+            "automaticRecoveryMs": 11053,
+            "newCore": true,
+            "backendRetained": true
+          },
+          {
+            "phase": "budget-exhaustion",
+            "budgetUsed": 2,
+            "noRestart": true,
+            "protectedTrafficClosed": true
+          },
+          {
+            "phase": "guard-verifier-unavailable",
+            "coreAndTunRetained": true,
+            "nativeOutputClosed": true,
+            "noAutomaticReactivation": true,
+            "independentGuardStillArmed": true
+          }
+        ],
+        "cleanupVerified": true,
+        "coreSha256": "ABBDE3B2767DECD7F4684E83366C8E98D8A573C99B8ED5D72D81204841E47B84"
+      }
+    },
+    {
+      "latestAttempt": {
+        "finishedUtc": "2026-10-24T22:10:08.9392448Z",
+        "receipt": "native-awg-workload-586f0ed51ec04353954d0235d9bd2f8a.json",
+        "success": true
+      },
+      "case": "mixed-workload",
+      "accepted": {
+        "resources": {
+          "samples": 56,
+          "peakPrivateBytes": 242233344,
+          "peakWorkingBytes": 113651712,
+          "peakHandles": 925,
+          "cpuSeconds": 2.421875,
+          "elapsedMs": 15401,
+          "logicalProcessors": 2
+        },
+        "udpBudgetDrops": 0,
+        "hashesMatched": true,
+        "receipt": "native-awg-workload-586f0ed51ec04353954d0235d9bd2f8a.json",
+        "success": true,
+        "finishedUtc": "2026-10-24T22:10:08.9392448Z",
+        "nativeSha256": null,
+        "result": {
+          "success": true,
+          "samples": [
+            {
+              "name": "tls-download",
+              "success": true,
+              "bytes": 8388608,
+              "milliseconds": 1089,
+              "sha256": "7d212b9c884f5c77896de960ae17cc341cda43b14d6a971f34ca29ebd4badf7f",
+              "Sent": 0,
+              "Received": 0,
+              "P50": 0,
+              "P95": 0,
+              "Max": 0
+            },
+            {
+              "name": "quic-stream",
+              "success": true,
+              "bytes": 4194304,
+              "milliseconds": 3028,
+              "sha256": "2b07811057df887086f06a67edc6ebf911de8b6741156e7a2eb1416a4b8b1b2e",
+              "Sent": 0,
+              "Received": 0,
+              "P50": 0,
+              "P95": 0,
+              "Max": 0
+            },
+            {
+              "name": "tls-paced-video",
+              "success": true,
+              "bytes": 2097152,
+              "milliseconds": 3471,
+              "sha256": "91d3beb88a9b2f778a6c44a1c53b63d3c79931845a9aef84b3fb414610bd1938",
+              "Sent": 0,
+              "Received": 0,
+              "P50": 0,
+              "P95": 0,
+              "Max": 0
+            },
+            {
+              "name": "quic-game-voice-cadence",
+              "success": true,
+              "bytes": 0,
+              "milliseconds": 13000,
+              "Sent": 500,
+              "Received": 498,
+              "P50": 46.246,
+              "P95": 62.766,
+              "Max": 151.57
+            }
+          ],
+          "stage": "ConcurrentWorkload",
+          "errorType": "<nil>"
+        },
+        "agentBackendSha256": null,
+        "serverCleanup": {
+          "success": true,
+          "processStopped": true,
+          "directoryRemoved": true,
+          "privatePeerRulesRemoved": true,
+          "testRuleCounters": [
+            {
+              "protocol": "udp",
+              "packets": 1559,
+              "bytes": 179186
+            },
+            {
+              "protocol": "tcp",
+              "packets": 2520,
+              "bytes": 179610
+            }
+          ]
+        },
+        "throughCore": true,
+        "cleanupVerified": true,
+        "coreSha256": null
+      }
+    },
+    {
+      "latestAttempt": {
+        "finishedUtc": "2026-10-24T22:16:35.5847648Z",
+        "receipt": "native-awg-independent-6f54ef3de129408da28dd1b610a3ded9.json",
+        "success": true
+      },
+      "case": "independent-candidate",
+      "accepted": {
+        "hashesMatched": true,
+        "handshakeOnly": true,
+        "receipt": "native-awg-independent-6f54ef3de129408da28dd1b610a3ded9.json",
+        "success": true,
+        "finishedUtc": "2026-10-24T22:16:35.5847648Z",
+        "nativeSha256": "71F86D15D91ADF5AEF3C3D483AC0E674FD5F3504F6014B24C945B3A280590A01",
+        "agentBackendSha256": null,
+        "probe": {
+          "schema": 1,
+          "success": true,
+          "stage": "HandshakeVerifiedNoApplicationTraffic",
+          "milliseconds": 207,
+          "engine": "amneziawg-go/v3@v3.1.20260828",
+          "udpDnsVerified": false
+        },
+        "cleanupVerified": true,
+        "coreSha256": null
+      }
+    }
+  ],
+  "profileNodeInventory": [
+    {
+      "name": "awg-cita-awg2-peer-bffc9f0411731ae1.conf",
+      "presentOnKnownServer": true
+    },
+    {
+      "name": "awg-cita-peer-30daa0d6f894656f.conf",
+      "presentOnKnownServer": true
+    },
+    {
+      "name": "awg-cita-peer-58e32c8ba7b1fe8f.conf",
+      "presentOnKnownServer": true
+    },
+    {
+      "name": "JuliaAWG-2.0.conf",
+      "presentOnKnownServer": true
+    },
+    {
+      "name": "WG.conf",
+      "presentOnKnownServer": false
+    }
+  ],
+  "realCommercialGamesCallsVerified": false,
+  "independentServerIsolationVerified": false,
+  "physicalNicSwitchVerified": false,
+  "productionInstalled": false,
+  "recordedUtc": "2026-10-24T22:19:15.3485027Z",
+  "finalGuestCleanup": {
+    "temporaryGuardCount": 0,
+    "nativeProcessCount": 0,
+    "checkedUtc": "2026-10-24T22:18:37.8170167Z",
+    "temporaryWorkloadConfigPresent": false,
+    "labTunPresent": false
+  },
+  "finalServerCleanup": {
+    "temporaryRuleCount": 0,
+    "fixtureDirectoryCount": 0,
+    "fixtureProcessCount": 0
+  },
+  "independentCandidateStatus": "WG.conf key absent from known node; original routing policy excludes control HTTPS. Separate handshake-only check succeeded in 207ms without widening routes; full-TUN independent-node gate remains open."
+}
