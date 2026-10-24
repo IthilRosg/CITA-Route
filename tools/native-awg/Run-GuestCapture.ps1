@@ -1,6 +1,7 @@
-param([switch]$RetentionOnly,[switch]$InboundLoss)
+param([switch]$RetentionOnly,[switch]$InboundLoss,[switch]$ProxyChain)
 $ErrorActionPreference='Stop'
 if($InboundLoss -and -not $RetentionOnly){throw 'Incoming loss requires retention capture'}
+if($ProxyChain -and $RetentionOnly){throw 'Choose one capture scenario'}
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
 $report=@{success=$false;startedUtc=[datetime]::UtcNow.ToString('o');scope='Pktmon OS-NIC IPv4 observation with direct positive control; not all-platform or IPv6 proof'}
@@ -45,7 +46,14 @@ try{
  $script:controlDns=$Matches[1];$config=$null
  $report.control=Capture 'control' {& curl.exe --silent --show-error --ipv4 --noproxy '*' --connect-timeout 3 --max-time 8 https://www.cloudflare.com/cdn-cgi/trace *> (Join-Path $root 'private\control-response.txt');if($LASTEXITCODE -ne 0){throw 'Direct control request failed'};DirectUdpControl} $port
  if($report.control.otherTcp -le 0 -or $report.control.otherUdp -le 0){throw 'Capture positive control did not observe both direct TCP and UDP'}
- if($RetentionOnly){
+ if($ProxyChain){
+  $report.proxy=Capture 'proxy' {
+   $p=Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\CitaLab\NativeAwg\Run-GuestProxy.ps1' -RedirectStandardOutput (Join-Path $root 'proxy-capture.out') -RedirectStandardError (Join-Path $root 'proxy-capture.err') -PassThru;$null=$p.Handle
+   try{if(-not $p.WaitForExit(60000)){throw 'Proxy test deadline'};if($p.ExitCode -ne 0){throw 'Proxy acceptance failed'}}finally{if(-not $p.HasExited){$p.Kill();$p.WaitForExit()};$p.Dispose()}
+  } $port
+  $report.proxyProbe=[IO.File]::ReadAllText((Join-Path $root 'proxy-result.json'))|ConvertFrom-Json
+  $report.success=[bool]($report.proxy.tunnelUdp -gt 0 -and $report.proxy.otherTcp -eq 0 -and $report.proxy.otherUdp -eq 0 -and $report.proxyProbe.success)
+ }elseif($RetentionOnly){
   $report.retention=Capture 'retention' {Probe $false -Retention} $port
   $report.retentionProbe=[IO.File]::ReadAllText((Join-Path $root 'probe-retention.json'))|ConvertFrom-Json
   $report.success=[bool]($report.retention.tunnelUdp -gt 0 -and $report.retention.otherTcp -eq 0 -and $report.retention.otherUdp -eq 0 -and $report.retentionProbe.success)
@@ -60,7 +68,7 @@ try{
 }catch{$report.error=$_.Exception.Message}
 finally{
  if($capture){try{Command @('stop');$capture=$false}catch{$report.cleanupError='Capture stop unconfirmed'}}
- $file=if($RetentionOnly){'capture-retention.json'}else{'capture-result.json'}
+ $file=if($ProxyChain){'capture-proxy.json'}elseif($RetentionOnly){'capture-retention.json'}else{'capture-result.json'}
  $report.captureStopped=-not $capture;$report.finishedUtc=[datetime]::UtcNow.ToString('o');$report|ConvertTo-Json -Depth 8|Set-Content (Join-Path $root $file) -Encoding UTF8
 }
 if(-not $report.success){exit 1}

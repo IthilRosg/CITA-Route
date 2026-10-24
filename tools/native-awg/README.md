@@ -120,8 +120,61 @@ These are synthetic packet-loss tests. They do not establish physical NIC
 removal, address/NAT change, server restart, long loss, UDP stream continuity,
 process crash recovery or arbitrary application survival.
 
-Next gates: authenticated loopback proxy integration in the isolated lab;
-explicit cancellation and owner/generation control; adapter/address change
-and longer-outage recovery with preserved internal sockets; only then optional
-production transport selection and UI. Keep WireSock as the production default
-until those independent gates pass.
+## Authenticated proxy acceptance, 24 October 2026
+
+`--serve-proxy` accepts a bounded JSON bootstrap through stdin: Config, a new
+32-byte hex Token, a 16-byte hex Session identity, and positive Generation.
+Stdin must remain open: EOF cancels the server, closes its listener and active
+connections, waits for handlers and closes the AWG device. An ephemeral IPv4
+loopback port is returned with `ListeningUnverified` and the echoed identity;
+this is NOT handshake/Internet readiness. The parent must verify HTTPS first.
+The token/config are absent from argv, readiness and native logs. Loopback
+SOCKS5 username/password authentication is local access control, not encryption
+against an administrator or protection from process-memory inspection.
+
+The server supports authenticated TCP CONNECT only, at most 32 handlers, a
+5-second handshake and 8-second dial budget. UDP ASSOCIATE, BIND, IPv6 and
+nonpublic targets (including CGNAT/Tailscale) are refused. Domain resolution
+stays inside the AWG netstack; all returned addresses are validated and one
+address is pinned for the dial. No host DNS/dial fallback or stream replay.
+This restricted prototype is not a general replacement for production SOCKS.
+
+`Run-GuestProxy.ps1` in the guarded W11 VM passed:
+
+- No secret and incorrect secret refused; correct secret delivered HTTPS with
+  the independently recorded VPN exit digest.
+- Existing CITA `smart-router.exe` used a SOCKS outbound with the ephemeral
+  credentials and delivered the same verified HTTPS exit.
+- Closing owner stdin stopped the transport cleanly. A separate `-CrashOwner`
+  run killed the transport process. The running core could not complete HTTPS
+  after either stop; no successful direct fallback was observed.
+- All test processes stopped; the topology receipt confirmed unchanged IPv4
+  routes and adapter states. Installed sessions and WireSock were not changed.
+
+`Run-GuestCapture.ps1 -ProxyChain` accepted repeat: direct positive control
+observed 4 outgoing TCP and 2 outgoing UDP packets; the proxy-chain observation
+had 8 endpoint UDP packets and zero other outgoing TCP/UDP from the selected
+local IPv4 source. First attempt was rejected because positive control missed
+outgoing UDP, before any proxy test ran. It is not counted as evidence. Capture
+filters/acceptance were not relaxed for the repeat. This retains the capture
+limitations described above; the crash run has application-level evidence only.
+
+Local ignored receipts: `native-awg-proxy-capture-repeat.json`,
+`native-awg-proxy-crash.json`, `native-awg-proxy-topology.json` under
+`runtime/vm-lab/w11/`. One post-HTTPS memory sample was 54.5 MiB private / 20.3 MiB
+working set for native AWG, and 52.8 / 24.9 MiB for the core. This is not a
+steady-state measurement or a comparison with the WireSock implementation.
+
+Unit tests use in-memory connections for authentication refusal, private/IPv6
+destination refusal before dialing, explicit UDP rejection, authenticated relay,
+active/partial-handshake cancellation and pending-dial cancellation on listener
+failure. The VM uses real sockets and the actual CITA core. Credential-bearing
+core configuration is confined to the protected guest folder and removed in
+cleanup. No production config generator, service or installer was modified.
+
+Next gates: internal TCP retention through the full core/proxy chain; network
+adapter/address change and longer-outage recovery; authenticated UDP association
+and resource/stream limits; production owner leases, profile/generation handoff
+and rollback. Echoing an identity in this lab is not yet production fencing.
+Only then optional production transport selection and UI. Keep WireSock as the
+production default until those independent gates pass.
