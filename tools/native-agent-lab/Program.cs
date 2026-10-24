@@ -1,6 +1,8 @@
 using System.Text.Json;
 using RoutePilot.Agent;
 
+if(args.Length==4 && args[0]=="--core-binding-lab")return await CoreBindingLab.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]),args[3]);
+
 if(args.Length==2 && args[0]=="--profiles-lab")return await ProfilesLab.Run(Path.GetFullPath(args[1]));
 if(args.Length==2 && args[0]=="--profiles-races-lab")return await ProfilesLab.Run(Path.GetFullPath(args[1]),true);
 

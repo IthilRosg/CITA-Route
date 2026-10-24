@@ -122,3 +122,7 @@ diagnosis, production component authorization, persistent recovery policy,
 sleep/resume, hung-child enforcement and application workload acceptance before
 enabling the optional transport in the ordinary client. No installer or release
 is produced here.
+
+Subsequent gate: [LIVE-CORE-BINDING-CHECKPOINT.md](LIVE-CORE-BINDING-CHECKPOINT.md)
+accepts generation-fenced native-outbound rebinding while retaining the core,
+scoped TUN and direct TCP. Its bounded one-peer IPv4 limits still apply.

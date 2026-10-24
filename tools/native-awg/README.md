@@ -334,3 +334,8 @@ strict retirement-before-start, rotating identities/credentials, stale command
 and reply fencing, and Stop before startup/publication through the shared agent
 coordinator. Live core/TUN outbound rebinding and different-server acceptance
 remain separate gates; network preparation outliers are preserved in receipts.
+
+The [live core binding checkpoint](LIVE-CORE-BINDING-CHECKPOINT.md) now accepts
+quarantine/activation of the native outbound under one running core/TUN, stale
+activation refusal, failed/cancelled candidate closure and a held direct TCP
+stream. It remains an isolated IPv4 gate with one peer, not production selection.

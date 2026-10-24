@@ -4,8 +4,8 @@ using System.Text.Json;
 
 namespace RoutePilot.Agent;
 
-// Experimental lifecycle coordinator. Core/TUN rebinding is deliberately not
-// performed here: a replacement is never published until retirement completes.
+// Experimental lifecycle coordinator. An optional owned core adapter quarantines
+// native flows before retirement and validates activation before publication.
 internal sealed class NativeAwgProfiles : IAsyncDisposable
 {
     readonly string image;
@@ -15,6 +15,7 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
     readonly Func<CancellationToken,Task>? beforeStart;
     readonly Func<CancellationToken,Task>? beforePublish;
     readonly Func<CancellationToken,Task>? beforeReply;
+    readonly INativeAwgBinding? binding;
     NativeAwgBackend? active;
     (string Session,ulong Generation)? identity,desired;
     CancellationTokenSource? operation;
@@ -22,7 +23,7 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
     long intent;
     string phase="Stopped";
     bool disposed,retirementFailed;
-    internal NativeAwgProfiles(string image,Func<CancellationToken,Task>? beforeStart=null,Func<CancellationToken,Task>? beforePublish=null,Func<CancellationToken,Task>? beforeReply=null){this.image=Path.GetFullPath(image);this.beforeStart=beforeStart;this.beforePublish=beforePublish;this.beforeReply=beforeReply;}
+    internal NativeAwgProfiles(string image,Func<CancellationToken,Task>? beforeStart=null,Func<CancellationToken,Task>? beforePublish=null,Func<CancellationToken,Task>? beforeReply=null,INativeAwgBinding? binding=null){this.image=Path.GetFullPath(image);this.beforeStart=beforeStart;this.beforePublish=beforePublish;this.beforeReply=beforeReply;this.binding=binding;}
     internal object Snapshot(){lock(sync)return new{phase,session=identity?.Session,generation=identity?.Generation,desiredSession=desired?.Session,desiredGeneration=desired?.Generation,highWater,processId=active?.ProcessId??0,retirementFailed};}
     static JsonElement Command((string Session,ulong Generation) id,string action)=>JsonSerializer.SerializeToElement(new{Session=id.Session,Generation=id.Generation,Action=action});
     static void Cancel(CancellationTokenSource? source){try{source?.Cancel();}catch(ObjectDisposedException){}}
@@ -38,6 +39,13 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
         lock(sync){if(closed){active=null;identity=null;}if(!confirmed||!closed){retirementFailed=true;phase="RetirementFailed";}}
         if(!confirmed||!closed)throw new IOException("Old transport retirement was not confirmed.");
     }
+    async Task StopResourcesAsync()
+    {
+        bool failed=false;
+        if(binding!=null)try{await binding.CloseAsync(CancellationToken.None);}catch{failed=true;}
+        try{await RetireAsync();}catch{failed=true;}
+        if(failed){lock(sync){retirementFailed=true;phase="RetirementFailed";}throw new IOException("Native route retirement was not confirmed.");}
+    }
     internal async Task<JsonElement> SwitchAsync(JsonElement spec,CancellationToken stop)
     {
         var next=NativeAwgBackend.ValidateStart(spec);
@@ -51,11 +59,12 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
             ticket=++intent;desired=next;phase="Preparing";prior=operation;operation=mine=CancellationTokenSource.CreateLinkedTokenSource(stop);
         }
         Cancel(prior);
-        bool acquired=false,retired=false;NativeAwgBackend? candidate=null;
+        bool acquired=false,retired=false,bindingTouched=false;NativeAwgBackend? candidate=null;
         try
         {
             await gate.WaitAsync(mine.Token);acquired=true;Check(ticket,mine.Token);
             await NativeAwgBackend.PreflightAsync(image,spec,mine.Token);Check(ticket,mine.Token);
+            if(binding!=null){bindingTouched=true;await binding.QuarantineAsync(spec,mine.Token);Check(ticket,mine.Token);}
             await RetireAsync();retired=true;Check(ticket,mine.Token);
             lock(sync)phase="Starting";
             if(beforeStart!=null)await beforeStart(mine.Token);
@@ -63,6 +72,8 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
             candidate=new NativeAwgBackend(image);
             var ready=await candidate.StartAsync(spec,mine.Token);
             if(beforePublish!=null)await beforePublish(mine.Token);
+            Check(ticket,mine.Token);
+            if(binding!=null)await binding.ActivateAsync(candidate,spec,ready,mine.Token);
             lock(sync)
             {
                 if(disposed||ticket!=intent||mine.IsCancellationRequested)throw new OperationCanceledException(mine.Token);
@@ -72,6 +83,7 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
         }
         catch
         {
+            if(bindingTouched){await StopResourcesAsync();retired=true;}
             lock(sync)if(ticket==intent&&!retirementFailed){if(!retired&&active!=null){desired=identity;phase="Running";}else phase="Stopped";}
             throw;
         }
@@ -112,7 +124,7 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
             ticket=++intent;desired=null;phase="Stopping";pending=operation;
         }
         Cancel(pending);await gate.WaitAsync();
-        try{lock(sync)if(ticket!=intent)return;await RetireAsync();lock(sync)if(ticket==intent&&!retirementFailed)phase="Stopped";}
+        try{lock(sync)if(ticket!=intent)return;await StopResourcesAsync();lock(sync)if(ticket==intent&&!retirementFailed)phase="Stopped";}
         finally{gate.Release();}
     }
     public async ValueTask DisposeAsync()
@@ -120,7 +132,7 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
         CancellationTokenSource? pending;
         lock(sync){if(disposed)return;disposed=true;++intent;desired=null;pending=operation;phase="Stopping";}
         Cancel(pending);await gate.WaitAsync();
-        try{await RetireAsync();lock(sync)if(!retirementFailed)phase="Stopped";}
+        try{await StopResourcesAsync();lock(sync)if(!retirementFailed)phase="Stopped";}
         finally{gate.Release();}
     }
 }
