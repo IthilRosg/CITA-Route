@@ -109,3 +109,9 @@ whole-core failure before enabling any production backend. Production health
 cadence must use traffic signals and backoff rather than this short lab loop.
 WireSock remains the production default; host VPNUS and installed CITA are
 unchanged.
+
+Subsequent isolated process-owner gate:
+[OWNER-CHECKPOINT.md](OWNER-CHECKPOINT.md) accepts bounded child restart,
+fresh OS TUN traffic, Stop during observed backoff and owner-death/stale-command
+cleanup. It does not yet compose both recovery layers or update the installed
+agent, and existing application UDP associations still need epoch invalidation.

@@ -310,3 +310,9 @@ It retains the AWG device and application streams while reopening the outer UDP
 socket. External process supervision and production agent integration remain
 separate gates. An intermittent UDP manual-control failure is preserved and
 still needs instrumentation; a bounded unchanged-binary repeat passed.
+
+The isolated native child-process owner is described in
+[OWNER-CHECKPOINT.md](OWNER-CHECKPOINT.md). It keeps a stable core endpoint,
+fences child epochs, bounds crash restarts, and joins shutdown before confirming
+Stop. It is a laboratory integration boundary, not an installed service backend;
+existing TCP/UDP application streams are not preserved after process death.

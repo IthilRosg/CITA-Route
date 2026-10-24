@@ -135,6 +135,9 @@ func probeLoss(input io.Reader, retain bool, inboundOnly bool) (r result) {
 	return r
 }
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--supervise-proxy-lab" {
+		os.Exit(ownerMain(os.Stdin, os.Stdout))
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--serve-proxy-recovery-lab" {
 		os.Exit(proxyTransport(os.Stdin, os.Stdout, true, true, true))
 	}
