@@ -37,11 +37,11 @@ func validLossCommand(c lossCommand, session string, generation uint64, used boo
 	if c.Action == "Snapshot" {
 		return c.Milliseconds == 0 && !c.IncomingOnly
 	}
-	return c.Action == "Pause" && !used && c.Milliseconds == 3000
+	return c.Action == "Pause" && !used && (c.Milliseconds == 3000 || c.Milliseconds == 10000)
 }
 
 // This control channel exists ONLY in the explicit VM loss-lab launch mode.
-// Bounded commands, one fault, fixed duration, matching owner identity; no TCP
+// Bounded commands, one fault, allowlisted durations, matching owner identity; no TCP
 // management listener and no such commands on the ordinary proxy launch path.
 func proxyLossControl(input io.Reader, output io.Writer, session string, generation uint64, bind *faultBind, dials *atomic.Int64) {
 	decoder := json.NewDecoder(io.LimitReader(input, 4096))
@@ -55,7 +55,7 @@ func proxyLossControl(input io.Reader, output io.Writer, session string, generat
 		if c.Action == "Pause" {
 			used = true
 			bind.inboundOnly.Store(c.IncomingOnly)
-			bind.pause(3 * time.Second)
+			bind.pause(time.Duration(c.Milliseconds) * time.Millisecond)
 		}
 		r := lossSnapshot{Stage: c.Action, Session: session, Generation: generation, Dials: dials.Load(), BindOpens: bind.opens.Load(), DroppedOutgoing: bind.droppedSend.Load(), DroppedIncoming: bind.droppedReceive.Load()}
 		if json.NewEncoder(output).Encode(r) != nil {
@@ -80,11 +80,22 @@ func proxyRetentionClient(input io.Reader, output io.Writer) int {
 	defer func() { json.NewEncoder(output).Encode(r) }()
 	decoder := json.NewDecoder(io.LimitReader(input, 2048))
 	decoder.DisallowUnknownFields()
-	var spec struct{ Port int }
-	if decoder.Decode(&spec) != nil || spec.Port < 1 || spec.Port > 65535 {
+	var spec struct {
+		Port              int
+		FaultMilliseconds int
+		Token             string
+	}
+	if decoder.Decode(&spec) != nil || spec.Port < 1 || spec.Port > 65535 || (spec.FaultMilliseconds != 3000 && spec.FaultMilliseconds != 10000) {
 		return 1
 	}
-	d, e := proxy.SOCKS5("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(spec.Port)), nil, &net.Dialer{Timeout: 5 * time.Second})
+	var auth *proxy.Auth
+	if spec.Token != "" {
+		if !validHex(spec.Token, 32) {
+			return 1
+		}
+		auth = &proxy.Auth{User: "cita", Password: spec.Token}
+	}
+	d, e := proxy.SOCKS5("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(spec.Port)), auth, &net.Dialer{Timeout: 5 * time.Second})
 	if e != nil {
 		return 1
 	}
@@ -96,10 +107,10 @@ func proxyRetentionClient(input io.Reader, output io.Writer) int {
 	transport := &http.Transport{DialContext: func(ctx context.Context, kind, address string) (net.Conn, error) {
 		calls.Add(1)
 		return dial.DialContext(ctx, kind, address)
-	}, ForceAttemptHTTP2: false, MaxConnsPerHost: 1, TLSHandshakeTimeout: 7 * time.Second, ResponseHeaderTimeout: 12 * time.Second, MaxResponseHeaderBytes: 16384}
+	}, ForceAttemptHTTP2: false, MaxConnsPerHost: 1, TLSHandshakeTimeout: 7 * time.Second, ResponseHeaderTimeout: 25 * time.Second, MaxResponseHeaderBytes: 16384}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	get := func(ctx context.Context) string {
 		req, e := http.NewRequestWithContext(ctx, "GET", "https://www.cloudflare.com/cdn-cgi/trace", nil)
@@ -142,6 +153,9 @@ func proxyRetentionClient(input io.Reader, output io.Writer) int {
 	r.Success = r.SameExit && r.ReusedTCP && r.DialsBefore == 1 && r.DialsAfter == 1
 	if r.Success {
 		r.Stage = "RetainedTcpThroughCore"
+		if spec.Token != "" {
+			r.Stage = "RetainedTcpDirectProxy"
+		}
 		return 0
 	}
 	return 1

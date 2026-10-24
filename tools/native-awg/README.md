@@ -176,19 +176,19 @@ cleanup. No production config generator, service or installer was modified.
 
 The explicit `--serve-proxy-loss-lab` launch mode adds a bounded stdin control
 channel after bootstrap. The normal `--serve-proxy` launch cannot inject loss.
-Commands must match the immutable session/generation, allow at most one fixed
-3000 ms pause, and stay within eight commands / 4096 input bytes. Unknown,
+Commands must match the immutable session/generation, allow at most one
+allowlisted pause (3000 or 10000 ms), and stay within eight commands / 4096 input bytes. Unknown,
 malformed or mismatched commands stop the lab owner. Snapshots return counters,
 never configuration or authentication tokens. Unit tests reject stale owners,
-repeated pauses, unknown actions and longer fault durations.
+repeated pauses, unknown actions and durations outside the allowlist.
 
 `--proxy-retention-client` first completes HTTPS through the CITA core and keeps
 HTTP/1.1 TCP alive. The parent starts the fault only after that baseline, waits
 for the owner's acknowledgement, then releases a second fixed anonymous GET.
 Acceptance requires reuse and no additional client/core TCP dial, no additional
 AWG bind open, observed loss in the chosen direction and unchanged exit digest.
-The runner also requires at least 2500 ms request duration, allowing bounded
-parent/pipe overhead between the fixed 3000 ms pause and release. Successful
+The runner also requires request duration at least pause minus 500 ms, allowing
+bounded parent/pipe overhead between the configured pause and release. Successful
 HTTP auto-retry cannot hide a replacement connection: any extra dial fails.
 
 W11 full-chain results, isolated samples rather than latency guarantees:
@@ -215,8 +215,70 @@ Reproduce: `Run-GuestCapture.ps1 -ProxyChain -ChainRetention`, optionally adding
 `-InboundLoss`. This is same-address silent packet loss, not NIC removal, NAT
 rebinding, server restart or preservation of an arbitrary application stream.
 
-Next gates: network
-adapter/address change and longer-outage recovery; authenticated UDP association
+## Longer loss and real guest link interruption, 24 October 2026
+
+The full-chain test now accepts the explicit `-FaultMilliseconds 10000` option.
+Only 3000/10000 ms are allowed in both native control and PowerShell runners;
+the command remains single-use and session/generation scoped. The acceptance
+client has a 25-second header budget, 45-second overall context and the parent
+allows at most 30 seconds after releasing the second request. These are lab
+measurement budgets, not production timeout changes.
+
+| Fault through CITA core | Request elapsed | Client dials | Native dials | Bind opens |
+| --- | --- | --- | --- | --- |
+| 10 s both directions | 12954 ms | 1 → 1 | 3 → 3 | 1 → 1 |
+| 10 s incoming only | 16585 ms | 1 → 1 | 3 → 3 | 1 → 1 |
+
+Both passed expected-exit, cleanup and unchanged-topology checks. Accepted
+captures observed 12 / 21 endpoint UDP packets and no other outgoing TCP/UDP
+for the selected local IPv4 source, after direct TCP/UDP controls. Seven outgoing
+and one incoming packet were suppressed in the first test; fourteen incoming
+in the second. Retransmission delay beyond the outage is real in these samples:
+TCP retention does not imply unnoticeable pause or the same time in every app.
+Receipts: `native-awg-chain-loss10s.json`, `native-awg-chain-loss10s-inbound.json`.
+
+`Run-GuestProxy.ps1 -Retention -LinkInterruption` is a DIFFERENT scenario: it
+selects exactly one up gateway adapter in the UUID-guarded VM, starts an
+independent delayed re-enable helper, disables that adapter, releases the second
+request, waits three seconds and re-enables. Finally also restores and verifies
+the adapter. This does not inject synthetic loss or alter host networking.
+Measured disable-command-to-enable-return times include command overhead and
+are not exact packet-outage durations.
+
+The full-chain link test FAILED retention: client dials 1 → 2, native dials
+3 → 4, bind opens stayed 1. HTTPS recovered via the same VPN exit in 4651 ms,
+but a new TCP connection was required. Adapter cycle measured 5423 ms.
+Receipt `native-awg-chain-link.json` remains a failed gate, not a passing
+recovery test. All processes, temporary credentials, routes and NIC state were
+restored. No packet-capture absence-of-leak claim is made for adapter cycling.
+
+A diagnostic repeat `-Retention -LinkInterruption -DirectRetention` bypassed
+the CITA core for the retained stream only, using authenticated AWG SOCKS.
+It PASSED: request 4857 ms, client dials 1 → 1, native dials 3 → 3, bind opens
+1 → 1, adapter cycle 3557 ms. Scope/marker `coreBypassed=true` distinguishes
+this from full-chain acceptance, even though the earlier receipt reused the
+generic stage text. Current client emits `RetainedTcpDirectProxy` in this mode.
+Receipt `native-awg-direct-link.json`; normal core baseline checks and cleanup
+still run. The two cycles differ in elapsed time; these are diagnostic samples,
+not a controlled performance comparison or proof for all adapters.
+
+Source inspection of pinned sing-box 1.14.3 shows
+`route/network.go: NetworkManager.ResetNetwork` calls
+`connectionManager.CloseAll()`. Default-interface updates dispatch that reset.
+Together with successful direct-proxy retention, this identifies core network
+reset as the leading explanation; no per-connection reset trace was collected.
+Do not disable all resets: physical direct traffic, DNS, TUN and other protocols
+also depend on that lifecycle.
+
+Next implementation gate: selectively retain only explicitly owned native-AWG
+TCP chains across interface reset. It must verify outbound/session/generation,
+keep the endpoint-only encrypted boundary, retain the default reset for other
+connections, and close everything on Stop/profile change/crash. Required tests:
+mixed direct/native streams, link down/up, stale generations, failed tunnel,
+sleep/resume and no direct fallback. Do not claim NIC-change retention or enable
+this prototype in production before the full-chain link gate passes.
+
+Following gates: address/NAT changes; authenticated UDP association
 and resource/stream limits; production owner leases, profile/generation handoff
 and rollback. Echoing an identity in this lab is not yet production fencing.
 Only then optional production transport selection and UI. Keep WireSock as the

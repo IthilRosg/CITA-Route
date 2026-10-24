@@ -1,4 +1,4 @@
-param([switch]$RetentionOnly,[switch]$InboundLoss,[switch]$ProxyChain,[switch]$ChainRetention)
+param([switch]$RetentionOnly,[switch]$InboundLoss,[switch]$ProxyChain,[switch]$ChainRetention,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000)
 $ErrorActionPreference='Stop'
 if($InboundLoss -and -not ($RetentionOnly -or $ChainRetention)){throw 'Incoming loss requires retention capture'}
 if($ChainRetention -and -not $ProxyChain){throw 'Chain retention requires proxy-chain capture'}
@@ -50,7 +50,7 @@ try{
  if($report.control.otherTcp -le 0 -or $report.control.otherUdp -le 0){throw 'Capture positive control did not observe both direct TCP and UDP'}
  if($ProxyChain){
   $report.proxy=Capture 'proxy' {
-   $captureArguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\CitaLab\NativeAwg\Run-GuestProxy.ps1';if($ChainRetention){$captureArguments+=' -Retention';if($InboundLoss){$captureArguments+=' -InboundLoss'}}
+   $captureArguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\CitaLab\NativeAwg\Run-GuestProxy.ps1';if($ChainRetention){$captureArguments+=' -Retention -FaultMilliseconds '+$FaultMilliseconds;if($InboundLoss){$captureArguments+=' -InboundLoss'}}
    $p=Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $captureArguments -RedirectStandardOutput (Join-Path $root 'proxy-capture.out') -RedirectStandardError (Join-Path $root 'proxy-capture.err') -PassThru;$null=$p.Handle
    try{if(-not $p.WaitForExit(60000)){throw 'Proxy test deadline'};if($p.ExitCode -ne 0){throw 'Proxy acceptance failed'}}finally{if(-not $p.HasExited){$p.Kill();$p.WaitForExit()};$p.Dispose()}
   } $port

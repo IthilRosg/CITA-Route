@@ -24,6 +24,18 @@ func TestLossControlOwnerAndBudget(t *testing.T) {
 	if validLossCommand(good, session, 9, true) {
 		t.Fatal("Repeated fault allowed")
 	}
+	long := good
+	long.Milliseconds = 10000
+	if !validLossCommand(long, session, 9, false) {
+		t.Fatal("Allowlisted long loss rejected")
+	}
+	for _, duration := range []int{-1, 0, 2999, 3001, 9999, 10001, 30000} {
+		bad := good
+		bad.Milliseconds = duration
+		if validLossCommand(bad, session, 9, false) {
+			t.Fatal("Unbounded duration accepted")
+		}
+	}
 	bind := newFaultBind(&stubBind{})
 	var dials atomic.Int64
 	dials.Store(3)

@@ -1,9 +1,10 @@
-param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss)
+param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
 $report=@{success=$false;startedUtc=[datetime]::UtcNow.ToString('o');scope='Authenticated TCP-only loopback AWG proxy and isolated CITA core chain; no installed session change'}
 $owner=$null;$router=$null;$retaining=$null;$stage='Preconditions';$private=Join-Path $root ('private\proxy-'+[guid]::NewGuid().ToString('N'))
+$linkAdapter=$null;$linkRestore=$null
 function Topology{
  $text=@(Get-NetRoute -AddressFamily IPv4|ForEach-Object {'route|'+$_.InterfaceIndex+'|'+$_.DestinationPrefix+'|'+$_.NextHop+'|'+$_.RouteMetric})+@(Get-NetAdapter -IncludeHidden|ForEach-Object {'nic|'+$_.InterfaceGuid+'|'+$_.Name+'|'+$_.Status})
  $sha=[Security.Cryptography.SHA256]::Create();try{return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes((($text|Sort-Object)-join "`n"))))).Replace('-','')}finally{$sha.Dispose()}
@@ -17,12 +18,14 @@ function Client([int]$port,[string]$token){
 }
 function Control([string]$action){
  $ack=$owner.StandardOutput.ReadLineAsync()
- $command=@{Session=$session;Generation=1;Action=$action};if($action -eq 'Pause'){$command.Milliseconds=3000;$command.IncomingOnly=[bool]$InboundLoss}
+ $command=@{Session=$session;Generation=1;Action=$action};if($action -eq 'Pause'){$command.Milliseconds=$FaultMilliseconds;$command.IncomingOnly=[bool]$InboundLoss}
  $owner.StandardInput.WriteLine(($command|ConvertTo-Json -Compress));if(-not $ack.Wait(2000)){throw 'Control acknowledgement deadline'}
  $result=$ack.Result|ConvertFrom-Json;if($result.stage -ne $action -or $result.session -ne $session -or $result.generation -ne 1){throw 'Control acknowledgement mismatch'};return $result
 }
 try{
  if(($InboundLoss -and -not $Retention) -or ($CrashOwner -and $Retention)){throw 'Choose one supported scenario'}
+ if($LinkInterruption -and (-not $Retention -or $InboundLoss -or $FaultMilliseconds -ne 3000)){throw 'Link interruption requires three-second retention without synthetic loss'}
+ if($DirectRetention -and -not $Retention){throw 'Direct diagnostic requires retention'}
  if(Get-Process smart-router,vpn-bridge,RoutePilot,native-awg-lab -ErrorAction SilentlyContinue){throw 'Guest must be idle'}
  . C:\CitaLab\PlatformNext\WireSockCli.ps1
  $cli='C:\Program Files\WireSock Secure Connect\command-line\wiresock-connect-cli.exe'
@@ -50,15 +53,38 @@ try{
  $owner.Refresh();$router.Refresh();$report.resourceSample=@{nativePrivateBytes=$owner.PrivateMemorySize64;nativeWorkingSetBytes=$owner.WorkingSet64;routerPrivateBytes=$router.PrivateMemorySize64;routerWorkingSetBytes=$router.WorkingSet64;scope='Single post-HTTPS process sample, not steady-state or a comparison with WireSock'}
  if($Retention){
   $stage='ChainRetention';$retaining=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-retention-client'));$clientErrors=$retaining.StandardError.ReadToEndAsync();$clientReady=$retaining.StandardOutput.ReadLineAsync()
-  $retaining.StandardInput.WriteLine((@{Port=$port}|ConvertTo-Json -Compress));if(-not $clientReady.Wait(18000)){throw 'Retention warmup deadline'}
+  $retentionSpec=@{Port=$port;FaultMilliseconds=$FaultMilliseconds};if($DirectRetention){$retentionSpec.Port=[int]$ready.port;$retentionSpec.Token=$token}
+  $retaining.StandardInput.WriteLine(($retentionSpec|ConvertTo-Json -Compress));$retentionSpec=$null;if(-not $clientReady.Wait(18000)){throw 'Retention warmup deadline'}
   if(($clientReady.Result|ConvertFrom-Json).stage -ne 'RetentionClientReady'){throw 'Retention warmup failed'}
-  $baseline=Control 'Snapshot';$pause=Control 'Pause'
+  $baseline=Control 'Snapshot'
+  if($LinkInterruption){
+   $stage='GuestLinkInterruption'
+   $adapters=@(Get-NetIPConfiguration|Where-Object {$_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up'})
+   if($adapters.Count -ne 1){throw 'Exactly one active gateway adapter required'}
+   $linkAdapter=$adapters[0].NetAdapter
+   $adapterGuid=([guid]$linkAdapter.InterfaceGuid).ToString('D')
+   # Independent local recovery helper runs even if this runner throws or dies.
+   # Guard by guest UUID and adapter GUID; no host/global network changes.
+   $restoreCode="Start-Sleep -Seconds 8;if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){exit 1};Get-NetAdapter -IncludeHidden | Where-Object {[guid]`$_.InterfaceGuid -eq [guid]'$adapterGuid'} | Enable-NetAdapter -Confirm:`$false"
+   $restoreInfo=ProcessInfo 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' ('-NoProfile -NonInteractive -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($restoreCode)))
+   $linkRestore=[Diagnostics.Process]::Start($restoreInfo);$restoreOutput=$linkRestore.StandardOutput.ReadToEndAsync();$restoreErrors=$linkRestore.StandardError.ReadToEndAsync();$linkRestore.StandardInput.Close()
+   $linkTimer=[Diagnostics.Stopwatch]::StartNew()
+   $linkAdapter|Disable-NetAdapter -Confirm:$false
+   $disabled=Get-NetAdapter -IncludeHidden|Where-Object {[guid]$_.InterfaceGuid -eq [guid]$adapterGuid}
+   $report.linkDisabled=[bool]($disabled.AdminStatus -eq 'Down')
+   if(-not $report.linkDisabled){throw 'Adapter disable not confirmed'}
+  }else{$pause=Control 'Pause'}
   $retaining.StandardInput.WriteLine('{"Continue":true}');$retaining.StandardInput.Close();$clientOutput=$retaining.StandardOutput.ReadToEndAsync()
-  if(-not $retaining.WaitForExit(18000)){throw 'Retention response deadline'}
+  if($LinkInterruption){
+   Start-Sleep -Milliseconds 3000
+   Get-NetAdapter -IncludeHidden|Where-Object {[guid]$_.InterfaceGuid -eq [guid]$adapterGuid}|Enable-NetAdapter -Confirm:$false
+   $report.linkDisableToEnableMilliseconds=$linkTimer.ElapsedMilliseconds
+  }
+  if(-not $retaining.WaitForExit(30000)){throw 'Retention response deadline'}
   $client=$clientOutput.GetAwaiter().GetResult()|ConvertFrom-Json;$afterLoss=Control 'Snapshot'
-  $dropped=if($InboundLoss){$afterLoss.droppedIncoming -gt $baseline.droppedIncoming}else{$afterLoss.droppedOutgoing -gt $baseline.droppedOutgoing}
-  $report.retention=@{client=$client;before=$baseline;after=$afterLoss;faultMilliseconds=3000;incomingOnly=[bool]$InboundLoss}
-  $report.retention.success=[bool]($retaining.ExitCode -eq 0 -and $client.success -and $client.egressHash -eq $reference.serverEgressHash -and $baseline.dials -eq $afterLoss.dials -and $baseline.bindOpens -eq 1 -and $afterLoss.bindOpens -eq 1 -and $dropped -and $client.requestMilliseconds -ge 2500)
+  $dropped=if($LinkInterruption){$report.linkDisabled}else{if($InboundLoss){$afterLoss.droppedIncoming -gt $baseline.droppedIncoming}else{$afterLoss.droppedOutgoing -gt $baseline.droppedOutgoing}}
+  $report.retention=@{client=$client;before=$baseline;after=$afterLoss;faultMilliseconds=$FaultMilliseconds;incomingOnly=[bool]$InboundLoss;linkInterruption=[bool]$LinkInterruption;coreBypassed=[bool]$DirectRetention}
+  $report.retention.success=[bool]($retaining.ExitCode -eq 0 -and $client.success -and $client.egressHash -eq $reference.serverEgressHash -and $baseline.dials -eq $afterLoss.dials -and $baseline.bindOpens -eq 1 -and $afterLoss.bindOpens -eq 1 -and $dropped -and $client.requestMilliseconds -ge ($FaultMilliseconds-500))
  }
  $stage='OwnerEof';if($CrashOwner){$stage='OwnerCrash';$owner.Kill()}else{$owner.StandardInput.Close()};$report.ownerStopped=[bool]$owner.WaitForExit(6000);$report.ownerExitClean=[bool]($report.ownerStopped -and $owner.ExitCode -eq 0)
  $report.ownerScenario=if($CrashOwner){'KilledTransport'}else{'ClosedOwnerStdin'}
@@ -68,6 +94,13 @@ try{
  if($Retention -and -not $report.retention.success){$report.success=$false}
 }catch{$report.failedStage=$stage;$report.errorType=$_.Exception.GetType().Name}
 finally{
+ if($linkAdapter){
+  try{Get-NetAdapter -IncludeHidden|Where-Object {[guid]$_.InterfaceGuid -eq [guid]$linkAdapter.InterfaceGuid}|Enable-NetAdapter -Confirm:$false
+   if($linkRestore -and -not $linkRestore.WaitForExit(12000)){throw 'Recovery helper deadline'}
+   $restored=Get-NetAdapter -IncludeHidden|Where-Object {[guid]$_.InterfaceGuid -eq [guid]$linkAdapter.InterfaceGuid};$report.linkRestored=[bool]($restored.Status -eq 'Up')
+  }catch{$report.linkRestored=$false};if(-not $report.linkRestored){$report.success=$false}
+ }
+ if($linkRestore){$linkRestore.Dispose()}
  foreach($process in @($retaining,$router,$owner)){if($process){if(-not $process.HasExited){$process.Kill();$process.WaitForExit()};$process.Dispose()}}
  $token=$null;$report.finishedUtc=[datetime]::UtcNow.ToString('o')
  # Delete just this run's credential-bearing file, never another run's folder.
