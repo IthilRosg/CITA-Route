@@ -25,6 +25,7 @@ type result struct {
 	Milliseconds int64  `json:"milliseconds"`
 	EgressHash   string `json:"egressHash,omitempty"`
 	Engine       string `json:"engine"`
+	UDPDNS       bool   `json:"udpDnsVerified"`
 }
 
 func probe(input io.Reader) (r result) {
@@ -94,13 +95,22 @@ func probe(input io.Reader) (r result) {
 			found = true
 		}
 	}
-	r.Success = found
 	if found {
-		r.Stage = "VerifiedHttps"
+		r.Stage = "UdpDns"
+		r.UDPDNS = udpDNS(network, c.dns[0])
+	}
+	r.Success = found && r.UDPDNS
+	if found {
+		if r.Success {
+			r.Stage = "VerifiedHttpsAndUdpDns"
+		}
 	}
 	return r
 }
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--capture-summary" {
+		os.Exit(captureMain())
+	}
 	if len(os.Args) != 2 || os.Args[1] != "--probe" {
 		fmt.Fprintln(os.Stderr, "Experimental VM-only probe; configuration is read from stdin.")
 		os.Exit(2)

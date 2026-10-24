@@ -28,6 +28,40 @@ restricted to the approved W11 lab UUID and requires idle CITA/WireSock.
 A successful HTTPS request is NOT packet-capture leak proof, UDP acceptance,
 connection retention, throughput/resource benchmark or production readiness.
 
+## IPv4 capture and UDP gate, 24 October 2026
+
+The probe now requires a separate bounded DNS/UDP exchange through the internal
+stack, matching transaction ID, question, response flags and a public A answer.
+This confirms DNS/UDP request-response, not arbitrary UDP applications or loss
+characteristics. OS-NIC captures use Pktmon, 128 captured bytes/packet, bounded
+8 MiB ETL files; raw files stay under the ACL-protected guest private directory.
+No capture filters are removed or installed. An already-running capture causes
+start to fail rather than being stopped by the runner.
+
+Controlled W11 result:
+- Direct positive control: 8 outbound TCP and 2 outbound UDP packets observed.
+  UDP uses an explicit socket to avoid Windows DNS-cache false controls.
+- Native HTTPS + UDP/DNS: expected exit, unchanged OS topology, 4 outbound UDP
+  packets to the endpoint, zero other outbound TCP/UDP in the observed IPv4 NIC
+  traffic. Probe elapsed 351 ms, a single sample, not a benchmark.
+- Negative authentication control: original endpoint with a random wrong PSK
+  only in process stdin; 2 outbound UDP endpoint packets, HTTPS refused, zero
+  other outbound TCP/UDP. Original profile and server settings unchanged.
+- Capture stopped after the tests. Result:
+  `runtime/vm-lab/w11/native-awg-capture-auth.json` (local ignored receipt).
+
+The earlier unavailable-port test returned the expected application failure,
+but its capture did not observe outbound endpoint packets. That capture was NOT
+accepted as a full negative packet-observation gate. Wrong-PSK testing is a
+separate scenario, not a substitute claim that all server-outage cases passed.
+
+The analyzer accepts bounded little-endian PCAPNG Ethernet EPBs (with one VLAN),
+requires known link types and usable headers, and refuses unsupported/malformed
+packet encodings. Counts are restricted to the selected local IPv4 source;
+incoming/background packets are separate. Positive controls cover both TCP/UDP.
+This is evidence for these captures, not proof for every network, IPv6, other
+local source addresses, process crash, updates or future transports.
+
 ## First acceptance, 24 October 2026
 
 Approved W11 VM only; WireSock and CITA idle, same approved test peer on UDP 3080.

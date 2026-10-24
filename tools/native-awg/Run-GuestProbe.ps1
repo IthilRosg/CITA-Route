@@ -1,4 +1,4 @@
-param([switch]$UnavailableEndpoint)
+param([switch]$UnavailableEndpoint,[switch]$WrongPresharedKey)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
@@ -9,6 +9,7 @@ function Topology{
 }
 $process=$null
 try{
+ if($UnavailableEndpoint -and $WrongPresharedKey){throw 'Choose one negative scenario'}
  if(Get-Process smart-router,vpn-bridge,RoutePilot,native-awg-lab -ErrorAction SilentlyContinue){throw 'Guest must be idle'}
  $cli='C:\Program Files\WireSock Secure Connect\command-line\wiresock-connect-cli.exe'
  . C:\CitaLab\PlatformNext\WireSockCli.ps1
@@ -20,6 +21,12 @@ try{
  $process=[Diagnostics.Process]::Start($info)
  $output=$process.StandardOutput.ReadToEndAsync();$errorOutput=$process.StandardError.ReadToEndAsync()
  $config=[IO.File]::ReadAllText((Join-Path $root 'private\peer.conf'))
+ if($WrongPresharedKey){
+  $bytes=New-Object byte[] 32;$rng=[Security.Cryptography.RandomNumberGenerator]::Create();try{$rng.GetBytes($bytes)}finally{$rng.Dispose()}
+  $key=[Convert]::ToBase64String($bytes);[Array]::Clear($bytes,0,$bytes.Length)
+  $config=[regex]::Replace($config,'(?m)^PresharedKey\s*=.*\r?\n?','')
+  $config=$config.Replace('[Peer]',('[Peer]'+"`n"+'PresharedKey = '+$key));$key=$null
+ }
  if($UnavailableEndpoint){
   # Keep the same approved server IP, use a non-tunnel UDP port. No keys or
   # credentials are sent to a different host; no profile is modified on disk.
@@ -34,15 +41,15 @@ try{
  $report.exitCode=$process.ExitCode;$report.native=$native
  $report.expectedVpnExit=[bool]($native.success -and $native.egressHash -eq $reference.serverEgressHash)
  $report.topologyUnchanged=($before -eq (Topology))
- if($UnavailableEndpoint){
+ if($UnavailableEndpoint -or $WrongPresharedKey){
   $report.expectedFailureObserved=[bool]($process.ExitCode -eq 1 -and -not $native.success -and $native.stage -eq 'HandshakeAndHttps' -and -not $native.egressHash)
   $report.success=[bool]($report.expectedFailureObserved -and $report.topologyUnchanged)
-  $report.scope='Unavailable same-server UDP port: HTTPS must fail; no OS topology changes. Not packet-capture leak proof.'
+  $report.scope=if($WrongPresharedKey){'Deliberately wrong in-memory PSK, original endpoint: HTTPS must fail; no profile or topology change.'}else{'Unavailable same-server UDP port: HTTPS must fail; no OS topology changes. Not packet-capture leak proof.'}
  }else{$report.success=[bool]($process.ExitCode -eq 0 -and $report.expectedVpnExit -and $report.topologyUnchanged)}
 }catch{$report.error=$_.Exception.Message}
 finally{
  if($process){if(-not $process.HasExited){$process.Kill();$process.WaitForExit()};$process.Dispose()}
- $name=if($UnavailableEndpoint){'probe-unavailable.json'}else{'probe-result.json'}
+ $name=if($WrongPresharedKey){'probe-wrong-key.json'}elseif($UnavailableEndpoint){'probe-unavailable.json'}else{'probe-result.json'}
  $report.finishedUtc=[datetime]::UtcNow.ToString('o');$report|ConvertTo-Json -Depth 5|Set-Content (Join-Path $root $name) -Encoding UTF8
 }
 if(-not $report.success){exit 1}
