@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -60,16 +61,22 @@ func proxyLossControl(input io.Reader, output io.Writer, session string, generat
 		limit = 16384
 		commands = 64
 	}
-	decoder := json.NewDecoder(io.LimitReader(input, limit))
-	decoder.DisallowUnknownFields()
+	legacy := json.NewDecoder(io.LimitReader(input, limit))
+	legacy.DisallowUnknownFields()
+	var decoder messageDecoder = legacy
+	persistent := bind.ownedControl && os.Getenv("CITA_NATIVE_PERSISTENT_CONTROL") == "1"
+	if persistent {
+		decoder = newBoundedFrames(input, 2048)
+	}
 	used := false
 	rebinds := 0
-	for count := 0; count < commands; count++ {
+	var repairBudget repairWindow
+	for count := 0; persistent || count < commands; count++ {
 		var c lossCommand
 		if decoder.Decode(&c) != nil || !validLossCommand(c, session, generation, used && !(bind.ownedControl && c.Action == "Rebind")) {
 			return
 		}
-		if bind.ownedControl && (c.Action != "Snapshot" && c.Action != "Rebind" && c.Action != "Blackhole" || c.Action == "Rebind" && rebinds >= 2) {
+		if bind.ownedControl && (c.Action != "Snapshot" && c.Action != "Rebind" && c.Action != "Blackhole" || c.Action == "Rebind" && (!persistent && rebinds >= 2 || persistent && !repairBudget.acquire(time.Now(), "socket"))) {
 			return
 		}
 		if c.Action == "Pause" {

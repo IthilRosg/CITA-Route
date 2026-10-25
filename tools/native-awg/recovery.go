@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"sync"
 	"time"
 )
@@ -16,14 +17,16 @@ type recoveryStatus struct {
 	Successes int    `json:"successes"`
 }
 type transportRecovery struct {
-	mu       sync.Mutex
-	status   recoveryStatus
-	verified bool
-	pending  bool
+	mu           sync.Mutex
+	status       recoveryStatus
+	verified     bool
+	pending      bool
+	persistent   bool
+	repairBudget repairWindow
 }
 
 func newTransportRecovery() *transportRecovery {
-	return &transportRecovery{status: recoveryStatus{State: "Starting"}}
+	return &transportRecovery{status: recoveryStatus{State: "Starting"}, persistent: os.Getenv("CITA_NATIVE_PERSISTENT_CONTROL") == "1"}
 }
 func (r *transportRecovery) snapshot() recoveryStatus {
 	r.mu.Lock()
@@ -55,7 +58,13 @@ func (r *transportRecovery) observe(healthy bool) bool {
 	if r.status.Failures < 2 {
 		return false
 	}
-	if r.status.Attempts >= 2 {
+	allowed := false
+	if r.persistent {
+		allowed = r.repairBudget.acquire(time.Now(), "socket")
+	} else {
+		allowed = r.status.Attempts < 2
+	}
+	if !allowed {
 		r.status.State = "Exhausted"
 		return false
 	}

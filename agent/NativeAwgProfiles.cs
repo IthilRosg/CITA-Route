@@ -16,6 +16,7 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
     readonly Func<CancellationToken,Task>? beforePublish;
     readonly Func<CancellationToken,Task>? beforeReply;
     readonly INativeAwgBinding? binding;
+    readonly bool persistentControl;
     NativeAwgBackend? active;
     (string Session,ulong Generation)? identity,desired;
     CancellationTokenSource? operation;
@@ -23,7 +24,7 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
     long intent;
     string phase="Stopped";
     bool disposed,retirementFailed;
-    internal NativeAwgProfiles(string image,Func<CancellationToken,Task>? beforeStart=null,Func<CancellationToken,Task>? beforePublish=null,Func<CancellationToken,Task>? beforeReply=null,INativeAwgBinding? binding=null){this.image=Path.GetFullPath(image);this.beforeStart=beforeStart;this.beforePublish=beforePublish;this.beforeReply=beforeReply;this.binding=binding;}
+    internal NativeAwgProfiles(string image,Func<CancellationToken,Task>? beforeStart=null,Func<CancellationToken,Task>? beforePublish=null,Func<CancellationToken,Task>? beforeReply=null,INativeAwgBinding? binding=null,bool persistentControl=false){this.image=Path.GetFullPath(image);this.beforeStart=beforeStart;this.beforePublish=beforePublish;this.beforeReply=beforeReply;this.binding=binding;this.persistentControl=persistentControl;}
     internal object Snapshot(){lock(sync)return new{phase,session=identity?.Session,generation=identity?.Generation,desiredSession=desired?.Session,desiredGeneration=desired?.Generation,highWater,processId=active?.ProcessId??0,retirementFailed};}
     static JsonElement Command((string Session,ulong Generation) id,string action)=>JsonSerializer.SerializeToElement(new{Session=id.Session,Generation=id.Generation,Action=action});
     static void Cancel(CancellationTokenSource? source){try{source?.Cancel();}catch(ObjectDisposedException){}}
@@ -54,6 +55,7 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
         lock(sync)
         {
             if(disposed||retirementFailed)throw new InvalidOperationException("Profile coordinator is unavailable.");
+            if(sessions.Count>=1024)throw new InvalidOperationException("Start a fresh native controller before further profile switches.");
             if(next.Generation<=highWater||sessions.Contains(next.Session)||credentials.Contains(credential))throw new InvalidDataException("Profile identity must advance and rotate credentials.");
             highWater=next.Generation;sessions.Add(next.Session);credentials.Add(credential);
             ticket=++intent;desired=next;phase="Preparing";prior=operation;operation=mine=CancellationTokenSource.CreateLinkedTokenSource(stop);
@@ -69,7 +71,7 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
             lock(sync)phase="Starting";
             if(beforeStart!=null)await beforeStart(mine.Token);
             Check(ticket,mine.Token);
-            candidate=new NativeAwgBackend(image);
+            candidate=new NativeAwgBackend(image,persistentControl);
             var ready=await candidate.StartAsync(spec,mine.Token);
             if(beforePublish!=null)await beforePublish(mine.Token);
             Check(ticket,mine.Token);

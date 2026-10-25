@@ -7,7 +7,38 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func TestPersistentOwnerUsesRollingSharedBudget(t *testing.T) {
+	t.Setenv("CITA_NATIVE_PERSISTENT_CONTROL", "1")
+	ctx := context.Background()
+	child := &ownedProxy{}
+	o := &proxyOwner{coordinated: true, child: child}
+	for i := 0; i < 2; i++ {
+		o.decideRepair(ctx, child, true)
+		o.decideRepair(ctx, child, false)
+		if !o.decideRepair(ctx, child, false) {
+			t.Fatal("missing socket allowance")
+		}
+	}
+	if !o.launchAllowed(ctx) || o.launchAllowed(ctx) {
+		t.Fatal("shared burst cap")
+	}
+	// Age attempts without sleeping or resetting lifetime diagnostic counters.
+	for i := range o.repairBudget.events {
+		o.repairBudget.events[i].at = o.repairBudget.events[i].at.Add(-5 * time.Minute)
+	}
+	if !o.launchAllowed(ctx) || o.status.Restarts != 2 {
+		t.Fatal("persistent owner did not age its allowance")
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	before := len(o.repairBudget.events)
+	if o.launchAllowed(canceled) || len(o.repairBudget.events) != before {
+		t.Fatal("Stop consumed repair or relaunched")
+	}
+}
 
 func TestCoordinatedBudgetSurvivesChildReplacement(t *testing.T) {
 	ctx := context.Background()

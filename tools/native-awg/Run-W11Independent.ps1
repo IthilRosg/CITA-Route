@@ -1,12 +1,13 @@
-param([switch]$HandshakeOnly)
+param([switch]$HandshakeOnly,[switch]$FullRouteLab)
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'));$run=[guid]::NewGuid().ToString('N')
-$report=@{schema=1;success=$false;handshakeOnly=[bool]$HandshakeOnly;scope='Existing WG profile candidate absent from known server public-key inventory; no host route changes';startedUtc=[datetime]::UtcNow.ToString('o')}
+$report=@{schema=1;success=$false;handshakeOnly=[bool]$HandshakeOnly;explicitLabFullRoute=[bool]$FullRouteLab;scope='Existing WG profile candidate absent from known server public-key inventory; no host route changes';startedUtc=[datetime]::UtcNow.ToString('o')}
 $nativeHash=(Get-FileHash (Join-Path $root 'runtime/native-awg-lab.exe')).Hash
 . (Join-Path $root 'runtime/vm-lab/W11-Calls.ps1')
 try{
  W11-Call @('start',$labVmx,'nogui')|Out-Null
- foreach($pair in @(@('runtime/native-awg-lab.exe','native-awg-lab.exe'),@('private/vm-lab/independent-server-pinned.conf','private\independent-server.conf'))){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root $pair[0]),('C:\CitaLab\NativeAwg\'+$pair[1]))|Out-Null}
+ $profile=if($FullRouteLab){'private/vm-lab/independent-server-fullroute-lab.conf'}else{'private/vm-lab/independent-server-pinned.conf'}
+ foreach($pair in @(@('runtime/native-awg-lab.exe','native-awg-lab.exe'),@($profile,'private\independent-server.conf'))){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root $pair[0]),('C:\CitaLab\NativeAwg\'+$pair[1]))|Out-Null}
  $code=@'
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}

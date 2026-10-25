@@ -11,7 +11,7 @@ internal static class CoreSafetyLab
 {
     [DllImport("ntdll.dll")]static extern int NtSuspendProcess(IntPtr process);
     static void Assert(bool value){if(!value)throw new IOException("Core safety gate failed");}
-    static async Task<bool> OsClosed(string native,string dns,CancellationToken stop)
+    internal static async Task<bool> OsClosed(string native,string dns,CancellationToken stop)
     {
         var info=new ProcessStartInfo(@"C:\Windows\System32\curl.exe"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
         foreach(string arg in new[]{"--noproxy","*","--connect-timeout","2","--max-time","3","--silent","--output","NUL","https://1.1.1.1/cdn-cgi/trace"})info.ArgumentList.Add(arg);
@@ -32,7 +32,7 @@ internal static class CoreSafetyLab
         }
         finally{if(!p.HasExited){p.Kill(true);await p.WaitForExitAsync();}}
     }
-    static async Task<bool> Guard(string group,CancellationToken stop)
+    internal static async Task<bool> Guard(string group,CancellationToken stop)
     {
         var info=new ProcessStartInfo("powershell.exe"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
         string code="$r=@(Get-NetFirewallRule -Group '"+group+"' -ErrorAction SilentlyContinue|Where-Object {$_.Enabled -eq 'True' -and $_.Direction -eq 'Outbound' -and $_.Action -eq 'Block'});if($r.Count -eq 1){exit 0};exit 1";

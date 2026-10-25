@@ -163,7 +163,7 @@ func (h *CitaNativeBinding) apply(c bindingCommand) (r bindingReply) {
 	}
 	switch c.Action {
 	case "Quarantine":
-		if !validBindingHex(c.Session, 16) || c.Generation <= h.generation || h.seen[c.Session] || c.Port != 0 || c.Token != "" {
+		if !validBindingHex(c.Session, 16) || c.Generation <= h.generation || h.seen[c.Session] || len(h.seen) >= 1024 || c.Port != 0 || c.Token != "" {
 			return
 		}
 		old := h.active
@@ -234,9 +234,14 @@ func (h *CitaNativeBinding) Start(stage adapter.StartStage, scope *adapter.Scope
 			if encoder.Encode(bindingReply{Stage: "BindingControlReady", Owner: h.owner, Success: true, State: "Closed"}) != nil {
 				return
 			}
-			decoder := json.NewDecoder(io.LimitReader(os.Stdin, 131072))
-			decoder.DisallowUnknownFields()
-			for i := 0; i < 64; i++ {
+			legacy := json.NewDecoder(io.LimitReader(os.Stdin, 131072))
+			legacy.DisallowUnknownFields()
+			var decoder messageDecoder = legacy
+			persistent := os.Getenv("CITA_NATIVE_PERSISTENT_CONTROL") == "1"
+			if persistent {
+				decoder = newBoundedFrames(os.Stdin, 2048)
+			}
+			for i := 0; persistent || i < 64; i++ {
 				var c bindingCommand
 				if decoder.Decode(&c) != nil {
 					return

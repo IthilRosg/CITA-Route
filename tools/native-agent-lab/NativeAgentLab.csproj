@@ -6,4 +6,7 @@
   </PropertyGroup>
   <ItemGroup><Compile Include="../../agent/NativeAwgBackend.cs" Link="NativeAwgBackend.cs" /><Compile Include="../../agent/NativeAwgProfiles.cs" Link="NativeAwgProfiles.cs" /><Compile Include="../../agent/NativeCoreBinding.cs" Link="NativeCoreBinding.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../agent/NativeCoreRecovery.cs" Link="NativeCoreRecovery.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../agent/NativeProbePolicy.cs" Link="NativeProbePolicy.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../agent/NativeRepairBudget.cs" Link="NativeRepairBudget.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../agent/NativeTrustedBundle.cs" Link="NativeTrustedBundle.cs" /></ItemGroup>
 </Project>

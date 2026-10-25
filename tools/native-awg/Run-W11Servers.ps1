@@ -1,13 +1,14 @@
-param()
+param([switch]$Independent)
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'));$run=[guid]::NewGuid().ToString('N')
 $report=@{schema=1;success=$false;startedUtc=[datetime]::UtcNow.ToString('o');scope='Distinct server/key backend matrix, no TUN fallback inference'}
+$profileFile=if($Independent){'private/vm-lab/independent-server-fullroute-lab.conf'}else{'private/vm-lab/second-server-pinned.conf'};$egressFile=if($Independent){'private/vm-lab/independent-server-egress.txt'}else{'private/vm-lab/second-server-egress.txt'};$report.independentNode=[bool]$Independent
 $nativeHash=(Get-FileHash (Join-Path $root 'runtime/native-awg-lab.exe')).Hash;$agentHash=(Get-FileHash (Join-Path $root 'runtime/native-agent-backend-lab/Cita.NativeAgentLab.dll')).Hash
 . (Join-Path $root 'runtime/vm-lab/W11-Calls.ps1')
 try{
  W11-Call @('start',$labVmx,'nogui')|Out-Null
  foreach($pair in @(@('runtime/native-awg-lab.exe','native-awg-lab.exe'),@('tools/native-awg/Run-GuestServers.ps1','Run-GuestServers.ps1'))){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root $pair[0]),('C:\CitaLab\NativeAwg\'+$pair[1]))|Out-Null}
- W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root 'private/vm-lab/second-server-pinned.conf'),'C:\CitaLab\NativeAwg\private\second-server.conf')|Out-Null
+ W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root $profileFile),'C:\CitaLab\NativeAwg\private\second-server.conf')|Out-Null
  foreach($name in @('Cita.NativeAgentLab.exe','Cita.NativeAgentLab.dll','Cita.NativeAgentLab.deps.json','Cita.NativeAgentLab.runtimeconfig.json')){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root ('runtime/native-agent-backend-lab/'+$name)),('C:\CitaLab\NativeAwg\AgentBackend\'+$name))|Out-Null}
  $options=''
  $code='if(Test-Path -LiteralPath C:\CitaLab\NativeAwg\servers-result.json){Remove-Item -LiteralPath C:\CitaLab\NativeAwg\servers-result.json -Force -ErrorAction Stop};$p=Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\CitaLab\NativeAwg\Run-GuestServers.ps1 OPTIONS" -RedirectStandardOutput C:\CitaLab\NativeAwg\profiles.out -RedirectStandardError C:\CitaLab\NativeAwg\profiles.err -PassThru;$null=$p.Handle;$p.WaitForExit()'

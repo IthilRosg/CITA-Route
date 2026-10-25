@@ -296,6 +296,71 @@
         "cleanupVerified": true,
         "coreSha256": null
       }
+    },
+    {
+      "accepted": {
+        "success": true,
+        "receipt": "native-awg-persistent-aa262f78f1bc41faa641c83c378359a0.json",
+        "coreSha256": "D464FFBABD3878C1EB8FF086E63EBA545DA680C75BD54CAF1B55F4CE026CE247",
+        "nativeSha256": "C7329C03C05138EEE6E74DA97FB7FDF59BBD1367D09B1FBD605B11B8DF605B1D",
+        "hashesMatched": true,
+        "agentBackendSha256": "FDB88A9BB757CF7242A2E57DC0B046B5C01653AD108A41629C634CDB6214DCC6",
+        "finishedUtc": "2026-10-24T23:59:07.7873053Z",
+        "cleanupVerified": true
+      },
+      "case": "persistent-control"
+    },
+    {
+      "accepted": {
+        "success": true,
+        "receipt": "native-awg-session-9be6959356d8489ba61bdabbbad38d31.json",
+        "coreSha256": "D464FFBABD3878C1EB8FF086E63EBA545DA680C75BD54CAF1B55F4CE026CE247",
+        "nativeSha256": "C7329C03C05138EEE6E74DA97FB7FDF59BBD1367D09B1FBD605B11B8DF605B1D",
+        "hashesMatched": true,
+        "agentBackendSha256": "FDB88A9BB757CF7242A2E57DC0B046B5C01653AD108A41629C634CDB6214DCC6",
+        "finishedUtc": "2026-10-25T00:00:18.8039813Z",
+        "cleanupVerified": true
+      },
+      "case": "session-lifecycle"
+    },
+    {
+      "accepted": {
+        "success": true,
+        "receipt": "native-awg-core-two-servers-e3f66df139d0430793ca1b3b7b2a5aeb.json",
+        "coreSha256": "D464FFBABD3878C1EB8FF086E63EBA545DA680C75BD54CAF1B55F4CE026CE247",
+        "nativeSha256": "C7329C03C05138EEE6E74DA97FB7FDF59BBD1367D09B1FBD605B11B8DF605B1D",
+        "hashesMatched": true,
+        "agentBackendSha256": "FDB88A9BB757CF7242A2E57DC0B046B5C01653AD108A41629C634CDB6214DCC6",
+        "finishedUtc": "2026-10-25T00:01:33.7839632Z",
+        "cleanupVerified": true
+      },
+      "case": "core-independent-handoff"
+    },
+    {
+      "accepted": {
+        "success": true,
+        "receipt": "native-awg-servers-b87f9459b3b945feaef2d9be310495d0.json",
+        "coreSha256": null,
+        "nativeSha256": "94FCC7F7FB38E73239E8B84632B806568A14C8579C040F6598DF16AD79D23F22",
+        "hashesMatched": true,
+        "agentBackendSha256": "AB98C90C268D89D0977D6B89F34BCAF08AABFACE114B759584B16FFCCBCE2ADC",
+        "finishedUtc": "2026-10-24T23:36:18.543863Z",
+        "cleanupVerified": true
+      },
+      "case": "backend-independent-matrix"
+    },
+    {
+      "accepted": {
+        "success": true,
+        "receipt": "native-awg-trust-3d2a9056e32e47bf90cb38b3733c3d9b.json",
+        "coreSha256": null,
+        "nativeSha256": null,
+        "hashesMatched": null,
+        "agentBackendSha256": null,
+        "finishedUtc": "2026-10-24T23:56:48.8834584Z",
+        "cleanupVerified": true
+      },
+      "case": "protected-component-trust"
     }
   ],
   "profileNodeInventory": [
@@ -324,12 +389,12 @@
   "independentServerIsolationVerified": false,
   "physicalNicSwitchVerified": false,
   "productionInstalled": false,
-  "recordedUtc": "2026-10-24T22:19:15.3485027Z",
+  "recordedUtc": "2026-10-25T00:02:38.8446652Z",
   "finalGuestCleanup": {
     "temporaryGuardCount": 0,
     "nativeProcessCount": 0,
-    "checkedUtc": "2026-10-24T22:18:37.8170167Z",
-    "temporaryWorkloadConfigPresent": false,
+    "trustDirectoryCount": 0,
+    "checkedUtc": "2026-10-25T00:02:17.9768923Z",
     "labTunPresent": false
   },
   "finalServerCleanup": {
@@ -337,5 +402,23 @@
     "fixtureDirectoryCount": 0,
     "fixtureProcessCount": 0
   },
-  "independentCandidateStatus": "WG.conf key absent from known node; original routing policy excludes control HTTPS. Separate handshake-only check succeeded in 207ms without widening routes; full-TUN independent-node gate remains open."
+  "independentCandidateStatus": "Distinct exit and server key absent from known node; independent backend and core/TUN matrices passed with an explicit private full-route lab copy. Original profile policy unchanged. Independent server power-off not exercised.",
+  "independentNodeHandoffVerified": true,
+  "productionServiceLifecycleVerified": false,
+  "nativeIpv6PolicyVerified": false,
+  "releaseReady": false,
+  "rollingRecoveryUnitVerified": true,
+  "developmentFirewall": {
+    "globalFirewallDisabled": false,
+    "externalInboundBlocked": true,
+    "stableTestExecutable": true,
+    "sequentialTestRunsPassed": 2
+  },
+  "releaseBlockers": [
+    "Durable full-policy/interface/IPv6 guard",
+    "Production service, protected profiles/policy and ordinary UI/IPC lifecycle",
+    "Installed client upgrade, rollback and startup acceptance",
+    "Actual physical Wi-Fi/Ethernet switching",
+    "Corresponding-source packaging for accepted production artifacts"
+  ]
 }

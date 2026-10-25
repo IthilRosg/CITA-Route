@@ -21,17 +21,20 @@ import (
 )
 
 type result struct {
-	Schema       int              `json:"schema"`
-	Success      bool             `json:"success"`
-	Stage        string           `json:"stage"`
-	Milliseconds int64            `json:"milliseconds"`
-	EgressHash   string           `json:"egressHash,omitempty"`
-	Engine       string           `json:"engine"`
-	UDPDNS       bool             `json:"udpDnsVerified"`
-	HTTPStatus   int              `json:"httpStatus,omitempty"`
-	FailurePhase string           `json:"failurePhase,omitempty"`
-	EgressIPv4   string           `json:"egressIPv4,omitempty"`
-	Retention    *retentionResult `json:"retention,omitempty"`
+	Schema        int              `json:"schema"`
+	Success       bool             `json:"success"`
+	Stage         string           `json:"stage"`
+	Milliseconds  int64            `json:"milliseconds"`
+	EgressHash    string           `json:"egressHash,omitempty"`
+	Engine        string           `json:"engine"`
+	UDPDNS        bool             `json:"udpDnsVerified"`
+	HTTPStatus    int              `json:"httpStatus,omitempty"`
+	FailurePhase  string           `json:"failurePhase,omitempty"`
+	FailureCode   string           `json:"failureCode,omitempty"`
+	FailureLayers []string         `json:"failureLayers,omitempty"`
+	FailureErrno  uint64           `json:"failureErrno,omitempty"`
+	EgressIPv4    string           `json:"egressIPv4,omitempty"`
+	Retention     *retentionResult `json:"retention,omitempty"`
 }
 
 func probe(input io.Reader) (r result) {

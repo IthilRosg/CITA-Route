@@ -7,7 +7,35 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func TestPersistentTransportAgesBudgetWithoutProbeReset(t *testing.T) {
+	t.Setenv("CITA_NATIVE_PERSISTENT_CONTROL", "1")
+	r := newTransportRecovery()
+	for i := 0; i < 2; i++ {
+		r.observe(true)
+		r.observe(false)
+		if !r.observe(false) {
+			t.Fatal("missing bounded attempt")
+		}
+	}
+	r.observe(true)
+	r.observe(false)
+	if r.observe(false) {
+		t.Fatal("healthy probe reset allowance")
+	}
+	for i := range r.repairBudget.events {
+		r.repairBudget.events[i].at = r.repairBudget.events[i].at.Add(-5 * time.Minute)
+	}
+	if !r.observe(false) || r.status.Attempts != 3 {
+		t.Fatal("expired attempts prevented recovery")
+	}
+	r.stop()
+	if r.observe(false) {
+		t.Fatal("stopped recovery resurrected")
+	}
+}
 
 func TestBlackholeRequiresRecoveryOwner(t *testing.T) {
 	session := strings.Repeat("d", 32)

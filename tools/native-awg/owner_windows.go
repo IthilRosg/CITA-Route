@@ -21,7 +21,7 @@ type ownedProxy struct {
 	done    chan error
 	port    int
 	read    io.ReadCloser
-	decoder *json.Decoder
+	decoder messageDecoder
 	ioMu    sync.Mutex
 }
 type ownerStatus struct {
@@ -38,13 +38,14 @@ type ownerStatus struct {
 	Transport     *lossSnapshot `json:"transport,omitempty"`
 }
 type proxyOwner struct {
-	mu          sync.Mutex
-	status      ownerStatus
-	child       *ownedProxy
-	relays      map[net.Conn]struct{}
-	coordinated bool
-	verified    bool
-	failures    int
+	mu           sync.Mutex
+	status       ownerStatus
+	child        *ownedProxy
+	relays       map[net.Conn]struct{}
+	coordinated  bool
+	verified     bool
+	failures     int
+	repairBudget repairWindow
 }
 
 func (o *proxyOwner) snapshot(action string) ownerStatus {
@@ -72,7 +73,14 @@ func (o *proxyOwner) clear() {
 func (o *proxyOwner) launchAllowed(ctx context.Context) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if ctx.Err() != nil || o.status.Restarts >= 2 || o.coordinated && o.status.BudgetUsed >= 3 {
+	if ctx.Err() != nil {
+		return false
+	}
+	if persistentControl() {
+		if !o.repairBudget.acquire(time.Now(), "child") {
+			return false
+		}
+	} else if o.status.Restarts >= 2 || o.coordinated && o.status.BudgetUsed >= 3 {
 		return false
 	}
 	o.status.Restarts++
@@ -137,6 +145,9 @@ func startOwnedProxyMode(ctx context.Context, spec proxyStart, coordinated bool)
 		return nil, errProxy
 	}
 	child := &ownedProxy{cmd: cmd, input: input, done: make(chan error, 1), read: output, decoder: json.NewDecoder(io.LimitReader(output, 65536))}
+	if coordinated && os.Getenv("CITA_NATIVE_PERSISTENT_CONTROL") == "1" {
+		child.decoder = newBoundedFrames(output, 8192)
+	}
 	ready := make(chan proxyReady, 1)
 	go func() {
 		var r proxyReady
@@ -248,8 +259,15 @@ func ownerMain(input io.Reader, output io.Writer) int {
 	return ownerMainMode(input, output, false)
 }
 func ownerMainMode(input io.Reader, output io.Writer, coordinated bool) int {
-	decoder := json.NewDecoder(io.LimitReader(input, 147456))
-	decoder.DisallowUnknownFields()
+	legacy := json.NewDecoder(io.LimitReader(input, 147456))
+	legacy.DisallowUnknownFields()
+	var decoder messageDecoder = legacy
+	persistent := coordinated && os.Getenv("CITA_NATIVE_PERSISTENT_CONTROL") == "1"
+	var frames *boundedFrames
+	if persistent {
+		frames = newBoundedFrames(input, 147456)
+		decoder = frames
+	}
 	var spec proxyStart
 	if decoder.Decode(&spec) != nil || !validHex(spec.Token, 32) || !validHex(spec.Session, 16) || spec.Generation == 0 {
 		return 1
@@ -257,6 +275,9 @@ func ownerMainMode(input io.Reader, output io.Writer, coordinated bool) int {
 	// Validate before creating a process; no configuration/error serialization.
 	if _, e := parseConfig(spec.Config); e != nil {
 		return 1
+	}
+	if frames != nil {
+		frames.limit = 2048
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -313,7 +334,7 @@ func ownerMainMode(input io.Reader, output io.Writer, coordinated bool) int {
 	if json.NewEncoder(output).Encode(ready) != nil {
 		return 1
 	}
-	for n := 0; n < 64; n++ {
+	for n := 0; persistent || n < 64; n++ {
 		var command lossCommand
 		if e := decoder.Decode(&command); e != nil {
 			if e == io.EOF {

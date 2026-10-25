@@ -68,6 +68,9 @@ func (o *proxyOwner) transportSnapshot(ctx context.Context, spec proxyStart) {
 	}
 }
 func probeOwned(ctx context.Context, child *ownedProxy, token string, dns netip.Addr) bool {
+	if !publicTarget(dns) {
+		dns = netip.MustParseAddr("1.1.1.1")
+	}
 	results := make(chan bool, 2)
 	go func() {
 		d, e := proxy.SOCKS5("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(child.port)), &proxy.Auth{User: "cita", Password: token}, &net.Dialer{Timeout: 1500 * time.Millisecond})
@@ -129,7 +132,13 @@ func (o *proxyOwner) decideRepair(ctx context.Context, child *ownedProxy, health
 	if o.failures < 2 {
 		return false
 	}
-	if o.status.BudgetUsed >= 3 || o.status.SocketRepairs >= 2 {
+	allowed := false
+	if persistentControl() {
+		allowed = o.repairBudget.acquire(time.Now(), "socket")
+	} else {
+		allowed = o.status.BudgetUsed < 3 && o.status.SocketRepairs < 2
+	}
+	if !allowed {
 		o.status.Health = "Exhausted"
 		return false
 	}

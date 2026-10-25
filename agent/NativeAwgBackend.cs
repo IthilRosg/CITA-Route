@@ -14,7 +14,8 @@ internal sealed class NativeAwgBackend : IAsyncDisposable
     string session="";
     ulong generation;
     bool stopped;
-    internal NativeAwgBackend(string image)=>this.image=Path.GetFullPath(image);
+    readonly bool persistentControl;
+    internal NativeAwgBackend(string image,bool persistentControl=false){this.image=Path.GetFullPath(image);this.persistentControl=persistentControl;}
     internal int ProcessId{get{try{return process?.Id??0;}catch(InvalidOperationException){return 0;}}}
     static bool Hex(string? text,int length)=>text?.Length==length && text.All(Uri.IsHexDigit);
     internal static (string Session,ulong Generation) ValidateStart(JsonElement spec)
@@ -64,6 +65,7 @@ internal sealed class NativeAwgBackend : IAsyncDisposable
             (session,generation)=ValidateStart(spec);
             var info=new ProcessStartInfo(image){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
             info.ArgumentList.Add("--coordinated-owner-lab");
+            if(persistentControl)info.Environment["CITA_NATIVE_PERSISTENT_CONTROL"]="1";
             process=Process.Start(info)??throw new IOException("Backend did not start.");
             _=process.StandardError.BaseStream.CopyToAsync(Stream.Null);
             using var deadline=CancellationTokenSource.CreateLinkedTokenSource(stop);deadline.CancelAfter(TimeSpan.FromSeconds(8));

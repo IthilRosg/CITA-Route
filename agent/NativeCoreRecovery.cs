@@ -4,26 +4,78 @@ namespace RoutePilot.Agent;
 
 // Experimental controller only: callers must supply an independently enforced
 // OS guard. Never remove that guard on failure, or reconstruct an AWG backend.
-internal sealed class NativeCoreRecovery : IAsyncDisposable
+internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
 {
     readonly Func<NativeCoreBinding> factory;
     readonly Func<CancellationToken,Task<bool>> guard;
     readonly Func<NativeCoreBinding,CancellationToken,Task>? afterStart;
     readonly Func<CancellationToken,Task>? beforeRepair;
+    readonly bool persistentControl;
+    readonly NativeRepairBudget repairBudget=new();
     readonly SemaphoreSlim gate=new(1);
     readonly CancellationTokenSource lifetime=new();
     NativeCoreBinding? binding;
     NativeAwgBackend? backend;
     JsonElement spec,ready;
     Task? monitor;
+    CancellationTokenSource? repairAttempt;
     int repairs,desired;
     int leaseChecks;
     internal int ProcessId=>binding?.ProcessId??0;
     internal int Repairs=>Volatile.Read(ref repairs);
     string state="Stopped";
     internal string State{get=>Volatile.Read(ref state);private set=>Volatile.Write(ref state,value);}
-    internal NativeCoreRecovery(Func<NativeCoreBinding> factory,Func<CancellationToken,Task<bool>> guard,Func<NativeCoreBinding,CancellationToken,Task>? afterStart=null,Func<CancellationToken,Task>? beforeRepair=null)
-    {this.factory=factory;this.guard=guard;this.afterStart=afterStart;this.beforeRepair=beforeRepair;}
+    internal NativeCoreRecovery(Func<NativeCoreBinding> factory,Func<CancellationToken,Task<bool>> guard,Func<NativeCoreBinding,CancellationToken,Task>? afterStart=null,Func<CancellationToken,Task>? beforeRepair=null,bool persistentControl=false)
+    {this.factory=factory;this.guard=guard;this.afterStart=afterStart;this.beforeRepair=beforeRepair;this.persistentControl=persistentControl;}
+    void CancelRepair(){try{Volatile.Read(ref repairAttempt)?.Cancel();}catch(ObjectDisposedException){}}
+    internal async Task StartControllerAsync(CancellationToken stop)
+    {
+        if(!persistentControl)throw new InvalidOperationException("Profile-managed controller requires persistent control.");
+        await gate.WaitAsync(stop);
+        try
+        {
+            if(binding!=null||monitor!=null||lifetime.IsCancellationRequested)throw new InvalidOperationException("Core controller already used.");
+            if(!await guard(stop))throw new InvalidOperationException("Independent native guard unavailable.");
+            binding=factory();await binding.StartAsync(stop);leaseChecks=0;
+            if(afterStart!=null)await afterStart(binding,stop);State="Closed";monitor=Monitor();
+        }
+        catch{if(binding!=null){await binding.DisposeAsync();binding=null;}throw;}
+        finally{gate.Release();}
+    }
+    public async Task QuarantineAsync(JsonElement next,CancellationToken stop)
+    {
+        NativeAwgBackend.ValidateStart(next);Volatile.Write(ref desired,0);CancelRepair();await gate.WaitAsync(stop);
+        try
+        {
+            stop.ThrowIfCancellationRequested();if(lifetime.IsCancellationRequested||monitor?.IsCompleted==true)throw new IOException("Core controller unavailable.");
+            if(binding==null)
+            {
+                if(!await guard(stop))throw new InvalidOperationException("Independent native guard unavailable.");
+                binding=factory();await binding.StartAsync(stop);leaseChecks=0;
+                if(afterStart!=null)await afterStart(binding,stop);
+            }
+            await binding.QuarantineAsync(next,stop);spec=next.Clone();ready=default;backend=null;State="Quarantined";
+        }
+        finally{gate.Release();}
+    }
+    public async Task ActivateAsync(NativeAwgBackend candidate,JsonElement next,JsonElement candidateReady,CancellationToken stop)
+    {
+        await gate.WaitAsync(stop);
+        try
+        {
+            stop.ThrowIfCancellationRequested();var id=NativeAwgBackend.ValidateStart(next);
+            if(binding==null||State!="Quarantined"||spec.GetProperty("Session").GetString()!=id.Session||spec.GetProperty("Generation").GetUInt64()!=id.Generation)throw new InvalidDataException("Stale native activation refused.");
+            await binding.ActivateAsync(candidate,next,candidateReady,stop);stop.ThrowIfCancellationRequested();
+            backend=candidate;spec=next.Clone();ready=candidateReady.Clone();State="Active";Volatile.Write(ref desired,1);
+        }
+        finally{gate.Release();}
+    }
+    public async Task CloseAsync(CancellationToken stop)
+    {
+        Volatile.Write(ref desired,0);CancelRepair();await gate.WaitAsync(stop);
+        try{if(binding!=null)await binding.CloseAsync(stop);backend=null;spec=default;ready=default;State="Closed";}
+        finally{gate.Release();}
+    }
     async Task Create(CancellationToken stop)
     {
         if(!await guard(stop))throw new InvalidOperationException("Independent native guard unavailable.");
@@ -56,11 +108,11 @@ internal sealed class NativeCoreRecovery : IAsyncDisposable
                 await Task.Delay(500,lifetime.Token);await gate.WaitAsync(lifetime.Token);
                 try
                 {
-                    if(Volatile.Read(ref desired)==0)break;
+                    if(Volatile.Read(ref desired)==0)continue;
                     // The pinned lab core deliberately has a finite command
                     // lease. End explicitly before its pipe budget, rather than
                     // treating normal lease exhaustion as a core crash.
-                    if(leaseChecks>=48)
+                    if(!persistentControl&&leaseChecks>=48)
                     {
                         State="LeaseExpired";
                         try{if(binding!=null)await binding.CloseAsync(lifetime.Token);}catch{State="LeaseCloseUnconfirmed";}
@@ -87,12 +139,19 @@ internal sealed class NativeCoreRecovery : IAsyncDisposable
                     catch(OperationCanceledException)when(lifetime.IsCancellationRequested){break;}
                     catch{State="Recovering";}
                     if(binding!=null){await binding.DisposeAsync();binding=null;}
-                    // Owner-lifetime budget: never reset after a successful repair.
-                    if(Volatile.Read(ref desired)==0||repairs>=2){State="Exhausted";break;}
+                    // A newer Stop/profile intent can arrive while disposal is
+                    // awaited. Keep its controller alive rather than declaring
+                    // this deliberate cancellation an exhausted crash loop.
+                    if(Volatile.Read(ref desired)==0){State="Closed";continue;}
+                    // Finite laboratory sessions retain the original lifetime
+                    // cap. Persistent sessions use bounded monotonic windows.
+                    if(persistentControl?!repairBudget.TryAcquire():repairs>=2){State="Exhausted";break;}
                     Interlocked.Increment(ref repairs);
                     using var repair=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);repair.CancelAfter(TimeSpan.FromSeconds(35));
+                    Volatile.Write(ref repairAttempt,repair);
                     try{if(beforeRepair!=null)await beforeRepair(repair.Token);await Create(repair.Token);}
-                    catch{if(binding!=null){await binding.DisposeAsync();binding=null;}State="Closed";break;}
+                    catch{if(binding!=null){await binding.DisposeAsync();binding=null;}State="Closed";if(Volatile.Read(ref desired)!=0)break;}
+                    finally{Interlocked.CompareExchange(ref repairAttempt,null,repair);}
                 }
                 finally{gate.Release();}
             }
@@ -101,7 +160,7 @@ internal sealed class NativeCoreRecovery : IAsyncDisposable
     }
     public async ValueTask DisposeAsync()
     {
-        Volatile.Write(ref desired,0);lifetime.Cancel();
+        Volatile.Write(ref desired,0);CancelRepair();lifetime.Cancel();
         try{if(monitor!=null)await monitor;}finally{await Release();}
     }
     async Task Release()

@@ -23,7 +23,7 @@ internal static class ServersLab
             {
                 stage=item.Item1;var spec=Spec(item.Item2,++generation);var ready=await profiles.SwitchAsync(spec,stop);int port=ready.GetProperty("port").GetInt32();string token=spec.GetProperty("Token").GetString()!;
                 var https=await StartupLab.Probe(image,"--proxy-client",new{Port=port,Token=token,LiteralIPv4=true},stop);
-                var udp=await StartupLab.Probe(image,"--proxy-udp-client",new{Port=port,Token=token,Server=Field(item.Item2,"DNS").Split(',')[0].Trim()},stop);
+                var udp=await StartupLab.Probe(image,"--proxy-udp-client",new{Port=port,Token=token,Server="1.1.1.1"},stop);
                 bool passed=https.GetProperty("success").GetBoolean()&&udp.GetProperty("success").GetBoolean();bool blocked=!https.GetProperty("success").GetBoolean()&&!udp.GetProperty("success").GetBoolean();
                 observations.Add(new{name=item.Item1,generation,expectedReachable=item.Item3,https,udp,passed= item.Item3?passed:blocked});
                 if(item.Item3?!passed:!blocked)throw new IOException("Server matrix mismatch");

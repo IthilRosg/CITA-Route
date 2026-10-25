@@ -1,5 +1,13 @@
 # Native transport: five-stage validation
 
+Historical checkpoint retained with its artifact-specific evidence. The
+2026-10-25 follow-up is in [NATIVE-RELEASE-FINALIZATION.md](../../docs/NATIVE-RELEASE-FINALIZATION.md):
+independent-egress matrices, persistent channels, shared profile/core recovery,
+rolling budgets and protected-component checks have now passed. Production
+service integration, full-policy/IPv6 protection and installed-client acceptance
+remain open. A new development-only firewall rule blocks external inbound
+traffic to the stable unit-test executable; host routing and VPNUS are unchanged.
+
 This checkpoint covers an **isolated experimental backend** in CITA TEST W11.
 It is not a release, an installed service watchdog, or a claim that every game,
 provider, physical interface and IPv6 path has been validated. Host VPNUS,
