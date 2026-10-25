@@ -85,3 +85,24 @@ Runtime receipts retain failed attempts too. A trust-fixture retry fixed its
 ACL restoration code (restore serialized SDDL so .NET persists the original
 descriptor); the final acceptance passed. Earlier failed receipts are not
 silently removed or counted as passes.
+
+## Persistent WFP guard proof, 2026-10-25
+
+The next isolated milestone is implemented under `tools/native-guard-lab`.
+Pinned Tailscale wf bindings create persistent WFP ALE connect filters for
+IPv4/IPv6 prefixes. All WFP operations independently reject the host by checking
+the exact W11 guest UUID. No normal-client selection or host WFP changes occur.
+
+Accepted scenarios: TCP IPv4/IPv6 filtering, UDP IPv6 filtering, hard termination
+of the guard helper with filtering retained, guest uplink reset with filtering
+retained, unaffected direct target, restoration after owned cleanup, and a
+separate crash-controller test that bypasses finally and verifies independent
+timed rescue. The rescue is armed before persistent filters. Cleanup removes and
+verifies filters, sublayer and provider by exact run identity; no global reset.
+Tests reject ambiguous baselines and compare executable hashes. The IPv6 fixture
+is local ULA traffic, not a claim of public IPv6 or native IPv6 transport.
+
+The guard gate remains OPEN for production: actual policy compilation and
+exclusions, TUN LUID permits, narrow encrypted-server exceptions, transactional
+updates, durable protected ownership and startup/service recovery are still
+required. This proof does not replace the normal client's current backend.

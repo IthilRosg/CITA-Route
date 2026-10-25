@@ -361,6 +361,28 @@
         "cleanupVerified": true
       },
       "case": "protected-component-trust"
+    },
+    {
+      "case": "persistent-prefix-guard",
+      "accepted": {
+        "receipt": "native-wfp-f88ed9675e964fa2a755935614ada5de.json",
+        "guardSha256": "CB3962FB2629906813E2F257959E04FFCF5862E3C05E8521318A2BCCB48648BF",
+        "runnerSha256": "500236C4BDD6DAE225567C5D146E2D2E338571005C6D40E04AC8CFD594CA4FBB",
+        "finishedUtc": "2026-10-25T08:18:12.4399939Z",
+        "success": true,
+        "cleanupVerified": true
+      }
+    },
+    {
+      "case": "persistent-prefix-independent-rescue",
+      "accepted": {
+        "receipt": "native-wfp-1117599f204a42aca0d19ad6e5748d24.json",
+        "runnerSha256": "500236C4BDD6DAE225567C5D146E2D2E338571005C6D40E04AC8CFD594CA4FBB",
+        "guardSha256": "CB3962FB2629906813E2F257959E04FFCF5862E3C05E8521318A2BCCB48648BF",
+        "success": true,
+        "cleanupVerified": true,
+        "rescueCheckedUtc": "2026-10-25T08:18:55.4252214Z"
+      }
     }
   ],
   "profileNodeInventory": [
@@ -389,7 +411,7 @@
   "independentServerIsolationVerified": false,
   "physicalNicSwitchVerified": false,
   "productionInstalled": false,
-  "recordedUtc": "2026-10-25T00:02:38.8446652Z",
+  "recordedUtc": "2026-10-25T08:21:05.0983012Z",
   "finalGuestCleanup": {
     "temporaryGuardCount": 0,
     "nativeProcessCount": 0,
@@ -420,5 +442,17 @@
     "Installed client upgrade, rollback and startup acceptance",
     "Actual physical Wi-Fi/Ethernet switching",
     "Corresponding-source packaging for accepted production artifacts"
-  ]
+  ],
+  "persistentPrefixGuardVerified": true,
+  "persistentPrefixGuardUdpV6Verified": true,
+  "persistentGuardVmLinkResetVerified": true,
+  "persistentGuardIndependentRescueVerified": true,
+  "finalWfpCleanup": {
+    "uplinkUp": true,
+    "checkedUtc": "2026-10-25T08:20:19.5962942Z",
+    "fixtureAddressPresent": false,
+    "fixtureRuleCount": 0,
+    "helperProcessCount": 0,
+    "wfpMarkerOccurrences": 0
+  }
 }
