@@ -53,9 +53,11 @@ public static class CitaFixtureShortcut {
     }
 }
 '@}
-function Install([string]$Log){
+function Install([string]$Log,[bool]$Consent=$true){
     $task=if($Log -eq 'install.log'){'/TASKS=autostart'}else{'/TASKS=""'}
-    $process=Start-Process -FilePath $setupPath -WindowStyle Hidden -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',$task,('/DIR="'+$target+'"'),('/LOG="'+(Join-Path $base $Log)+'"')) -PassThru -Wait
+    $arguments=@('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',$task,('/DIR="'+$target+'"'),('/LOG="'+(Join-Path $base $Log)+'"'))
+    if($Consent){$arguments+='/CONFIRMVERSION='+$fixtureVersion}
+    $process=Start-Process -FilePath $setupPath -WindowStyle Hidden -ArgumentList $arguments -PassThru -Wait
     return $process.ExitCode
 }
 function Uninstall([string]$Log){
@@ -72,7 +74,7 @@ function Test-InterruptedCopy {
         if($file.path -in @('force-direct.txt','force-vpn.txt')){continue}
         $saved[$file.path]=(Get-FileHash -LiteralPath (Join-Path $client $file.path)).Hash
     }
-    $process=Start-Process -FilePath $setupPath -WindowStyle Hidden -PassThru -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/FAILAFTERCOPY=SmartRouting.ps1',('/DIR="'+$target+'"'),('/LOG="'+(Join-Path $base 'interrupted-copy.log')+'"'))
+    $process=Start-Process -FilePath $setupPath -WindowStyle Hidden -PassThru -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/CONFIRMVERSION='+$fixtureVersion),'/FAILAFTERCOPY=SmartRouting.ps1',('/DIR="'+$target+'"'),('/LOG="'+(Join-Path $base 'interrupted-copy.log')+'"'))
     $null=$process.Handle;$actual=$null
     try{
         $watch=[Diagnostics.Stopwatch]::StartNew()
@@ -100,6 +102,10 @@ function Test-InterruptedCopy {
 }
 try{
     Assert ((Install 'install.log') -eq 0) 'Clean installer failed.'
+    $installedProduct=Join-Path $client 'product.json'
+    $originalProduct=[IO.File]::ReadAllText($installedProduct)
+    $current=[version]($originalProduct|ConvertFrom-Json).version
+    $fixtureVersion='{0}.{1}.{2}.{3}' -f $current.Major,$current.Minor,[Math]::Max(0,$current.Build),[Math]::Max(0,$current.Revision)
     $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     $run=(Get-ItemProperty -LiteralPath $runKey -Name $label).$label
     Assert ($run -eq ('"'+(Join-Path $client 'RoutePilot.exe')+'" --startup')) 'Installer startup command must quote the chosen Unicode path and open the tray only.'
@@ -124,6 +130,27 @@ try{
     Assert ((Uninstall 'blocked-uninstall.log') -ne 0) 'Uninstaller removed an active route.'
     Assert ((Get-FileHash -LiteralPath (Join-Path $client 'RoutePilot.exe')).Hash -eq $before) 'Rejected operation changed executable.'
     [IO.File]::WriteAllText((Join-Path $client 'runtime\session.json'),'{"running":false}')
+    $originalExe=(Get-FileHash -LiteralPath (Join-Path $client 'RoutePilot.exe')).Hash
+    Assert ((Install 'same-version-declined.log' $false) -ne 0) 'Silent reinstall ignored the same-version warning.'
+    Assert ((Get-FileHash -LiteralPath (Join-Path $client 'RoutePilot.exe')).Hash -eq $originalExe) 'Declined reinstall changed application.'
+    Assert ([IO.File]::ReadAllText($installedProduct) -eq $originalProduct) 'Declined reinstall changed installed version.'
+    Assert ([IO.File]::ReadAllText((Join-Path $base 'same-version-declined.log')).Contains('CITA_VERSION_DECISION: same')) 'Same-version warning path was not reached.'
+    $invalid=$originalProduct|ConvertFrom-Json;$invalid.version='not-a-version'
+    $invalidJson=$invalid|ConvertTo-Json -Depth 10
+    [IO.File]::WriteAllText($installedProduct,$invalidJson)
+    Assert ((Install 'invalid-version-refused.log') -ne 0) 'Installer overwrote an unverifiable installed version.'
+    Assert ([IO.File]::ReadAllText($installedProduct) -eq $invalidJson) 'Invalid-version refusal changed product metadata.'
+    Assert ((Get-FileHash -LiteralPath (Join-Path $client 'RoutePilot.exe')).Hash -eq $originalExe) 'Invalid-version refusal changed executable.'
+    # Simulate metadata written by an in-app update, using the real installer/guard.
+    $newer=$originalProduct|ConvertFrom-Json;$newer.version='99.0.0'
+    [IO.File]::WriteAllText($installedProduct,($newer|ConvertTo-Json -Depth 10))
+    Assert ((Install 'downgrade-refused.log') -ne 0) 'Older installer downgraded a newer application.'
+    Assert (($([IO.File]::ReadAllText($installedProduct)|ConvertFrom-Json).version) -eq '99.0.0') 'Downgrade refusal changed product metadata.'
+    Assert ((Get-FileHash -LiteralPath (Join-Path $client 'RoutePilot.exe')).Hash -eq $originalExe) 'Downgrade refusal changed application.'
+    $older=$originalProduct|ConvertFrom-Json;$older.version='0.0.1'
+    [IO.File]::WriteAllText($installedProduct,($older|ConvertTo-Json -Depth 10))
+    Assert ((Install 'upgrade.log' $false) -eq 0) 'Newer installer failed to upgrade an existing installation.'
+    Assert (($([IO.File]::ReadAllText($installedProduct)|ConvertFrom-Json).version) -eq $current.ToString()) 'Upgrade did not publish the incoming version.'
     Assert ((Install 'reinstall.log') -eq 0) 'Repeat installation failed.'
     Assert (-not(Get-ItemProperty -LiteralPath $runKey -Name $label -ErrorAction SilentlyContinue)) 'Unchecking startup during reinstall did not remove it.'
     Assert ([IO.File]::ReadAllText((Join-Path $client 'force-vpn.txt')) -eq 'keep-user-rule.example') 'Repeat installation changed user rules.'
@@ -148,7 +175,7 @@ try{
     Assert ((Uninstall 'final-uninstall.log') -eq 0) 'Final fixture uninstall failed.'
     Assert (-not(Test-Path -LiteralPath $registry)) 'Final uninstall left its registry entry.'
     foreach($link in $links){Assert (-not(Test-Path -LiteralPath $link)) 'Final uninstall left a shortcut.'}
-    Write-Output 'PASS: actual installer, Desktop/Start shortcuts, Windows Apps registration, repeat install, active-route refusal, upgraded uninstall, install after uninstall and personal-data preservation. No VPN/services changed.'
+    Write-Output 'PASS: actual installer, clean install, older installed version upgraded, equal version declined/confirmed, downgrade refused, invalid version refused, Desktop/Start shortcuts, Windows Apps registration, active-route refusal, interrupted-copy rollback, upgraded uninstall, install after uninstall and personal-data preservation. No VPN/services changed.'
 }finally{
     # Do not remove the fixture on failure: keep logs and the test uninstaller
     # available for diagnosis, rather than orphaning OS integration entries.

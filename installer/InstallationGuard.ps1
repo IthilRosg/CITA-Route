@@ -4,7 +4,8 @@ param([Parameter(Mandatory=$true)][string]$Root,
       [Parameter(Mandatory=$true)][string]$ReadyFile,
       [Parameter(Mandatory=$true)][string]$ReleaseFile,
       [Parameter(Mandatory=$true)][version]$Version,
-      [ValidateSet('Install','Uninstall')][string]$Mode='Install',[string]$IncomingManifest='')
+      [ValidateSet('Install','Uninstall')][string]$Mode='Install',[string]$IncomingManifest='',
+      [string]$ConfirmedSameVersion='')
 $ErrorActionPreference='Stop'
 $held=New-Object 'System.Collections.Generic.List[System.IDisposable]'
 $owner=$null
@@ -72,6 +73,20 @@ try{
         try{$held.Add([IO.File]::Open((Join-Path $runtime $name),'OpenOrCreate','ReadWrite','None'))}
         catch{throw 'Другая операция управляет подключением или обновлением. Дождись её завершения.'}
     }
+    function Test-InstalledVersion {
+        if(Test-Path -LiteralPath $productPath){
+            $existing=[IO.File]::ReadAllText($productPath)|ConvertFrom-Json
+            if($existing.name -ne 'CITA Route'){throw 'В этой папке находится другое приложение.'}
+            # Numeric, four-component comparison: 0.6.4 equals 0.6.4.0.
+            $installed=[version]$existing.version
+            $installed=[version]('{0}.{1}.{2}.{3}' -f $installed.Major,$installed.Minor,[Math]::Max(0,$installed.Build),[Math]::Max(0,$installed.Revision))
+            $incoming=[version]('{0}.{1}.{2}.{3}' -f $Version.Major,$Version.Minor,[Math]::Max(0,$Version.Build),[Math]::Max(0,$Version.Revision))
+            if($installed -gt $incoming){throw ('Установлена более новая CITA Route '+$installed+'. Этот установщик '+$incoming+' старее. Понижение отменено для сохранности настроек; используй актуальный установщик.')}
+            if($installed -eq $incoming -and $ConfirmedSameVersion -cne $installed.ToString()){throw ('VERSION_SAME|'+$installed)}
+        }
+    }
+    # Interrupted transactions must retain the existing stop-before-restore order.
+    if($Mode -eq 'Install' -and -not $pendingRecovery){Test-InstalledVersion}
     $sessionPath=Join-Path $runtime 'session.json'
     if(Test-Path -LiteralPath $sessionPath){
         try{$session=[IO.File]::ReadAllText($sessionPath) | ConvertFrom-Json;if($session.running -isnot [bool]){throw 'Invalid state'}}
@@ -104,8 +119,8 @@ try{
     if($Mode -eq 'Install'){
         . (Join-Path $PSScriptRoot 'InstallationTransaction.ps1')
         Restore-InstallTransaction $rootPath $userSid
+        Test-InstalledVersion
         if((Test-Path -LiteralPath $productPath) -and ([IO.File]::ReadAllText($productPath)|ConvertFrom-Json).name -ne 'CITA Route'){throw 'В этой папке находится другое приложение.'}
-        if((Test-Path -LiteralPath $productPath) -and [version]([IO.File]::ReadAllText($productPath)|ConvertFrom-Json).version -gt $Version){throw 'Уже установлена более новая версия. Понижение версии отменено.'}
         if(-not(Test-Path -LiteralPath $productPath)){
             New-Item -ItemType Directory -Path (Split-Path $dataOwnerFile) -Force|Out-Null
             [IO.File]::WriteAllText($dataOwnerFile,(@{schema=1;name='CITA Route';root=$rootPath;userSid=$userSid}|ConvertTo-Json),(New-Object Text.UTF8Encoding($false)))

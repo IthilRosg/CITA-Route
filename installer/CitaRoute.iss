@@ -97,6 +97,7 @@ var
   GuardFailure: Boolean;
   GuardAttempt: Integer;
   PreviousDirectory: String;
+  SameVersionConfirmed: String;
 #ifdef NeedsDesktopRuntime
   RuntimeDownload: TDownloadWizardPage;
 #endif
@@ -234,6 +235,7 @@ begin
     '" -Root "' + ExpandConstant('{app}\client') + '" -OwnerPid ' + IntToStr(GetCurrentProcessId()) +
     ' -Version "{#ProductVersion}" -ReadyFile "' + GuardReady + '" -ReleaseFile "' + GuardRelease + '"';
   if Removing then Args := Args + ' -Mode Uninstall';
+  if (not Removing) and (SameVersionConfirmed <> '') then Args := Args + ' -ConfirmedSameVersion "' + SameVersionConfirmed + '"';
   if not Removing then Args := Args + ' -IncomingManifest "' + ExpandConstant('{tmp}\cita-install-manifest.json') + '"';
   if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Args, '', SW_HIDE, ewNoWait, Code) then begin
     Result := 'Не удалось проверить установку. ' + SysErrorMessage(Code);
@@ -273,6 +275,9 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  SameVersion: String;
+  Confirmed: Boolean;
 begin
   if not CanUpdateDestination(ExpandConstant('{app}')) then begin
     Result := 'Обновление должно использовать прежнюю папку установки. Для переноса сначала удали приложение.';
@@ -291,6 +296,22 @@ begin
   ExtractTemporaryFile('NativeMaintenance.ps1');
   ExtractTemporaryFile('cita-install-manifest.json');
   Result := AcquireGuard(ExpandConstant('{tmp}\InstallationGuard.ps1'), False);
+  if Pos('VERSION_SAME|', Result) = 1 then begin
+    SameVersion := Copy(Result, 14, Length(Result));
+    Log('CITA_VERSION_DECISION: same ' + SameVersion);
+    Confirmed := False;
+#ifdef TestBuild
+    { Explicit fixture consent only; production silent installs cannot bypass the warning. }
+    Confirmed := ExpandConstant('{param:CONFIRMVERSION|}') = SameVersion;
+#endif
+    if not Confirmed then
+      Confirmed := SuppressibleMsgBox('CITA Route ' + SameVersion + ' уже установлена. Повторить установку для восстановления файлов? Личные настройки и профили сохранятся.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES;
+    if Confirmed then begin
+      SameVersionConfirmed := SameVersion;
+      Result := AcquireGuard(ExpandConstant('{tmp}\InstallationGuard.ps1'), False);
+    end else
+      Result := 'Эта версия уже установлена. Повторная установка отменена; файлы приложения сохранены.';
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
