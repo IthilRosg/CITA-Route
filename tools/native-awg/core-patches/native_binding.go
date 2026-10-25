@@ -138,6 +138,7 @@ type CitaNativeBinding struct {
  policyBlockedDials atomic.Uint64
  outbounds adapter.OutboundManager
  observations map[string]nativeObservation
+ observationOrder []string
 	once           sync.Once
 	closeOnce      sync.Once
 }
@@ -198,6 +199,7 @@ func (h *CitaNativeBinding) apply(c bindingCommand) (r bindingReply) {
 		h.state = "Quarantined"
   h.policy=nativePolicyTable{}
   h.observations=nil
+  h.observationOrder=nil
 		if old != nil {
 			r.TCPClosed, r.UDPClosed = old.revoke()
 		}

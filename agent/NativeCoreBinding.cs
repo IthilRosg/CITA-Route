@@ -70,7 +70,7 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
                 var reply=await NativeAwgBackend.ReadReply(process.StandardOutput,deadline.Token,maxChars:262144);
                 if(reply.GetProperty("stage").GetString()!=action||reply.GetProperty("owner").GetString()!=owner||reply.GetProperty("session").GetString()!=id||reply.GetProperty("generation").GetUInt64()!=gen)throw new IOException("Core reply mismatch.");
                 LastState=reply;
-                if(action=="Snapshot"&&reply.TryGetProperty("observations",out var observed))Observations=JsonSerializer.Deserialize<NativeObservedDestination[]>(observed.GetRawText())??[];
+                if(action=="Snapshot")Observations=reply.TryGetProperty("observations",out var observed)?JsonSerializer.Deserialize<NativeObservedDestination[]>(observed.GetRawText())??[]:[];
                 if(reply.TryGetProperty("policyDirectDials",out var direct))PolicyDirectDials=direct.GetInt64();if(reply.TryGetProperty("policyBlockedDials",out var blocked))PolicyBlockedDials=blocked.GetInt64();
                 if(requireSuccess&&!reply.GetProperty("success").GetBoolean()){refused=true;throw new InvalidDataException("Core binding command refused.");}
                 return reply;

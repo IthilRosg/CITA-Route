@@ -9,6 +9,22 @@ namespace RoutePilot.Agent;
 public sealed record NativeDomainRule(string Domain,string Application,string Network,string Route,ushort Port,string[] Addresses,long ExpiresUnixMilliseconds);
 public sealed record NativePolicyRequest(string Epoch,NativeDomainRule[] Rules);
 internal sealed record NativeObservedDestination(string Domain,string Application,string Address,ushort Port);
+internal sealed class NativeCalibrationSchedule
+{
+    readonly Dictionary<NativeObservedDestination,long> attempted=new();
+    internal int Count=>attempted.Count;
+    internal void Clear()=>attempted.Clear();
+    internal NativeObservedDestination? Select(IReadOnlyCollection<NativeObservedDestination> observations,long now)
+    {
+        if(observations.Count>128)throw new InvalidDataException("Native observation window exceeded.");
+        var current=observations.ToHashSet();
+        foreach(var key in attempted.Keys.Where(k=>!current.Contains(k)).ToArray())attempted.Remove(key);
+        return observations.Where(o=>!attempted.TryGetValue(o,out long due)||due<=now)
+            .OrderBy(o=>attempted.GetValueOrDefault(o,long.MinValue)).ThenBy(o=>o.Domain,StringComparer.Ordinal)
+            .ThenBy(o=>o.Application,StringComparer.Ordinal).ThenBy(o=>o.Address,StringComparer.Ordinal).FirstOrDefault();
+    }
+    internal void Mark(NativeObservedDestination observation,long now)=>attempted[observation]=checked(now+60000);
+}
 internal sealed class NativeCalibrationBudget
 {
     long window=long.MinValue;int used;
@@ -116,6 +132,10 @@ internal sealed class NativeRoutePolicyPublisher(NativeWfpGuard guard,NativeCore
             // One exact domain/app tuple may have several CDN addresses. Keep
             // the latest verified address; an unverified address stays on VPN.
             foreach(var key in automaticRules.Keys.Where(x=>x.Domain==observed.Domain&&x.Application==observed.Application).ToArray())automaticRules.Remove(key);
+            // Observation rotation can introduce a 129th still-live decision.
+            // Retire only the oldest rule for NEW flows; keep its exact guard
+            // permission for already admitted connections until safe retirement.
+            if(automaticRules.Count>=128){var oldest=automaticRules.OrderBy(x=>x.Value.ExpiresUnixMilliseconds).ThenBy(x=>x.Key.Domain,StringComparer.Ordinal).First().Key;automaticRules.Remove(oldest);}
             automaticRules[observed]=rule;await ApplyConfirmed(automaticEpoch,automaticRules.Values.ToArray(),stop);Volatile.Write(ref automaticCount,automaticRules.Count);return true;
         }
         finally{gate.Release();}

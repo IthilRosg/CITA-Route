@@ -28,6 +28,16 @@ if(args.Length==1 && args[0]=="--self-test")
 {
     if(!NativeBootIdentity.MayResume(true,"boot-a","boot-a")||NativeBootIdentity.MayResume(true,"boot-a","boot-b")||NativeBootIdentity.MayResume(true,"","")||NativeBootIdentity.MayResume(false,"boot-a","boot-a"))throw new Exception("Native boot ownership failed.");
     RepairBudgetTests.Run();
+    var schedule=new NativeCalibrationSchedule();
+    NativeObservedDestination Seen(int i)=>new("h"+i+".example.com","","1.1.1.1",443);
+    var window=Enumerable.Range(0,128).Select(Seen).ToArray();
+    foreach(var item in window)schedule.Mark(item,1000);
+    if(schedule.Select(window,1001)!=null||schedule.Count!=128)throw new Exception("Retry schedule ignored cooldown.");
+    var rotated=Enumerable.Range(1,128).Select(Seen).ToArray();
+    if(schedule.Select(rotated,1001)!=Seen(128)||schedule.Count!=127)throw new Exception("New observations must replace old retry state.");
+    schedule.Mark(Seen(128),1001);
+    if(schedule.Select(rotated,61000)==Seen(128)||schedule.Count!=128)throw new Exception("Calibration must prioritize oldest due entries.");
+    schedule.Clear();if(schedule.Count!=0)throw new Exception("Old network retry state retained.");
     var calibrationBudget=new NativeCalibrationBudget();for(int i=0;i<32;i++)if(!calibrationBudget.TryAcquire(1000))throw new Exception("Calibration startup budget refused.");
     if(calibrationBudget.TryAcquire(1000)||calibrationBudget.TryAcquire(60999)||calibrationBudget.TryAcquire(999)||!calibrationBudget.TryAcquire(61000))throw new Exception("Calibration must renew its bounded minute budget without clock rollback bursts.");
     var observationFrame=JsonSerializer.Serialize(new{observations=Enumerable.Range(0,128).Select(i=>new{Domain="h"+i+".example.com",Application=@"C:\"+new string('x',480)+".exe",Address="1.1.1.1",Port=443}).ToArray()});

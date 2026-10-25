@@ -16,3 +16,18 @@ func TestCitaNativePolicyFailureInvalidatesOnlyAffectedDomain(t *testing.T){
  previous:=h.policy.rules;h.invalidatePolicy("EXAMPLE.COM","","tcp",443)
  if len(h.policy.rules)!=1||len(previous)!=2{t.Fatal("invalidation must preserve unrelated routes and immutable published tables")}
 }
+func TestCitaNativePolicyObservationRotation(t *testing.T){
+ h:=&CitaNativeBinding{state:"Active"}
+ observation:=func(i int)nativeObservation{return nativeObservation{Domain:fmt.Sprintf("h%d.example.com",i),Address:"1.1.1.1",Port:443}}
+ for i:=0;i<128;i++{h.observe(observation(i))}
+ h.observe(observation(0));h.observe(observation(128))
+ if _,ok:=h.observations[observationKey(observation(0))];!ok{t.Fatal("recently refreshed observation evicted")}
+ if _,ok:=h.observations[observationKey(observation(1))];ok{t.Fatal("oldest observation retained at capacity")}
+ if _,ok:=h.observations[observationKey(observation(128))];!ok{t.Fatal("new destination ignored after capacity")}
+ for i:=129;i<10000;i++{h.observe(observation(i));if len(h.observations)!=128||len(h.observationOrder)!=128{t.Fatal("rotation grew beyond budget")}}
+ for i:=9872;i<10000;i++{if _,ok:=h.observations[observationKey(observation(i))];!ok{t.Fatal("latest observation missing")}}
+ // Rotated evidence must no longer authorize an independent Direct probe.
+ stale:=observation(0);h.owner="owner";h.session="session";h.generation=1
+ if h.probeDirect(bindingCommand{Owner:"owner",Action:"ProbeDirect",Session:"session",Generation:1,Observation:&stale}).Success{t.Fatal("evicted observation authorized probe")}
+ h.observations=nil;h.observe(observation(7));if len(h.observationOrder)!=1{t.Fatal("new session inherited old observation order")}
+}

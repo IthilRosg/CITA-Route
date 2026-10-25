@@ -25,7 +25,14 @@ func normalizeObservation(o nativeObservation)(nativeObservation,bool){
  d,ok:=nativeDomain(o.Domain);if !ok||o.Port!=443{return nativeObservation{},false};a,ok:=nativeApplication(o.Application);if !ok{return nativeObservation{},false};ip,e:=netip.ParseAddr(o.Address);if e!=nil||!nativePublic(ip)||ip.String()!=o.Address{return nativeObservation{},false};o.Domain=d;o.Application=a;return o,true
 }
 func (h *CitaNativeBinding) observe(o nativeObservation){
- o,ok:=normalizeObservation(o);if !ok{return};h.mu.Lock();defer h.mu.Unlock();if h.state!="Active"||len(h.observations)>=128{return};if h.observations==nil{h.observations=make(map[string]nativeObservation)};h.observations[observationKey(o)]=o
+ o,ok:=normalizeObservation(o);if !ok{return};h.mu.Lock();defer h.mu.Unlock();if h.state!="Active"{return}
+ if h.observations==nil{h.observations=make(map[string]nativeObservation);h.observationOrder=nil}
+ key:=observationKey(o)
+ // Fixed-size LRU window. Refresh existing entries even at capacity; evicting
+ // probe evidence never revokes a route or closes an admitted application flow.
+ for i,k:=range h.observationOrder{if k==key{h.observationOrder=append(h.observationOrder[:i],h.observationOrder[i+1:]...);break}}
+ if _,exists:=h.observations[key];!exists&&len(h.observations)>=128{delete(h.observations,h.observationOrder[0]);h.observationOrder=h.observationOrder[1:]}
+ h.observations[key]=o;h.observationOrder=append(h.observationOrder,key)
 }
 func(h *CitaNativeBinding) probeDirect(c bindingCommand)(r bindingReply){
  h.mu.Lock();r=bindingReply{Stage:c.Action,Owner:h.owner,Session:c.Session,Generation:c.Generation,State:h.state,CurrentGeneration:h.generation}

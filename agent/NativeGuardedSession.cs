@@ -83,15 +83,15 @@ internal sealed class NativeGuardedSession:IAsyncDisposable
             string NetworkStamp()=>string.Join(";",NetworkInterface.GetAllNetworkInterfaces().Where(n=>n.Id==nic.Id).SelectMany(n=>n.GetIPProperties().UnicastAddresses.Select(a=>a.Address.ToString()).Append(n.OperationalStatus.ToString())).OrderBy(x=>x,StringComparer.Ordinal));
             string networkStamp=NetworkStamp();
             publisher??=new NativeRoutePolicyPublisher(guard,core,coreImage,checked((uint)nic.GetIPProperties().GetIPv4Properties().Index));
-            var attempted=new Dictionary<NativeObservedDestination,long>();var budget=new NativeCalibrationBudget();int pid=core.ProcessId;automaticState="Observing";
+            var attempted=new NativeCalibrationSchedule();var budget=new NativeCalibrationBudget();int pid=core.ProcessId;automaticState="Observing";
             while(!stop.IsCancellationRequested)
             {
                 await Task.Delay(1000,stop);if(core.State!="Active")continue;
                 if(core.ProcessId!=pid){int nextPid=core.ProcessId;await publisher.ResetForCoreAsync(nextPid,stop);pid=nextPid;attempted.Clear();automaticState="Observing";continue;}
                 string currentStamp=NetworkStamp();if(currentStamp!=networkStamp){await publisher.ResetForNetworkAsync(stop);networkStamp=currentStamp;attempted.Clear();automaticState="Observing";}
-                long now=Environment.TickCount64;var selected=core.Observations.FirstOrDefault(o=>!attempted.TryGetValue(o,out long due)||due<=now);if(selected==null)continue;
+                long now=Environment.TickCount64;var selected=attempted.Select(core.Observations,now);if(selected==null)continue;
                 if(!budget.TryAcquire(now)){automaticState="Throttled";continue;}
-                attempted[selected]=now+60000;automaticState="CheckingDirect";
+                attempted.Mark(selected,now);automaticState="CheckingDirect";
                 try{using var deadline=CancellationTokenSource.CreateLinkedTokenSource(stop);deadline.CancelAfter(TimeSpan.FromSeconds(10));if(await publisher.CalibrateAsync(selected,deadline.Token))Interlocked.Increment(ref calibrated);}
                 catch(OperationCanceledException)when(stop.IsCancellationRequested){throw;}
                 catch{automaticState="VpnFallback";}

@@ -12,8 +12,10 @@ receipt for its actual implementation; a lab receipt does not certify packaging.
    Scope isolation, revocation, publication and automatic selection have W11 receipts.
    Calibration has a renewable monotonic limit of 32 probes/minute and continues
    after a network epoch change; negative revalidation withdraws the old decision.
-   Remaining production gates: obsolete-scope flow-aware collection, observation
-   rotation beyond 128 entries, and DPI/UDP decisions.
+   Observations now rotate through a fixed 128-entry LRU window instead of
+   stopping at the first 128 destinations. Retry history follows that window;
+   the oldest new-flow decision is retired when the rule budget is full.
+   Remaining production gates: obsolete-scope flow-aware collection and DPI/UDP decisions.
    Budget exhaustion falls back to VPN; no general physical-core bypass exists.
 2. **Accepted in W11 — first use.** A hash-checked, framework-only native bundle,
    protected unconfigured template, private import and remembered selection work
@@ -76,3 +78,26 @@ Preserve the current host connection. Run destructive network scenarios only in
 the authorized VM, with owned cleanup and independent recovery. No long soak is
 required in this run. The earlier sleep request was completed; it is not a
 recurring instruction for this new five-step effort.
+
+## Observation-window follow-up — 26 October
+
+Fixed the lifetime observation ceiling: a bounded LRU window now admits new
+destinations after the first 128. Active entries refresh their position; invalid
+targets do not displace valid evidence. Evicted observations cannot authorize a
+probe until observed again. The retry schedule removes entries outside the current
+window and selects never-attempted/oldest-due entries first. Automatic rules retain
+their 128-entry limit by withdrawing the oldest decision for new flows only.
+Empty snapshots also clear the controller's previous observation list.
+
+Go policy tests and vet, C# scheduling checks, and the W11 observation test pass.
+`runtime/native-observation-window.json` records 10,000 inputs with 128 retained
+entries. `native-policy-auto-6e9835e3a2344c1bb5cbc51c4821d950.json` confirms actual
+automatic selection with the new core/controller. The follow-up policy-session
+receipt confirms retained VPN TCP, new Direct selection, explicit blocking and
+return to default VPN, with independent cleanup and matching binary hashes.
+
+This closes observation rotation, not Direct-permission collection. Existing
+permissions remain for admitted flows, up to the existing 256-scope cap. Safe
+collection needs per-scope live/in-flight flow accounting and an acknowledged
+retirement barrier before WFP revocation; age alone is insufficient. No source
+bundle/package acceptance or public release is inferred for these new binaries.
