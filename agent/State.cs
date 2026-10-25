@@ -79,7 +79,7 @@ public sealed class AgentConfig
 }
 public sealed record OwnedRoute(string Prefix,int InterfaceIndex,string Gateway,int Metric);
 public sealed record AgentRequest(string Command,string? RunId=null);
-public sealed record AgentReply(bool Success,string Message,RunState? State=null);
+public sealed record AgentReply(bool Success,string Message,RunState? State=null,System.Text.Json.JsonElement? Native=null);
 
 public sealed class RunStore
 {

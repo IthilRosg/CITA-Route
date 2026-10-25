@@ -21,6 +21,7 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
     readonly Func<NativeAwgBackend,JsonElement,CancellationToken,Task>? beforeValidation;
     readonly Func<JsonElement,string>? expectedEgress;
     readonly bool persistentControl;
+    readonly Action<Process>? started;
     Process? process;
     string session="";
     ulong generation;
@@ -28,14 +29,14 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
     internal JsonElement LastState{get;private set;}
     internal NativeValidationEvidence? LastValidation{get;private set;}
     internal int ProcessId{get{try{return process?.Id??0;}catch(InvalidOperationException){return 0;}}}
-    internal NativeCoreBinding(string coreImage,string config,string nativeImage,string owner,string expectedExit,Func<JsonElement,CancellationToken,Task>? quarantined=null,Func<NativeAwgBackend,JsonElement,CancellationToken,Task>? beforeValidation=null,Func<JsonElement,string>? expectedEgress=null,bool persistentControl=false)
-    {this.coreImage=Path.GetFullPath(coreImage);this.config=Path.GetFullPath(config);this.nativeImage=Path.GetFullPath(nativeImage);this.owner=owner;this.expectedExit=expectedExit;this.quarantined=quarantined;this.beforeValidation=beforeValidation;this.expectedEgress=expectedEgress;this.persistentControl=persistentControl;}
+    internal NativeCoreBinding(string coreImage,string config,string nativeImage,string owner,string expectedExit,Func<JsonElement,CancellationToken,Task>? quarantined=null,Func<NativeAwgBackend,JsonElement,CancellationToken,Task>? beforeValidation=null,Func<JsonElement,string>? expectedEgress=null,bool persistentControl=false,Action<Process>? started=null)
+    {this.coreImage=Path.GetFullPath(coreImage);this.config=Path.GetFullPath(config);this.nativeImage=Path.GetFullPath(nativeImage);this.owner=owner;this.expectedExit=expectedExit;this.quarantined=quarantined;this.beforeValidation=beforeValidation;this.expectedEgress=expectedEgress;this.persistentControl=persistentControl;this.started=started;}
     internal async Task StartAsync(CancellationToken stop)
     {
         var info=new ProcessStartInfo(coreImage){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};info.ArgumentList.Add("run");info.ArgumentList.Add("-c");info.ArgumentList.Add(config);
         info.Environment["CITA_NATIVE_BINDING_LAB"]="1";info.Environment["CITA_NATIVE_UDP_LIFETIME_LAB"]="1";
         if(persistentControl)info.Environment["CITA_NATIVE_PERSISTENT_CONTROL"]="1";
-        process=Process.Start(info)??throw new IOException("Binding core did not start.");_=process.StandardError.BaseStream.CopyToAsync(Stream.Null);
+        process=Process.Start(info)??throw new IOException("Binding core did not start.");started?.Invoke(process);_=process.StandardError.BaseStream.CopyToAsync(Stream.Null);
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(stop);deadline.CancelAfter(TimeSpan.FromSeconds(10));
         var ready=await NativeAwgBackend.ReadReply(process.StandardOutput,deadline.Token);
         if(ready.GetProperty("stage").GetString()!="BindingControlReady"||ready.GetProperty("owner").GetString()!=owner||!ready.GetProperty("success").GetBoolean())throw new IOException("Core control readiness mismatch.");

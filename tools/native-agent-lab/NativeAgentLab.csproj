@@ -9,4 +9,7 @@
   <ItemGroup><Compile Include="../../agent/NativeProbePolicy.cs" Link="NativeProbePolicy.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../agent/NativeRepairBudget.cs" Link="NativeRepairBudget.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../agent/NativeTrustedBundle.cs" Link="NativeTrustedBundle.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../agent/NativeWfpGuard.cs" Link="NativeWfpGuard.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../agent/NativeProcessJob.cs" Link="NativeProcessJob.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../agent/NativeGuardedSession.cs" Link="NativeGuardedSession.cs" /></ItemGroup>
 </Project>

@@ -17,6 +17,7 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
     readonly Func<CancellationToken,Task>? beforeReply;
     readonly INativeAwgBinding? binding;
     readonly bool persistentControl;
+    readonly Action<System.Diagnostics.Process>? started;
     NativeAwgBackend? active;
     (string Session,ulong Generation)? identity,desired;
     CancellationTokenSource? operation;
@@ -24,7 +25,7 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
     long intent;
     string phase="Stopped";
     bool disposed,retirementFailed;
-    internal NativeAwgProfiles(string image,Func<CancellationToken,Task>? beforeStart=null,Func<CancellationToken,Task>? beforePublish=null,Func<CancellationToken,Task>? beforeReply=null,INativeAwgBinding? binding=null,bool persistentControl=false){this.image=Path.GetFullPath(image);this.beforeStart=beforeStart;this.beforePublish=beforePublish;this.beforeReply=beforeReply;this.binding=binding;this.persistentControl=persistentControl;}
+    internal NativeAwgProfiles(string image,Func<CancellationToken,Task>? beforeStart=null,Func<CancellationToken,Task>? beforePublish=null,Func<CancellationToken,Task>? beforeReply=null,INativeAwgBinding? binding=null,bool persistentControl=false,Action<System.Diagnostics.Process>? started=null){this.image=Path.GetFullPath(image);this.beforeStart=beforeStart;this.beforePublish=beforePublish;this.beforeReply=beforeReply;this.binding=binding;this.persistentControl=persistentControl;this.started=started;}
     internal object Snapshot(){lock(sync)return new{phase,session=identity?.Session,generation=identity?.Generation,desiredSession=desired?.Session,desiredGeneration=desired?.Generation,highWater,processId=active?.ProcessId??0,retirementFailed};}
     static JsonElement Command((string Session,ulong Generation) id,string action)=>JsonSerializer.SerializeToElement(new{Session=id.Session,Generation=id.Generation,Action=action});
     static void Cancel(CancellationTokenSource? source){try{source?.Cancel();}catch(ObjectDisposedException){}}
@@ -71,7 +72,7 @@ internal sealed class NativeAwgProfiles : IAsyncDisposable
             lock(sync)phase="Starting";
             if(beforeStart!=null)await beforeStart(mine.Token);
             Check(ticket,mine.Token);
-            candidate=new NativeAwgBackend(image,persistentControl);
+            candidate=new NativeAwgBackend(image,persistentControl,started);
             var ready=await candidate.StartAsync(spec,mine.Token);
             if(beforePublish!=null)await beforePublish(mine.Token);
             Check(ticket,mine.Token);

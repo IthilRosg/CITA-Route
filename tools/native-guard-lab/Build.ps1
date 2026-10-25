@@ -7,5 +7,5 @@ try{
  & go mod verify;if($LASTEXITCODE -ne 0){throw 'Guard dependency verification failed'}
  & go test -mod=readonly ./...;if($LASTEXITCODE -ne 0){throw 'Guard unit tests failed'}
  & go vet -mod=readonly ./...;if($LASTEXITCODE -ne 0){throw 'Guard static analysis failed'}
- & go build -mod=readonly -trimpath -o (Join-Path $root 'runtime/native-guard-lab.exe') .;if($LASTEXITCODE -ne 0){throw 'Guard build failed'}
+ & go build -mod=readonly -buildvcs=false -trimpath -o (Join-Path $root 'runtime/native-guard-lab.exe') .;if($LASTEXITCODE -ne 0){throw 'Guard build failed'}
 }finally{Pop-Location}

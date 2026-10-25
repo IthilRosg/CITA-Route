@@ -15,7 +15,8 @@ internal sealed class NativeAwgBackend : IAsyncDisposable
     ulong generation;
     bool stopped;
     readonly bool persistentControl;
-    internal NativeAwgBackend(string image,bool persistentControl=false){this.image=Path.GetFullPath(image);this.persistentControl=persistentControl;}
+    readonly Action<Process>? started;
+    internal NativeAwgBackend(string image,bool persistentControl=false,Action<Process>? started=null){this.image=Path.GetFullPath(image);this.persistentControl=persistentControl;this.started=started;}
     internal int ProcessId{get{try{return process?.Id??0;}catch(InvalidOperationException){return 0;}}}
     static bool Hex(string? text,int length)=>text?.Length==length && text.All(Uri.IsHexDigit);
     internal static (string Session,ulong Generation) ValidateStart(JsonElement spec)
@@ -29,10 +30,10 @@ internal sealed class NativeAwgBackend : IAsyncDisposable
     {
         if(command.GetProperty("Session").GetString()!=session||command.GetProperty("Generation").GetUInt64()!=generation||command.GetProperty("Action").GetString() is not ("Snapshot" or "CrashChild" or "BlackholeChild" or "Stop"))throw new InvalidDataException("Native backend ownership mismatch.");
     }
-    internal static async Task<JsonElement> ReadReply(StreamReader reader,CancellationToken stop)
+    internal static async Task<JsonElement> ReadReply(StreamReader reader,CancellationToken stop,int maxChars=8192)
     {
         var text=new StringBuilder();var one=new char[1];
-        while(text.Length<8192)
+        while(text.Length<maxChars)
         {
             int read=await reader.ReadAsync(one.AsMemory(),stop);
             if(read==0)throw new IOException("Native backend closed.");
@@ -67,6 +68,7 @@ internal sealed class NativeAwgBackend : IAsyncDisposable
             info.ArgumentList.Add("--coordinated-owner-lab");
             if(persistentControl)info.Environment["CITA_NATIVE_PERSISTENT_CONTROL"]="1";
             process=Process.Start(info)??throw new IOException("Backend did not start.");
+            started?.Invoke(process);
             _=process.StandardError.BaseStream.CopyToAsync(Stream.Null);
             using var deadline=CancellationTokenSource.CreateLinkedTokenSource(stop);deadline.CancelAfter(TimeSpan.FromSeconds(8));
             await process.StandardInput.WriteLineAsync(spec.GetRawText().AsMemory(),deadline.Token);await process.StandardInput.FlushAsync(deadline.Token);

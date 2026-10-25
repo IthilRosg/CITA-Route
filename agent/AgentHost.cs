@@ -21,6 +21,8 @@ public sealed class AgentHost
     readonly string _proof;
     ProcessIdentity? _operation;
     BootRouting? _boot;
+    NativeServiceRoute? _native;
+    string? _nativeFailure;
     [DllImport("kernel32.dll",SetLastError=true)]static extern bool GetNamedPipeClientProcessId(IntPtr handle,out uint pid);
     public AgentHost(AgentConfig config)
     {
@@ -42,8 +44,10 @@ public sealed class AgentHost
             await Recover("Service restarted with an unfinished run.");
         }
         var listener=Listen(stop);
-        _boot=new BootRouting(_config);
-        var startup=_boot.Run(stop);
+        Task native=Task.CompletedTask;
+        try{_native=NativeServiceRoute.TryLoad();if(_native!=null)native=_native.Run(stop);}catch(Exception e){_nativeFailure=e.GetType().Name;}
+        Task startup=Task.CompletedTask;
+        if(_native==null&&_nativeFailure==null){_boot=new BootRouting(_config);startup=_boot.Run(stop);}
         using var resourceStop=CancellationTokenSource.CreateLinkedTokenSource(stop);
         var resources=Task.Run(()=>ResourceMonitor.Run(_config.DataDirectory,_config.AppRoot,resourceStop.Token));
         try
@@ -101,6 +105,7 @@ public sealed class AgentHost
             try{await listener;}catch(OperationCanceledException){}
             try{await resources;}catch(OperationCanceledException){}catch{}
             try{await startup;}catch(OperationCanceledException){}
+            try{await native;}catch(OperationCanceledException){}
         }
     }
     async Task Listen(CancellationToken stop)
@@ -129,9 +134,17 @@ public sealed class AgentHost
             catch(Exception ex)when(ex is IOException or OperationCanceledException or UnauthorizedAccessException or JsonException or ArgumentException or System.ComponentModel.Win32Exception){Log("IPC: "+ex.Message);}
         }
     }
-    AgentReply Reply(bool success,string message)=>new(success,message,JsonSerializer.Deserialize<RunState>(JsonSerializer.Serialize(_store.State,Storage.Json),Storage.Json));
+    AgentReply Reply(bool success,string message)=>new(success,message,JsonSerializer.Deserialize<RunState>(JsonSerializer.Serialize(_store.State,Storage.Json),Storage.Json),_native?.Snapshot??(_nativeFailure!=null?JsonSerializer.SerializeToElement(new{phase="Unavailable",errorCode=_nativeFailure}):null));
     async Task<AgentReply> Dispatch(AgentRequest request,Process caller)
     {
+        if(request.Command=="native-status")return Reply(_native!=null,"Native backend status.");
+        if(request.Command is "native-start" or "native-stop")
+        {
+            if(_native==null)return Reply(false,"Protected native backend is not configured.");
+            if(_store.State.Active||_operation?.Matches()==true)return Reply(false,"Another network operation owns the coordinator.");
+            if(request.Command=="native-start"&&(Process.GetProcessesByName("smart-router").Length>0||Process.GetProcessesByName("vpn-bridge").Length>0))return Reply(false,"Disconnect the current legacy router before selecting the native backend.");
+            _native.Request(request.Command=="native-start",request.RunId);return Reply(true,"Native operation accepted.");
+        }
         if(request.Command=="status")return Reply(true,"Local rescue service available.");
         if(request.Command is "boot-stop" or "boot-disable")
         {
@@ -142,7 +155,7 @@ public sealed class AgentHost
         }
         if(request.Command=="begin-operation")
         {
-            if(_store.State.Active || _store.State.Phase==RunPhase.RecoveryFailed || _operation?.Matches()==true)return Reply(false,"Another network operation owns the coordinator.");
+            if(_store.State.Active || _store.State.Phase==RunPhase.RecoveryFailed || _operation?.Matches()==true||_native?.Busy==true||_nativeFailure!=null)return Reply(false,"Another network operation owns the coordinator.");
             _operation=ProcessIdentity.From(caller);Storage.Write(Path.Combine(_config.DataDirectory,"operation.json"),_operation);return Reply(true,"Network operation reserved until release or caller exit.");
         }
         if(request.Command=="end-operation")
@@ -242,6 +255,7 @@ public sealed class AgentHost
             return Reply(true,"Diagnostic bridge started.");
         }
         TestKind kind=request.Command switch{"dry-run" or "test-guard-restart"=>TestKind.DryRun,"test-vpnus"=>TestKind.VpnusRestart,"test-wiresock"=>TestKind.WireSockProxy,"test-system"=>TestKind.SystemRouting,_=>throw new InvalidOperationException("Unknown command.")};
+        if(_native!=null||_nativeFailure!=null)return Reply(false,"Native backend owns this service configuration.");
         if(Cita.Startup.StartupPaths.Read() is {Active:true} boot&&boot.Owns(_config.AppRoot))return Reply(false,"Disconnect the startup route before independent diagnostics.");
         if(_store.State.Active || _store.State.Phase==RunPhase.RecoveryFailed)return Reply(false,"Another run is active or needs recovery.");
         if(_operation?.Matches()==true)return Reply(false,"A normal RoutePilot network operation is still running.");

@@ -1,5 +1,11 @@
 # Native backend finalization
 
+Latest milestone: [policy-bound native service](NATIVE-SERVICE-20261025.md).
+Policy compilation/exclusions, TUN LUID binding, encrypted-server scope,
+protected service snapshots, authenticated asynchronous IPC and real SCM
+recovery are now implemented and accepted in W11. Historical sections below
+retain their original scope. Normal desktop/setup/update rollout remains open.
+
 Continue after f754945. This is a work ledger, not release acceptance.
 
 | Stage | Acceptance |

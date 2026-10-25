@@ -1,8 +1,16 @@
 # Persistent guard proof (isolated W11 only)
 
-Not a production guard, routing policy compiler or native client integration.
-The helper independently checks the exact lab VM UUID before WFP operations.
-No host WFP changes are made. Build with `Build.ps1`, run `Run-W11.ps1`.
+Follow-up: policy/TUN binding and actual service integration are implemented;
+see [the service milestone](../../docs/NATIVE-SERVICE-20261025.md).
+`Policy` requests support default routes, direct exclusions and mandatory
+loopback exclusion. The original restricted `Prefixes` fixture remains available.
+Service execution outside the guest is confined to LocalSystem at the protected
+agent's fixed native helper path. The ordinary desktop backend remains disabled.
+
+The standalone commands below are isolated prefix proofs. The helper checks the
+exact lab VM UUID for these invocations. Production service invocation is
+separately restricted as described above. No host WFP changes are made by the
+test runners. Build with `Build.ps1`, run `Run-W11.ps1`.
 
 The proof arms persistent ALE connect blocks for IPv4/IPv6 prefixes, kills the
 helper, verifies both blocks and an unaffected direct target, then removes only
@@ -21,10 +29,11 @@ not a physical Wi-Fi/Ethernet handoff. Temporary inbound rules permit only the
 guest's own exact ULA, and are removed along with the fixture address.
 it proves IPv6 filtering, not public IPv6 availability or native IPv6 carriage.
 The test covers a /24 and /64 rather than two hard-coded /32 firewall entries.
-Default routes and prefixes shorter than /8 are deliberately rejected here.
-Full-policy compilation/exclusions, TUN LUID permits, narrow encrypted-endpoint
-exceptions, transactional policy replacement, service restart/startup recovery
-and protected ownership storage remain required before ordinary client use.
+The legacy `Prefixes` proof rejects default routes and prefixes shorter than /8.
+The newer compiled `Policy` path supports defaults/exclusions and is tested with
+TUN LUID permits, scoped encrypted-server permission and protected service
+recovery. Ordinary client setup, adaptive policy publication, live transactional
+policy replacement and installer/update rollout remain separate requirements.
 WFP persistent objects are not automatically removed when their process exits;
 never run an unguarded prototype on a user's normal workstation.
 

@@ -130,10 +130,22 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
                         try{if(binding!=null)await binding.CloseAsync(lifetime.Token);State="GuardLost";}catch{State="GuardLostUnconfirmed";}
                         break;
                     }
+                    bool transportDegraded=false;
+                    try
+                    {
+                        var transport=await backend!.SendAsync(System.Text.Json.JsonSerializer.SerializeToElement(new{Action="Snapshot",Session=spec.GetProperty("Session").GetString(),Generation=spec.GetProperty("Generation").GetUInt64()}),lifetime.Token);
+                        string? ownerState=transport.GetProperty("state").GetString();
+                        if(ownerState is "Exhausted" or "Stopped")
+                        {State="TransportExhausted";try{if(binding!=null)await binding.CloseAsync(lifetime.Token);}catch{State="TransportCloseUnconfirmed";}break;}
+                        transportDegraded=transport.TryGetProperty("health",out var health)&&health.GetString()!="Reachable";
+                    }
+                    catch(OperationCanceledException)when(lifetime.IsCancellationRequested){break;}
+                    catch{State="TransportUnavailable";try{if(binding!=null)await binding.CloseAsync(lifetime.Token);}catch{State="TransportCloseUnconfirmed";}break;}
                     try
                     {
                         await binding!.CommandAsync("Snapshot",spec.GetProperty("Session").GetString()!,spec.GetProperty("Generation").GetUInt64(),stop:lifetime.Token);
                         leaseChecks++;
+                        State=transportDegraded?"TransportDegraded":"Active";
                         continue;
                     }
                     catch(OperationCanceledException)when(lifetime.IsCancellationRequested){break;}

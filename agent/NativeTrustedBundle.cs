@@ -11,10 +11,21 @@ namespace RoutePilot.Agent;
 internal sealed class NativeTrustedBundle:IDisposable
 {
     internal sealed record Entry(string Name,string Sha256);
-    internal sealed record Catalog(int Schema,Entry Owner,Entry Core);
+    internal sealed record Catalog(int Schema,Entry Owner,Entry Core,Entry? Guard=null,Entry? Policy=null,Entry? Profile=null,Entry? CoreConfig=null,string ExpectedExitHash="");
     readonly List<FileStream> leases=new();
     internal string OwnerPath{get;private set;}="";
     internal string CorePath{get;private set;}="";
+    internal string GuardPath{get;private set;}="";
+    internal string PolicyText{get;private set;}="";
+    internal string ProfileText{get;private set;}="";
+    internal string CoreConfigPath{get;private set;}="";
+    internal string ExpectedExitHash{get;private set;}="";
+    internal static string ReadProtectedText(string path,int maxBytes=65536)
+    {
+        var file=new FileInfo(Path.GetFullPath(path));CheckAcl(file);for(var parent=file.Directory;parent!=null;parent=parent.Parent)CheckAcl(parent,true);
+        using var input=new FileStream(file.FullName,FileMode.Open,FileAccess.Read,FileShare.Read);
+        if(input.Length<1||input.Length>maxBytes)throw new InvalidDataException("Protected native document size.");using var reader=new StreamReader(input);return reader.ReadToEnd();
+    }
     static bool Hash(string? value)=>value?.Length==64&&value.All(Uri.IsHexDigit);
     static bool Trusted(string sid)=>sid is "S-1-5-18" or "S-1-5-32-544" or "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
     static void CheckAcl(FileSystemInfo item,bool ancestor=false)
@@ -52,7 +63,17 @@ internal sealed class NativeTrustedBundle:IDisposable
             var catalog=JsonSerializer.Deserialize<Catalog>(catalogFile,new JsonSerializerOptions{UnmappedMemberHandling=System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow})??throw new InvalidDataException("Empty native catalog.");
             if(catalog.Schema!=1||catalog.Owner==null||catalog.Core==null||catalog.Owner.Name.Equals(catalog.Core.Name,StringComparison.OrdinalIgnoreCase)||!catalog.Owner.Name.EndsWith(".exe",StringComparison.OrdinalIgnoreCase)||!catalog.Core.Name.EndsWith(".exe",StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Invalid native catalog.");
             lease.OpenChecked(root,catalog.Owner);lease.OpenChecked(root,catalog.Core);
-            lease.OwnerPath=Path.Combine(root,catalog.Owner.Name);lease.CorePath=Path.Combine(root,catalog.Core.Name);return lease;
+            lease.OwnerPath=Path.Combine(root,catalog.Owner.Name);lease.CorePath=Path.Combine(root,catalog.Core.Name);
+            var extra=new[]{catalog.Guard,catalog.Policy,catalog.Profile,catalog.CoreConfig}.Where(x=>x!=null).Cast<Entry>().ToArray();
+            if(extra.Select(x=>x.Name).Append(catalog.Owner.Name).Append(catalog.Core.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=extra.Length+2)throw new InvalidDataException("Duplicate native role.");
+            foreach(var entry in extra)
+            {
+                var stream=lease.OpenChecked(root,entry);
+                if(entry==catalog.Guard){if(!entry.Name.EndsWith(".exe",StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Invalid guard role.");lease.GuardPath=Path.Combine(root,entry.Name);}
+                else if(entry==catalog.CoreConfig)lease.CoreConfigPath=Path.Combine(root,entry.Name);
+                else {if(stream.Length>65536)throw new InvalidDataException("Native document too large.");using var reader=new StreamReader(stream,leaveOpen:true);string text=reader.ReadToEnd();if(entry==catalog.Policy)lease.PolicyText=text;else lease.ProfileText=text;}
+            }
+            lease.ExpectedExitHash=catalog.ExpectedExitHash;return lease;
         }
         catch{lease.Dispose();throw;}
     }
