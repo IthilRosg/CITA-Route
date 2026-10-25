@@ -116,7 +116,7 @@ public partial class MainWindow
             CompactStage.Text=_rescueState.BlocksRouting?"Автономная диагностика управляет сетью.":_engineRunning||(Cita.Startup.StartupPaths.Read() is {Active:true} startup&&startup.Owns(_root))?FooterStatus.Text:"Готово к подключению";
             CompactStage.Foreground=_rescueState.BlocksRouting?ConsoleTheme.Warn:ConsoleTheme.Dim;
         }
-        CompactStage.ToolTip=CompactStage.Text;SyncConnectionButtons();
+        CompactStage.ToolTip=CompactStage.Text;SyncNativeCompact();SyncConnectionButtons();
     }
     async Task<ConnectionSelection?> SelectConnectionAsync(bool force,CancellationToken cancellation)
     {
@@ -184,6 +184,7 @@ public partial class MainWindow
         string.Equals(Path.TrimEndingDirectorySeparator(agent.AppRoot),Path.TrimEndingDirectorySeparator(root),StringComparison.OrdinalIgnoreCase);
     private async void ChooseCompactProfile_Click(object sender,RoutedEventArgs e)
     {
+        if(UseNativeBackend){if(!_busy&&!_engineRunning)ConfirmNativeProfile(true);return;}
         if(_render||_busy||_engineRunning||_rescueState.BlocksRouting)return;
         _busy=true;_connectionCancellation=new();
         try
@@ -195,8 +196,9 @@ public partial class MainWindow
         catch(Exception ex){Notice(Backend.FriendlyError(ex.Message),true);}
         finally{_connectionCancellation.Dispose();_connectionCancellation=null;_busy=false;_operationPhase="";++_uiOperationGeneration;await RefreshAsync();SyncCompact();}
     }
-    private async Task ToggleAsync()
+    private async Task ToggleAsync(bool startOnly=false)
     {
+        if(UseNativeBackend){await NativeActionAsync(_nativeView?.Desired!=true,startOnly);return;}
         if(_render)return;
         if(_pendingConnectionOperation || ConnectionOperation.Active(_root)){Notice("Предыдущая операция ещё завершается. Подробности — в журнале.",true);return;}
         if(_busy){_connectionCancellation?.Cancel();if(_connectionCancellation!=null)SetConnectionStage("Cancelling");return;}

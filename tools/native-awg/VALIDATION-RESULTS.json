@@ -512,5 +512,16 @@
   "nativeOwnerAutomaticRecoveryVerified": true,
   "nativeManualDisconnectPersistenceVerified": true,
   "nativeIpv6BlockingVerified": true,
-  "nativeIpv6CarriageVerified": false
+  "nativeIpv6CarriageVerified": false,
+  "nativeDesktopMilestone": {
+    "agentSha256": "729775D78ECDF9589B187462F7655FE8C681244BBBD9077EE14E260C6B62384F",
+    "desktopSha256": "82F32067EFAE49D3A0591A88654E6D7CAFF4A5BD12426E35F20EA4FC823A4C62",
+    "preparedProfileOnly": true,
+    "receipt": "native-scm-2d696673789342febe8df7a316ce54f0.json",
+    "maintenanceDisconnectVerified": true,
+    "publicRolloutVerified": false,
+    "maintenanceExclusionVerified": true,
+    "desktopIpcVerified": true,
+    "installerRollbackVerified": false
+  }
 }

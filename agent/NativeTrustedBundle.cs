@@ -11,7 +11,7 @@ namespace RoutePilot.Agent;
 internal sealed class NativeTrustedBundle:IDisposable
 {
     internal sealed record Entry(string Name,string Sha256);
-    internal sealed record Catalog(int Schema,Entry Owner,Entry Core,Entry? Guard=null,Entry? Policy=null,Entry? Profile=null,Entry? CoreConfig=null,string ExpectedExitHash="");
+    internal sealed record Catalog(int Schema,Entry Owner,Entry Core,Entry? Guard=null,Entry? Policy=null,Entry? Profile=null,Entry? CoreConfig=null,string ExpectedExitHash="",string ProfileName="");
     readonly List<FileStream> leases=new();
     internal string OwnerPath{get;private set;}="";
     internal string CorePath{get;private set;}="";
@@ -20,6 +20,8 @@ internal sealed class NativeTrustedBundle:IDisposable
     internal string ProfileText{get;private set;}="";
     internal string CoreConfigPath{get;private set;}="";
     internal string ExpectedExitHash{get;private set;}="";
+    internal string ProfileName{get;private set;}="Подготовленный профиль";
+    internal string ProfileId{get;private set;}="";
     internal static string ReadProtectedText(string path,int maxBytes=65536)
     {
         var file=new FileInfo(Path.GetFullPath(path));CheckAcl(file);for(var parent=file.Directory;parent!=null;parent=parent.Parent)CheckAcl(parent,true);
@@ -73,7 +75,8 @@ internal sealed class NativeTrustedBundle:IDisposable
                 else if(entry==catalog.CoreConfig)lease.CoreConfigPath=Path.Combine(root,entry.Name);
                 else {if(stream.Length>65536)throw new InvalidDataException("Native document too large.");using var reader=new StreamReader(stream,leaveOpen:true);string text=reader.ReadToEnd();if(entry==catalog.Policy)lease.PolicyText=text;else lease.ProfileText=text;}
             }
-            lease.ExpectedExitHash=catalog.ExpectedExitHash;return lease;
+            lease.ExpectedExitHash=catalog.ExpectedExitHash;lease.ProfileId=catalog.Profile?.Sha256??"";
+            if(!string.IsNullOrWhiteSpace(catalog.ProfileName))lease.ProfileName=new string(catalog.ProfileName.Where(c=>!char.IsControl(c)).Take(80).ToArray());return lease;
         }
         catch{lease.Dispose();throw;}
     }

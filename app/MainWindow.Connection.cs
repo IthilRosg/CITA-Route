@@ -39,6 +39,7 @@ public partial class MainWindow
     }
     private async Task DiscoverConnectionsCoreAsync(string cli)
     {
+        if(!_render&&_rescue.Installed&&await RefreshNativeAsync(force:true))return;
         if(_discovering)return;_discovering=true;RefreshRescueState();
         string selected=ProfileInput.SelectedItem as string??"";
         try

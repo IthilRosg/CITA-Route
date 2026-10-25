@@ -17,6 +17,9 @@ $logPath = Join-Path $PSScriptRoot 'logs\agent-install.log'
 . (Join-Path $PSScriptRoot 'AgentPackage.ps1')
 . (Join-Path $PSScriptRoot 'FileStorage.ps1')
 . (Join-Path $PSScriptRoot 'ConnectionEnvironment.ps1')
+. (Join-Path $PSScriptRoot 'AgentLease.ps1')
+. (Join-Path $PSScriptRoot 'NativeMaintenance.ps1')
+$nativeCoordinated=$false
 $setupReservation=$null
 $startupTransfer=$null
 try {
@@ -31,6 +34,8 @@ try {
     if (Get-Process -Name 'smart-router','vpn-bridge' -ErrorAction SilentlyContinue) { throw 'Stop the current RoutePilot engine before updating its protected files.' }
     $build = Join-Path $PSScriptRoot 'runtime\agent-build\RoutePilot.Agent.exe'
     if (-not (Test-Path -LiteralPath $build)) { throw 'Build the rescue agent first.' }
+    Stop-NativeForMaintenance
+    if((Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'RoutePilot\Agent\native\service.json')) -and (Get-Service RoutePilotRescue -ErrorAction SilentlyContinue)){Invoke-AgentCoordinator 'begin-operation';$nativeCoordinated=$true}
     $installRoot = Join-Path $env:ProgramFiles 'RoutePilot\Agent'
     $dataRoot = Join-Path $env:ProgramData 'RoutePilot'
     foreach ($target in @((Split-Path $installRoot),$installRoot,$dataRoot)) {
@@ -141,4 +146,4 @@ try {
 } catch {
     $_.Exception.ToString() | Set-Content -LiteralPath $logPath -Encoding UTF8
     exit 1
-}finally{if($startupTransfer){foreach($held in $startupTransfer.Locks){$held.Dispose()}};if($setupReservation){$setupReservation.Dispose()}}
+}finally{if($nativeCoordinated){try{Invoke-AgentCoordinator 'end-operation'}catch{}};if($startupTransfer){foreach($held in $startupTransfer.Locks){$held.Dispose()}};if($setupReservation){$setupReservation.Dispose()}}

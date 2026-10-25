@@ -112,3 +112,14 @@ The guard gate remains OPEN for production: actual policy compilation and
 exclusions, TUN LUID permits, narrow encrypted-server exceptions, transactional
 updates, durable protected ownership and startup/service recovery are still
 required. This proof does not replace the normal client's current backend.
+
+## Later milestones (2026-10-25)
+
+The historical guard-only open items above are superseded by the scoped SCM
+acceptance in `NATIVE-SERVICE-20261025.md` and desktop/maintenance acceptance in
+`NATIVE-DESKTOP-MAINTENANCE-20261025.md`. Policy compilation, TUN binding,
+protected ownership and SCM recovery now have isolated W11 receipts. The desktop
+can select a prepared native snapshot, and maintenance confirms Stop before
+replacement and excludes concurrent Start. These are not public installer,
+first-use import, adaptive-policy rollout or IPv6-carriage acceptance; those
+release gates remain open.

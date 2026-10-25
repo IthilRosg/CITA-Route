@@ -51,7 +51,7 @@ internal sealed class NativeServiceRoute
         try{File.WriteAllText(temporary,JsonSerializer.Serialize(next),new UTF8Encoding(false));File.Move(temporary,statePath,true);}finally{if(File.Exists(temporary))File.Delete(temporary);}
     }
     internal JsonElement Snapshot
-    {get{lock(sync)return JsonSerializer.SerializeToElement(new{phase=phase=="Connected"&&runtime?.Core.State is {} state&&state!="Active"?state:phase,desired=intent.Desired,operation=intent.Operation,generation=intent.Generation,errorCode=failure,runtime=runtime?.Snapshot});}}
+    {get{lock(sync)return JsonSerializer.SerializeToElement(new{phase=phase=="Connected"&&runtime?.Core.State is {} state&&state!="Active"?state:phase,desired=intent.Desired,operation=intent.Operation,generation=intent.Generation,profileName=bundle.ProfileName,profileId=bundle.ProfileId,policyMode=policy.GetProperty("Vpn").EnumerateArray().Any(x=>x.GetString()=="0.0.0.0/0")?"FullVpn":"SelectedRoutes",errorCode=failure,runtime=runtime?.Snapshot});}}
     internal bool Busy{get{lock(sync)return intent.Desired||phase is not "Disconnected";}}
     internal void Request(bool connect,string? expectedOperation)
     {

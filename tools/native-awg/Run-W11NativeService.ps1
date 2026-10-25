@@ -6,10 +6,12 @@ if(-not $agentRoot.StartsWith($runtimeRoot,[StringComparison]::OrdinalIgnoreCase
 . (Join-Path $root 'runtime/vm-lab/W11-Calls.ps1')
 try{
  W11-Call @('start',$labVmx,'nogui')|Out-Null
- W11-Code 'New-Item -ItemType Directory -Path C:\CitaLab\NativeAwg\ServiceCandidate -Force|Out-Null'|Out-Null
+ W11-Code 'New-Item -ItemType Directory -Path C:\CitaLab\NativeAwg\ServiceCandidate,C:\CitaLab\NativeAwg\NativeUiLab -Force|Out-Null'|Out-Null
+ foreach($name in @('Cita.NativeUiLab.exe','Cita.NativeUiLab.dll','Cita.NativeUiLab.deps.json','Cita.NativeUiLab.runtimeconfig.json','RoutePilot.dll')){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root ('runtime/native-ui-clean-build/'+$name)),('C:\CitaLab\NativeAwg\NativeUiLab\'+$name))|Out-Null}
  foreach($name in @('RoutePilot.Agent.exe','RoutePilot.Agent.dll','RoutePilot.Agent.deps.json','RoutePilot.Agent.runtimeconfig.json')){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $agentRoot $name),('C:\CitaLab\NativeAwg\ServiceCandidate\'+$name))|Out-Null}
  foreach($pair in @(@('runtime/native-awg-lab.exe','native-awg-lab.exe'),@('runtime/native-core-lab.exe','native-core-lab.exe'),@('runtime/native-guard-lab.exe','native-guard-lab.exe'),@('tools/native-awg/Run-GuestNativeService.ps1','Run-GuestNativeService.ps1'))){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root $pair[0]),('C:\CitaLab\NativeAwg\'+$pair[1]))|Out-Null}
  foreach($name in @('Cita.NativeAgentLab.exe','Cita.NativeAgentLab.dll','Cita.NativeAgentLab.deps.json','Cita.NativeAgentLab.runtimeconfig.json')){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root ('runtime/native-agent-backend-lab/'+$name)),('C:\CitaLab\NativeAwg\AgentBackend\'+$name))|Out-Null}
+ W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root 'NativeMaintenance.ps1'),'C:\CitaLab\NativeAwg\NativeMaintenance.ps1')|Out-Null
  W11-Code 'if(Test-Path C:\CitaLab\NativeAwg\native-service-result.json){Remove-Item -LiteralPath C:\CitaLab\NativeAwg\native-service-result.json -Force};& C:\CitaLab\NativeAwg\Run-GuestNativeService.ps1;exit 0'|Out-Null
  $file=Join-Path $root ('runtime/native-scm-'+$run+'.json');W11-Call @('copyFileFromGuestToHost',$labVmx,'C:\CitaLab\NativeAwg\native-service-result.json',$file)|Out-Null
  $result=Get-Content -LiteralPath $file -Raw|ConvertFrom-Json

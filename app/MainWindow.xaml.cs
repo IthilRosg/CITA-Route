@@ -75,6 +75,7 @@ public partial class MainWindow : Window
         _routingPolicy=AppPaths.Read(Path.Combine(root,"data","routing-policy.json"),()=>new RoutingPolicyPreferences());
         _history=AppPaths.Read(Path.Combine(root,"data","traffic.json"),()=>new TrafficHistory());
         InitializeComponent();
+        InitializeNativeUi();
         BuildVersionLabel.Text="CITA / X64 / "+ReleaseUpdates.Current.ToString(3);
         AboutVersionLabel.Text="Версия "+ReleaseUpdates.Current.ToString(3)+" · Windows desktop";
         _preferences.RefreshSeconds=Math.Clamp(_preferences.RefreshSeconds,1,3);
@@ -162,6 +163,8 @@ public partial class MainWindow : Window
         try
         {
             RefreshResourceState();
+            if(await RefreshNativeAsync())
+            {if(!_exiting){if(_pendingUpdatePrompt)await ShowUpdatePromptAsync();await TryAutoInstallAsync();}return;}
             var session=AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession());
             var cachedHealth=SessionHealthCache.Read(_root,session,DateTime.UtcNow);
             bool owned=session.Running && !string.IsNullOrWhiteSpace(session.Id) && _backend.EngineRunning(session);
@@ -376,6 +379,7 @@ public partial class MainWindow : Window
     }
     private async Task<bool> PerformActionAsync(string action)
     {
+        if(action=="Stop"&&UseNativeBackend)return await NativeActionAsync(false);
         if(_rescueState.BlocksRouting){Notice("Дождись завершения автономного теста и восстановления.");return false;}
         if(_busy)return false;_busy=true;ConnectButton.IsEnabled=false;DiagnosticsButton.IsEnabled=false;UpdateFeedsButton.IsEnabled=false;
         ConnectButton.Content=action=="Start"?"Подключение…":action=="Stop"?"Отключение…":"Обновление…";

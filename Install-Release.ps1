@@ -26,7 +26,7 @@ foreach($file in $manifest.files){
     $names[$source]=$file.sha256
     if((Get-Item -LiteralPath $source).Length -ne $file.bytes -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $file.sha256){throw 'Update payload has changed.'}
 }
-$files=@('RoutePilot.exe','SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','Verify-Routing.ps1','Install-Release.ps1','DesktopRuntime.ps1','product.json','README.md','THIRD-PARTY.md','LICENSE','runtime\smart-router.exe','runtime\vpn-bridge.exe','runtime\agent-build\RoutePilot.Agent.exe','runtime\rules\russia_inside.srs','runtime\rules\discord.srs','rules\telegram-cidr.txt')
+$files=@('RoutePilot.exe','SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','NativeMaintenance.ps1','Verify-Routing.ps1','Install-Release.ps1','DesktopRuntime.ps1','product.json','README.md','THIRD-PARTY.md','LICENSE','runtime\smart-router.exe','runtime\vpn-bridge.exe','runtime\agent-build\RoutePilot.Agent.exe','runtime\rules\russia_inside.srs','runtime\rules\discord.srs','rules\telegram-cidr.txt')
 foreach($name in $files){if(-not $names.ContainsKey((Join-Path $packagePath $name))){throw ('Required update file missing: '+$name)}}
 if($names.ContainsKey((Join-Path $packagePath 'desktop-runtime.json'))){$files+='desktop-runtime.json'}
 # An optional adapter must be delivered as one complete, verified set. Never
@@ -53,6 +53,8 @@ function Assert-Disconnected {
 }
 Assert-Disconnected
 if($ValidateOnly){Write-Output 'PASS: verified release payload; disconnected installation only; no files changed.';exit 0}
+. (Join-Path $root 'NativeMaintenance.ps1')
+Stop-NativeForMaintenance
 $connectionOperationLock=$null;$setupLock=$null;$upgradeLock=$null;$controlLock=$null;$coordinated=$false;$applied=New-Object 'System.Collections.Generic.List[object]'
 $backup=Join-Path $root ('runtime\update-backup-'+[guid]::NewGuid().ToString('N'))
 $report=@{version=$Version;operationId=$OperationId;success=$false;restored=$false;startedUtc=[DateTime]::UtcNow.ToString('o');backup=$backup}
