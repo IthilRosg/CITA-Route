@@ -12,4 +12,5 @@
   <ItemGroup><Compile Include="../../agent/NativeWfpGuard.cs" Link="NativeWfpGuard.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../agent/NativeProcessJob.cs" Link="NativeProcessJob.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../agent/NativeGuardedSession.cs" Link="NativeGuardedSession.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../agent/NativeProfileImport.cs" Link="NativeProfileImport.cs" /></ItemGroup>
 </Project>

@@ -22,6 +22,7 @@ internal sealed class NativeTrustedBundle:IDisposable
     internal string ExpectedExitHash{get;private set;}="";
     internal string ProfileName{get;private set;}="Подготовленный профиль";
     internal string ProfileId{get;private set;}="";
+    internal string CatalogName{get;private set;}="native-catalog.json";
     internal static string ReadProtectedText(string path,int maxBytes=65536)
     {
         var file=new FileInfo(Path.GetFullPath(path));CheckAcl(file);for(var parent=file.Directory;parent!=null;parent=parent.Parent)CheckAcl(parent,true);
@@ -52,7 +53,7 @@ internal sealed class NativeTrustedBundle:IDisposable
         if(file.Length is <1 or >268435456||!Convert.ToHexString(SHA256.HashData(file)).Equals(entry.Sha256,StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Native component digest mismatch.");
         file.Position=0;return file;
     }
-    internal static NativeTrustedBundle Open(string directory,string trustedCatalogHash)
+    internal static NativeTrustedBundle Open(string directory,string trustedCatalogHash,string catalogName="native-catalog.json")
     {
         if(!OperatingSystem.IsWindows()||!Hash(trustedCatalogHash))throw new InvalidDataException("Invalid native trust root.");
         var lease=new NativeTrustedBundle();
@@ -60,7 +61,9 @@ internal sealed class NativeTrustedBundle:IDisposable
         {
             string root=Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));var current=new DirectoryInfo(root);CheckAcl(current);
             for(var parent=current.Parent;parent!=null;parent=parent.Parent)CheckAcl(parent,true);
-            var catalogFile=lease.OpenChecked(root,new("native-catalog.json",trustedCatalogHash));
+            if(catalogName!="native-catalog.json"&&!System.Text.RegularExpressions.Regex.IsMatch(catalogName,@"\Acatalog-[a-f0-9]{32}\.json\z"))throw new InvalidDataException("Invalid native catalog name.");
+            lease.CatalogName=catalogName;
+            var catalogFile=lease.OpenChecked(root,new(catalogName,trustedCatalogHash));
             if(catalogFile.Length>8192)throw new InvalidDataException("Oversized native catalog.");
             var catalog=JsonSerializer.Deserialize<Catalog>(catalogFile,new JsonSerializerOptions{UnmappedMemberHandling=System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow})??throw new InvalidDataException("Empty native catalog.");
             if(catalog.Schema!=1||catalog.Owner==null||catalog.Core==null||catalog.Owner.Name.Equals(catalog.Core.Name,StringComparison.OrdinalIgnoreCase)||!catalog.Owner.Name.EndsWith(".exe",StringComparison.OrdinalIgnoreCase)||!catalog.Core.Name.EndsWith(".exe",StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Invalid native catalog.");

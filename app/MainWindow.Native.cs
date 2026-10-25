@@ -13,8 +13,9 @@ public partial class MainWindow
     readonly NativeRouteClient _nativeClient=new();
     NativeChoice _nativeChoice=new();NativeRouteView? _nativeView;
     ComboBox _nativeMode=new();ComboBoxItem _nativeItem=new();TextBlock _nativeHint=new();
+    Button _nativeImportButton=new();
     bool _nativeModeChanging;DateTime _nativeReadUtc;DateTime _nativeRetryUtc;Border? _nativeWireSockCard;
-    bool UseNativeBackend=>_nativeChoice.Selected||_nativeView?.Desired==true;
+    bool UseNativeBackend=>_nativeChoice.Selected||_nativeView?.Desired==true||_nativeView?.Phase=="Importing";
     string NativeChoicePath=>Path.Combine(_root,"data","transport-choice.json");
     void InitializeNativeUi()
     {
@@ -30,6 +31,7 @@ public partial class MainWindow
             _nativeChoice.Selected=_nativeMode.SelectedIndex==1;AppPaths.Write(NativeChoicePath,_nativeChoice);_nativeReadUtc=DateTime.MinValue;await DiscoverConnectionsAsync();await RefreshAsync();
         };
         content.Children.Add(_nativeMode);_nativeHint.TextWrapping=TextWrapping.Wrap;_nativeHint.FontSize=12;_nativeHint.Foreground=ConsoleTheme.Dim;_nativeHint.Margin=new Thickness(0,10,0,0);content.Children.Add(_nativeHint);
+        _nativeImportButton.Content="Импорт .conf во встроенный режим";_nativeImportButton.Margin=new Thickness(0,12,0,0);_nativeImportButton.HorizontalAlignment=HorizontalAlignment.Left;_nativeImportButton.IsEnabled=false;_nativeImportButton.Click+=async(_,_)=>await ImportNativeProfileAsync();content.Children.Add(_nativeImportButton);
         settings.Children.Insert(0,new Border{Style=(Style)FindResource("Card"),Margin=new Thickness(0,0,0,16),Child=content});
     }
     async Task<bool> RefreshNativeAsync(bool force=false)
@@ -44,17 +46,18 @@ public partial class MainWindow
         }
         if(DateTime.UtcNow<_nativeRetryUtc){if(!UseNativeBackend)return false;ApplyNativeView(null);return true;}
         _nativeItem.IsEnabled=_nativeView?.Available==true;
+        _nativeImportButton.IsEnabled=_nativeView?.Phase=="Disconnected"&&!_busy&&!_discovering&&!_engineRunning;
         SetNativeQualityCaption(UseNativeBackend);
         if(_nativeWireSockCard!=null)_nativeWireSockCard.Visibility=UseNativeBackend?Visibility.Collapsed:Visibility.Visible;
         _nativeMode.IsEnabled=!_busy&&!_discovering&&!_engineRunning&&_nativeView?.Desired!=true;
-        _nativeHint.Text=_nativeView?.Available==true?"Предварительный встроенный режим использует выбранный в службе профиль. Живые списки «Авто» пока доступны через WireSock.":"Встроенный режим появится после подготовки его компонентов и профиля. Сейчас доступен «Авто» через WireSock.";
+        _nativeHint.Text=_nativeView?.Available==true?"Можно импортировать собственный IPv4-профиль с одним сервером. IPv6 в конфиге и команды запуска пока не поддерживаются. Живые списки «Авто» доступны через WireSock.":"Встроенный режим появится после подготовки его компонентов и профиля. Сейчас доступен «Авто» через WireSock.";
         if(!UseNativeBackend)return false;
-        if(_nativeView?.Desired==true&&!_nativeChoice.Selected){_nativeChoice.Selected=true;AppPaths.Write(NativeChoicePath,_nativeChoice);_nativeModeChanging=true;_nativeMode.SelectedIndex=1;_nativeModeChanging=false;}
+        if((_nativeView?.Desired==true||_nativeView?.Phase=="Importing")&&!_nativeChoice.Selected){_nativeChoice.Selected=true;AppPaths.Write(NativeChoicePath,_nativeChoice);_nativeModeChanging=true;_nativeMode.SelectedIndex=1;_nativeModeChanging=false;}
         ApplyNativeView(_nativeView);return true;
     }
     internal void ApplyNativeView(NativeRouteView? state)
     {
-        bool previousDesired=_nativeView?.Desired==true;if(state!=null)_nativeView=state;_engineRunning=state?.Desired??previousDesired;_engineAvailable=state?.Available==true;_vpnConnected=state?.Connected==true;
+        bool previousDesired=_nativeView?.Desired==true||_nativeView?.Phase=="Importing";if(state!=null)_nativeView=state;_engineRunning=state!=null?state.Desired||state.Phase=="Importing":previousDesired;_engineAvailable=state?.Available==true;_vpnConnected=state?.Connected==true;
         SetStatus(NativeRoutePresentation.Title(state),state?.Connected==true);FooterStatus.Text=NativeRoutePresentation.Detail(state);
         DownloadRateLabel.Text=UploadRateLabel.Text=ConnectionCountLabel.Text=VpnCountLabel.Text=DirectCountLabel.Text=UptimeLabel.Text="—";VpnShareBar.Value=0;
         CompactVpnRtt.Text="Задержка: —";CompactVpnLoss.Text="Потери: —";
@@ -92,7 +95,8 @@ public partial class MainWindow
         try
         {
             var state=(await _nativeClient.Command("status")).Native;if(state==null||!state.Available)throw new IOException("Встроенный режим не подготовлен.");_nativeView=state;
-            if(startOnly&&state.Desired)return true;
+            if(startOnly&&(state.Desired||state.Phase=="Importing"))return true;
+            if(state.Phase=="Importing")start=false;
             if(start&&!state.Desired&&!ConfirmNativeProfile())return false;
             var reply=await _nativeClient.Command(start?"native-start":"native-stop",start?null:state.Operation);
             if(!reply.Success||reply.Native==null)throw new IOException("Служба не приняла запрос. Проверь журнал подключения.");operation=reply.Native.Operation;requestedStart=start;

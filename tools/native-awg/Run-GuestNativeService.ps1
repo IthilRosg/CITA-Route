@@ -1,12 +1,12 @@
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$run=[guid]::NewGuid().ToString('N');$folder=Join-Path ([Environment]::GetFolderPath('ProgramFiles')) ('CitaNativeService-'+$run);$native=Join-Path $folder 'native';$restore=Join-Path $root ('private\restore-service-'+$run+'.ps1');$report=@{schema=1;success=$false;startedUtc=[datetime]::UtcNow.ToString('o');scope='Actual RoutePilotRescue SCM service with protected native snapshot; isolated W11'};$rescue=$null;$changed=$false;$created=$false;$old=$null;$phase='prepare'
-function Rpc([string]$command,[string]$id=''){
+function Rpc([string]$command,[string]$id='',[object]$profile=$null){
  $pipe=[IO.Pipes.NamedPipeClientStream]::new('.','RoutePilot.Rescue.v1',[IO.Pipes.PipeDirection]::InOut,[IO.Pipes.PipeOptions]::Asynchronous,[Security.Principal.TokenImpersonationLevel]::Identification)
- try{$pipe.Connect(3000);$bytes=[Text.Encoding]::UTF8.GetBytes((@{Command=$command;RunId=$id}|ConvertTo-Json -Compress)+"`n");$pipe.Write($bytes,0,$bytes.Length);$pipe.Flush();$reader=[IO.StreamReader]::new($pipe,[Text.Encoding]::UTF8);$task=$reader.ReadLineAsync();if(-not $task.Wait(5000)){throw 'Native service reply deadline'};return ($task.GetAwaiter().GetResult()|ConvertFrom-Json)}finally{$pipe.Dispose()}
+ try{$pipe.Connect(3000);$bytes=[Text.Encoding]::UTF8.GetBytes((@{Command=$command;RunId=$id;Profile=$profile}|ConvertTo-Json -Compress)+"`n");$pipe.Write($bytes,0,$bytes.Length);$pipe.Flush();$reader=[IO.StreamReader]::new($pipe,[Text.Encoding]::UTF8);$task=$reader.ReadLineAsync();if(-not $task.Wait(5000)){throw 'Native service reply deadline'};return ($task.GetAwaiter().GetResult()|ConvertFrom-Json)}finally{$pipe.Dispose()}
 }
 function Wait-Native([string]$state){
- for($i=0;$i -lt 60;$i++){try{$r=Rpc 'native-status';if($r.Native.phase -eq $state){return $r.Native};if($r.Native.phase -in @('RecoveryFailed','Unavailable')){$report.nativeFailure=$r.Native.errorCode;$report.nativeRuntime=$r.Native.runtime;throw 'Native service failed'}}catch{if($report.nativeFailure){throw}};Start-Sleep -Milliseconds 400};throw ('Native state deadline: '+$state)
+ for($i=0;$i -lt 150;$i++){try{$r=Rpc 'native-status';if($r.Native.phase -eq $state){return $r.Native};if($r.Native.phase -in @('RecoveryFailed','Unavailable')){$report.nativeFailure=$r.Native.errorCode;$report.nativeRuntime=$r.Native.runtime;$report.importStage=$r.Native.importStage;throw 'Native service failed'}}catch{if($report.nativeFailure){throw}};Start-Sleep -Milliseconds 400};throw ('Native state deadline: '+$state)
 }
 function Probe-Tun{
  $info=[Diagnostics.ProcessStartInfo]::new((Join-Path $root 'AgentBackend\Cita.NativeAgentLab.exe'),('--wfp-os-probe '+$root));$info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true;$p=[Diagnostics.Process]::Start($info)
@@ -74,6 +74,7 @@ if($service.PathName.Contains($folder)){
  $lease=Rpc 'begin-operation';if(-not $lease.Success){throw 'Maintenance reservation refused'}
  try{if((Rpc 'native-start').Success){throw 'Start raced maintenance reservation'};$report.maintenanceBlocksReconnect=$true}finally{$null=Rpc 'end-operation'}
  $phase='disconnect';$report.disconnected=$true;Restart-Service RoutePilotRescue -Force;$disconnected=Wait-Native 'Disconnected';if($disconnected.desired){throw 'Manual disconnect lost after SCM restart'};$report.manualDisconnectRetainedAfterRestart=$true;$report.globalVpnPolicy=$true
+ $phase='profile-import';. (Join-Path $root 'NativeImportAcceptance.ps1');Test-NativeImport
  if(Get-Process native-owner,native-core -ErrorAction SilentlyContinue){throw 'Native children remain after disconnect'}
  $report.ownerSha256=(Get-FileHash (Join-Path $native 'native-owner.exe')).Hash;$report.coreSha256=(Get-FileHash (Join-Path $native 'native-core.exe')).Hash;$report.agentSha256=(Get-FileHash (Join-Path $folder 'RoutePilot.Agent.dll')).Hash;$report.guardSha256=(Get-FileHash (Join-Path $native 'native-guard.exe')).Hash;$report.success=$true
 }catch{$report.errorType=$_.Exception.GetType().Name;$report.failedPhase=$phase;$report.failedLine=$_.InvocationInfo.ScriptLineNumber;$report.errorId=$_.FullyQualifiedErrorId}

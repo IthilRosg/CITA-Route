@@ -123,3 +123,9 @@ can select a prepared native snapshot, and maintenance confirms Stop before
 replacement and excludes concurrent Start. These are not public installer,
 first-use import, adaptive-policy rollout or IPv6-carriage acceptance; those
 release gates remain open.
+
+Prepared installations now also have bounded desktop profile import; see
+`NATIVE-PROFILE-IMPORT-20261025.md`. Immutable revisions, private-file ACLs,
+network validation, cancellation and selection persistence have W11 receipts.
+Missing-component first-use setup and adaptive domain-policy publication remain
+separate gates.

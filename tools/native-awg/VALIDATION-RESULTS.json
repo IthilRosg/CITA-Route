@@ -523,5 +523,20 @@
     "maintenanceExclusionVerified": true,
     "desktopIpcVerified": true,
     "installerRollbackVerified": false
+  },
+  "nativeProfileImportMilestone": {
+    "desktopSha256": "A5BA55C21B5C0DC0CDEF04186F0513685B8FB8941F0F6B14F6FAF8067555C3BC",
+    "agentSha256": "AA281092275FACB9145EDAA97B9965BAE86BB6C1104969B03330273056E9D473",
+    "invalidImportRetainedProfile": true,
+    "receipt": "native-scm-076a1df6b4cd4905a729bd6f06398925.json",
+    "scriptDirectiveRejected": true,
+    "publicReleaseReady": false,
+    "desktopImportVerified": true,
+    "importedProfileTraffic": true,
+    "missingComponentSetupVerified": false,
+    "staleStopRefused": true,
+    "cancelRetainedProfile": true,
+    "selectionSurvivesRestart": true,
+    "privateAclVerified": true
   }
 }

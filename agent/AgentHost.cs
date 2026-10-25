@@ -138,6 +138,11 @@ public sealed class AgentHost
     async Task<AgentReply> Dispatch(AgentRequest request,Process caller)
     {
         if(request.Command=="native-status")return Reply(_native!=null,"Native backend status.");
+        if(request.Command=="native-import")
+        {
+            if(_native==null||request.Profile==null||_store.State.Active||_store.State.Phase==RunPhase.RecoveryFailed||_operation?.Matches()==true||Process.GetProcessesByName("smart-router").Length>0||Process.GetProcessesByName("vpn-bridge").Length>0)return Reply(false,"Native profile import is unavailable.");
+            try{_native.RequestImport(request.Profile,request.RunId);return Reply(true,"Native profile validation started.");}catch{return Reply(false,"Native profile import refused. Disconnect and refresh before retrying.");}
+        }
         if(request.Command is "native-start" or "native-stop")
         {
             if(_native==null)return Reply(false,"Protected native backend is not configured.");

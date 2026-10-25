@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RoutePilot.Agent;
+if(args.Length==1&&args[0]=="--profile-import-self-test"){await NativeImportTests.Run();return 0;}
 if(args.Length==2 && args[0]=="--wfp-os-probe"){var proof=await CoreSafetyLab.Tun(Path.Combine(Path.GetFullPath(args[1]),"native-awg-lab.exe"),"1.1.1.1",CancellationToken.None);Console.WriteLine(proof.GetRawText());return proof.GetProperty("success").GetBoolean()?0:1;}
 if(args.Length==4 && args[0]=="--wfp-session-lab")return await WfpSessionLab.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]),args[3]);
 if(args.Length==3 && args[0]=="--trust-lab")return TrustLab.Run(Path.GetFullPath(args[1]),args[2]);
