@@ -21,7 +21,7 @@ function Stop-NativeForMaintenance([string]$NativeRoot=(Join-Path $env:ProgramFi
     if(-not $settings.Enabled){return}
     $state=(Invoke-NativeMaintenanceRpc 'status').Native
     if(-not $state -or $state.Phase -eq 'Unavailable'){throw 'Cannot confirm native session state. Update postponed.'}
-    if($state.Desired -or $state.Phase -ne 'Disconnected') {
+    if($state.Desired -or $state.Phase -notin @('Disconnected','Unconfigured')) {
         $operation=[string]$state.Operation
         if($operation -notmatch '^[a-fA-F0-9]{32}$'){throw 'Native session identity unavailable. Update postponed.'}
         $null=Invoke-NativeMaintenanceRpc 'native-stop' $operation
@@ -29,7 +29,7 @@ function Stop-NativeForMaintenance([string]$NativeRoot=(Join-Path $env:ProgramFi
         do {
             $state=(Invoke-NativeMaintenanceRpc 'status').Native
             if(-not $state -or $state.Operation -ne $operation){throw 'Native session changed during maintenance. Update postponed.'}
-            if($state.Phase -eq 'Disconnected' -and -not $state.Desired){return}
+            if($state.Phase -in @('Disconnected','Unconfigured') -and -not $state.Desired){return}
             Start-Sleep -Milliseconds 250
         } while([DateTime]::UtcNow -lt $deadline)
         throw 'Native disconnect did not finish. Update postponed; files remain unchanged.'

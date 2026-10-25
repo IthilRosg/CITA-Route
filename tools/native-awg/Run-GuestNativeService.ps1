@@ -1,3 +1,4 @@
+param([switch]$Bootstrap,[switch]$Reboot,[switch]$Network)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$run=[guid]::NewGuid().ToString('N');$folder=Join-Path ([Environment]::GetFolderPath('ProgramFiles')) ('CitaNativeService-'+$run);$native=Join-Path $folder 'native';$restore=Join-Path $root ('private\restore-service-'+$run+'.ps1');$report=@{schema=1;success=$false;startedUtc=[datetime]::UtcNow.ToString('o');scope='Actual RoutePilotRescue SCM service with protected native snapshot; isolated W11'};$rescue=$null;$changed=$false;$created=$false;$old=$null;$phase='prepare'
@@ -10,7 +11,7 @@ function Wait-Native([string]$state){
 }
 function Probe-Tun{
  $info=[Diagnostics.ProcessStartInfo]::new((Join-Path $root 'AgentBackend\Cita.NativeAgentLab.exe'),('--wfp-os-probe '+$root));$info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true;$p=[Diagnostics.Process]::Start($info)
- try{$out=$p.StandardOutput.ReadToEndAsync();$err=$p.StandardError.ReadToEndAsync();if(-not $p.WaitForExit(15000)){$p.Kill();$p.WaitForExit();throw 'OS probe deadline'};$r=$out.GetAwaiter().GetResult()|ConvertFrom-Json;if($p.ExitCode -ne 0 -or -not $r.success -or $r.egressHash -ne $expected){throw 'Service OS proof failed'};return $true}finally{$p.Dispose()}
+ try{$out=$p.StandardOutput.ReadToEndAsync();$err=$p.StandardError.ReadToEndAsync();if(-not $p.WaitForExit(25000)){$p.Kill();$p.WaitForExit();throw 'OS probe deadline'};$r=$out.GetAwaiter().GetResult()|ConvertFrom-Json;if($p.ExitCode -ne 0 -or -not $r.success -or $r.egressHash -ne $expected){$report.failedProbe=$r;throw 'Service OS proof failed'};return $true}finally{$p.Dispose()}
 }
 function Harden([string]$path){
  $admin=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544');$system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18');$items=@(Get-Item -LiteralPath $path)+@(Get-ChildItem -LiteralPath $path -Recurse -Force)
@@ -37,11 +38,12 @@ try{
  @{Enabled=$true;CatalogSha256=(Get-FileHash (Join-Path $native 'native-catalog.json')).Hash}|ConvertTo-Json|Set-Content (Join-Path $native 'service.json') -Encoding UTF8
  @{UserSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;UserProfile=$env:USERPROFILE;DataDirectory='C:\ProgramData\RoutePilot';AppRoot=$root}|ConvertTo-Json|Set-Content (Join-Path $folder 'agent-config.json') -Encoding UTF8
  Harden $folder
+ if($Bootstrap){$seed=Join-Path $folder 'native-fixture';if([IO.Path]::GetDirectoryName($native) -ne $folder -or [IO.Path]::GetDirectoryName($seed) -ne $folder){throw 'Bootstrap seed containment'};Move-Item -LiteralPath $native -Destination $seed}
  $escapedOld=$oldPath.Replace("'","''");$escapedFolder=$folder.Replace("'","''");$wasRunning=if($oldRunning){'$true'}else{'$false'}
  $undo=@'
 param([switch]$Delayed)
 $ErrorActionPreference='Stop'
-if($Delayed){Start-Sleep -Seconds 240}
+if($Delayed){Start-Sleep -Seconds 360}
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){exit 1}
 $folder='__FOLDER__';$oldPath='__OLD__'
 $service=Get-CimInstance Win32_Service -Filter "Name='RoutePilotRescue'"
@@ -59,6 +61,26 @@ if($service.PathName.Contains($folder)){
  Stop-Service RoutePilotRescue -Force;(Get-Service RoutePilotRescue).WaitForStatus('Stopped',[timespan]::FromSeconds(20))
  $newPath='"'+(Join-Path $folder 'RoutePilot.Agent.exe')+'" --service';$result=Invoke-CimMethod -InputObject $old -MethodName Change -Arguments @{PathName=$newPath};if($result.ReturnValue -ne 0){throw 'Candidate service path failed'};$changed=$true
  Start-Service RoutePilotRescue;(Get-Service RoutePilotRescue).WaitForStatus('Running',[timespan]::FromSeconds(20))
+ if($Bootstrap){
+  $phase='bootstrap';$bundle=Join-Path $root 'native-components.zip';$bundleHash=(Get-FileHash $bundle).Hash
+  & (Join-Path $root 'Install-NativeComponents.ps1') -Package $bundle -Sha256 $bundleHash -AgentRoot $folder|Out-Null
+  $template=Wait-Native 'Unconfigured';if($template.desired -or (Rpc 'native-start').Success){throw 'Unconfigured template connected'};$report.firstUseTemplateVerified=$true
+  $raw=[IO.File]::ReadAllBytes((Join-Path $root 'private\peer.conf'));try{$inputProfile=@{Base64=[Convert]::ToBase64String($raw);Name='First use VM';RequestId=[guid]::NewGuid().ToString('N')}}finally{[Array]::Clear($raw,0,$raw.Length)}
+  $imported=Rpc 'native-import' $template.operation $inputProfile;if(-not $imported.Success){throw 'First-use import refused'};$selected=Wait-Native 'Disconnected';if($selected.profileName -ne 'First use VM' -or $selected.profileId.Length -ne 64){throw 'First-use profile was not selected'};$report.firstUseImportVerified=$true
+  # Reproduce the previous generated policy shape (without DHCP broadcast),
+  # only inside this already UUID-checked protected fixture while disconnected.
+  Stop-Service RoutePilotRescue;(Get-Service RoutePilotRescue).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(30))
+  $oldSettingsPath=Join-Path $native 'service.json';$legacySettings=Get-Content $oldSettingsPath -Raw|ConvertFrom-Json;$legacyCatalogPath=Join-Path $native $legacySettings.CatalogName;$legacyCatalog=Get-Content $legacyCatalogPath -Raw|ConvertFrom-Json
+  $legacyPolicyPath=Join-Path $native $legacyCatalog.Policy.Name;$legacyPolicy=Get-Content $legacyPolicyPath -Raw|ConvertFrom-Json;$legacyPolicy.Direct=@($legacyPolicy.Direct|Where-Object {$_ -ne '255.255.255.255/32'});[IO.File]::WriteAllText($legacyPolicyPath,($legacyPolicy|ConvertTo-Json -Depth 6),[Text.UTF8Encoding]::new($false))
+  $legacyPlan=@{Action='Plan';Run=[guid]::NewGuid().ToString('N');Policy=$legacyPolicy}|ConvertTo-Json -Depth 8 -Compress|& (Join-Path $native 'native-guard.exe')|ConvertFrom-Json;if(-not $legacyPlan.success){throw 'Old policy fixture plan failed'}
+  $legacyCorePath=Join-Path $native $legacyCatalog.CoreConfig.Name;$legacyCore=Get-Content $legacyCorePath -Raw|ConvertFrom-Json;@($legacyCore.inbounds|Where-Object type -eq 'tun')[0].route_address=@($legacyPlan.prefixes|Where-Object {$_ -notmatch ':'});[IO.File]::WriteAllText($legacyCorePath,($legacyCore|ConvertTo-Json -Depth 16),[Text.UTF8Encoding]::new($false))
+  $legacyCatalog.Policy.Sha256=(Get-FileHash $legacyPolicyPath).Hash;$legacyCatalog.CoreConfig.Sha256=(Get-FileHash $legacyCorePath).Hash;[IO.File]::WriteAllText($legacyCatalogPath,($legacyCatalog|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false));$legacySettings.CatalogSha256=(Get-FileHash $legacyCatalogPath).Hash;[IO.File]::WriteAllText($oldSettingsPath,($legacySettings|ConvertTo-Json),[Text.UTF8Encoding]::new($false));Start-Service RoutePilotRescue;$null=Wait-Native 'Disconnected'
+  & (Join-Path $root 'Install-NativeComponents.ps1') -Package $bundle -Sha256 $bundleHash -AgentRoot $folder|Out-Null
+  $upgraded=Wait-Native 'Disconnected';if($upgraded.profileId -ne $selected.profileId){throw 'Component upgrade lost profile'};$report.componentUpgradePreservesProfile=$true
+  $migrated=Get-Content (Join-Path $native 'native-catalog.json') -Raw|ConvertFrom-Json;if('255.255.255.255/32' -notin (Get-Content (Join-Path $native $migrated.Policy.Name) -Raw|ConvertFrom-Json).Direct){throw 'DHCP migration did not reach the retained profile'};$report.previousPolicyDhcpMigrated=$true
+  $failed=$false;try{& (Join-Path $root 'Install-NativeComponents.ps1') -Package $bundle -Sha256 $bundleHash -AgentRoot $folder -LabFailAfterSwap|Out-Null}catch{$failed=$true};if(-not $failed){throw 'Replacement failure was not injected'}
+  $restored=Wait-Native 'Disconnected';if($restored.profileId -ne $selected.profileId){throw 'Component rollback lost profile'};$report.componentRollbackVerified=$true
+ }
  $phase='connect';$null=Rpc 'native-start';$active=Wait-Native 'Connected';$report.firstTraffic=Probe-Tun
  $phase='ui-ipc';$uiInfo=[Diagnostics.ProcessStartInfo]::new((Join-Path $root 'NativeUiLab\Cita.NativeUiLab.exe'),'--service-status C:\CitaLab\NativeAwg');$uiInfo.UseShellExecute=$false;$uiInfo.CreateNoWindow=$true;$uiInfo.RedirectStandardOutput=$true;$uiInfo.RedirectStandardError=$true;$ui=[Diagnostics.Process]::Start($uiInfo)
  try{$uiOut=$ui.StandardOutput.ReadToEndAsync();$uiErr=$ui.StandardError.ReadToEndAsync();if(-not $ui.WaitForExit(15000)){$ui.Kill();$ui.WaitForExit();throw 'Desktop IPC probe timeout'};if($ui.ExitCode -ne 0 -or -not ($uiOut.GetAwaiter().GetResult()|ConvertFrom-Json).success){throw 'Desktop IPC metadata probe failed'};$report.desktopIpcVerified=$true;$report.desktopClientSha256=(Get-FileHash (Join-Path $root 'NativeUiLab\RoutePilot.dll')).Hash}finally{$ui.Dispose()}
@@ -69,15 +91,35 @@ if($service.PathName.Contains($folder)){
  Stop-Process -Id $sp.Id -Force;Start-Sleep -Milliseconds 700;if((Get-Service RoutePilotRescue).Status -eq 'Stopped'){Start-Service RoutePilotRescue}
  $again=Wait-Native 'Connected';if($again.generation -le $generation -or $again.operation -eq $oldOperation){throw 'Service intent was not resumed'};$report.afterServiceRestartTraffic=Probe-Tun
  $phase='transport-owner-recovery';$previousOwner=$again.runtime.profile.processId;$process=Get-Process -Id $previousOwner;if($process.Path -ne (Join-Path $native 'native-owner.exe')){throw 'Unexpected transport owner'};$oldGeneration=$again.generation;Stop-Process -Id $previousOwner -Force;for($i=0;$i -lt 100;$i++){$candidate=(Rpc 'native-status').Native;if($candidate.phase -eq 'Connected' -and $candidate.generation -gt $oldGeneration){$again=$candidate;break};Start-Sleep -Milliseconds 400};if($again.generation -le $oldGeneration){throw 'Transport owner recovery deadline'};$report.transportOwnerRecoveredTraffic=Probe-Tun;$stale=Rpc 'native-stop' $oldOperation;if($stale.Success){throw 'Stale service Stop accepted'};$report.staleStopRefused=$true
+ if($Network){
+  $phase='physical-link-interruption'; & (Join-Path $root 'Guest-LinkInterruption.ps1')
+  $ok=$false;for($i=0;$i -lt 2;$i++){try{$ok=Probe-Tun;if($ok){break}}catch{};Start-Sleep -Milliseconds 400};if(-not $ok){throw 'Native service traffic did not recover after link interruption'};$report.physicalLinkTrafficRecovered=$true
+  $phase='ipv4-migration';$migration=Join-Path $root ('private\ip-'+[guid]::NewGuid().ToString('N')+'.json')
+  try{& (Join-Path $root 'Guest-IPv4Migration.ps1') -Action Begin -StatePath $migration|Out-Null;$report.changedSourceAddressTraffic=Probe-Tun}
+  finally{if(Test-Path -LiteralPath $migration){& (Join-Path $root 'Guest-IPv4Migration.ps1') -Action Restore -StatePath $migration|Out-Null}}
+  $report.restoredSourceAddressTraffic=Probe-Tun
+ }
  $phase='maintenance';. (Join-Path $root 'NativeMaintenance.ps1');Stop-NativeForMaintenance -NativeRoot $native
  $null=Wait-Native 'Disconnected';$report.maintenanceDisconnected=$true
  $lease=Rpc 'begin-operation';if(-not $lease.Success){throw 'Maintenance reservation refused'}
  try{if((Rpc 'native-start').Success){throw 'Start raced maintenance reservation'};$report.maintenanceBlocksReconnect=$true}finally{$null=Rpc 'end-operation'}
  $phase='disconnect';$report.disconnected=$true;Restart-Service RoutePilotRescue -Force;$disconnected=Wait-Native 'Disconnected';if($disconnected.desired){throw 'Manual disconnect lost after SCM restart'};$report.manualDisconnectRetainedAfterRestart=$true;$report.globalVpnPolicy=$true
  $phase='profile-import';. (Join-Path $root 'NativeImportAcceptance.ps1');Test-NativeImport
+ if($Reboot){
+  $phase='boot-handoff';$null=Rpc 'native-start';$beforeBoot=Wait-Native 'Connected'
+  $bootRescue=Join-Path $folder 'boot-rescue.ps1';Copy-Item -LiteralPath $restore -Destination $bootRescue;Harden $folder
+  $taskName='CitaNativeBootRescue-'+$run;$action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "'+$bootRescue+'"');$trigger=New-ScheduledTaskTrigger -AtStartup;$trigger.Delay='PT90S';$principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 2))|Out-Null
+  @{folder=$folder;restore=$bootRescue;task=$taskName;profileId=$beforeBoot.profileId;bootBefore=(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().Ticks;report=$report}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $root 'native-boot-handoff.json') -Encoding UTF8
+  $restart=Join-Path $folder 'restart-guest.ps1';[IO.File]::WriteAllText($restart,"Start-Sleep -Seconds 3;Restart-Computer -Force",[Text.UTF8Encoding]::new($false));Harden $folder
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"'+$restart+'"'))|Out-Null
+  # Deliberately skip this controller's finally: the protected startup task and
+  # the already armed delayed rescue own recovery across the actual guest boot.
+  Stop-Process -Id $PID -Force
+ }
  if(Get-Process native-owner,native-core -ErrorAction SilentlyContinue){throw 'Native children remain after disconnect'}
  $report.ownerSha256=(Get-FileHash (Join-Path $native 'native-owner.exe')).Hash;$report.coreSha256=(Get-FileHash (Join-Path $native 'native-core.exe')).Hash;$report.agentSha256=(Get-FileHash (Join-Path $folder 'RoutePilot.Agent.dll')).Hash;$report.guardSha256=(Get-FileHash (Join-Path $native 'native-guard.exe')).Hash;$report.success=$true
-}catch{$report.errorType=$_.Exception.GetType().Name;$report.failedPhase=$phase;$report.failedLine=$_.InvocationInfo.ScriptLineNumber;$report.errorId=$_.FullyQualifiedErrorId}
+}catch{$report.errorType=$_.Exception.GetType().Name;$report.failedPhase=$phase;$report.failedLine=$_.InvocationInfo.ScriptLineNumber;$report.errorId=$_.FullyQualifiedErrorId;try{$report.failedRuntime=(Rpc 'native-status').Native.runtime}catch{}}
 finally{
  if($changed){try{& $restore;$current=Get-CimInstance Win32_Service -Filter "Name='RoutePilotRescue'";$report.serviceRestored=[bool]($current.PathName -eq $oldPath)}catch{$report.serviceRestored=$false;$report.restoreErrorType=$_.Exception.GetType().Name;$report.success=$false}}
  else{$report.serviceRestored=$true}

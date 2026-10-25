@@ -34,7 +34,7 @@ public sealed class AgentHost
         if(File.Exists(operation))_operation=Storage.Read<ProcessIdentity>(operation);
     }
     public void RequestRecovery(string reason)=>_recoveryRequested=reason;
-    public void PrepareForShutdown()=>_boot?.PrepareForShutdown();
+    public void PrepareForShutdown(){_boot?.PrepareForShutdown();_native?.PrepareForShutdown();}
     public async Task Run(CancellationToken stop)
     {
         SaveVpnusProof();
@@ -137,7 +137,13 @@ public sealed class AgentHost
     AgentReply Reply(bool success,string message)=>new(success,message,JsonSerializer.Deserialize<RunState>(JsonSerializer.Serialize(_store.State,Storage.Json),Storage.Json),_native?.Snapshot??(_nativeFailure!=null?JsonSerializer.SerializeToElement(new{phase="Unavailable",errorCode=_nativeFailure}):null));
     async Task<AgentReply> Dispatch(AgentRequest request,Process caller)
     {
+        if(request.Command=="native-capabilities")return new(true,"Native service capabilities.",Native:JsonSerializer.SerializeToElement(new{setupProtocol=1,importProtocol=1,policyProtocol=1}));
         if(request.Command=="native-status")return Reply(_native!=null,"Native backend status.");
+        if(request.Command=="native-rules")
+        {
+            if(_native==null||request.Policy==null||_store.State.Active||_operation?.Matches()==true)return Reply(false,"Native policy is unavailable.");
+            try{_native.RequestPolicy(request.Policy,request.RunId);return Reply(true,"Native policy validation requested.");}catch{return Reply(false,"Native policy scope or generation refused.");}
+        }
         if(request.Command=="native-import")
         {
             if(_native==null||request.Profile==null||_store.State.Active||_store.State.Phase==RunPhase.RecoveryFailed||_operation?.Matches()==true||Process.GetProcessesByName("smart-router").Length>0||Process.GetProcessesByName("vpn-bridge").Length>0)return Reply(false,"Native profile import is unavailable.");

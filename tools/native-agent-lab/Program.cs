@@ -1,7 +1,10 @@
 using System.Text.Json;
 using RoutePilot.Agent;
+if(args.Length==3&&args[0]=="--native-policy-session-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2]);
+if(args.Length==3&&args[0]=="--native-policy-auto-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],true);
+if(args.Length==3&&args[0]=="--direct-guard-lab")return await DirectGuardLab.Run(Path.GetFullPath(args[1]),args[2]);
 if(args.Length==1&&args[0]=="--profile-import-self-test"){await NativeImportTests.Run();return 0;}
-if(args.Length==2 && args[0]=="--wfp-os-probe"){var proof=await CoreSafetyLab.Tun(Path.Combine(Path.GetFullPath(args[1]),"native-awg-lab.exe"),"1.1.1.1",CancellationToken.None);Console.WriteLine(proof.GetRawText());return proof.GetProperty("success").GetBoolean()?0:1;}
+if(args.Length==2 && args[0]=="--wfp-os-probe"){using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(20));try{var proof=await CoreSafetyLab.Tun(Path.Combine(Path.GetFullPath(args[1]),"native-awg-lab.exe"),"1.1.1.1",deadline.Token);Console.WriteLine(proof.GetRawText());return proof.GetProperty("success").GetBoolean()?0:1;}catch(OperationCanceledException){Console.WriteLine("{\"success\":false,\"timeout\":true}");return 1;}}
 if(args.Length==4 && args[0]=="--wfp-session-lab")return await WfpSessionLab.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]),args[3]);
 if(args.Length==3 && args[0]=="--trust-lab")return TrustLab.Run(Path.GetFullPath(args[1]),args[2]);
 
@@ -23,7 +26,17 @@ if(args.Length==2 && args[0]=="--profiles-races-lab")return await ProfilesLab.Ru
 
 if(args.Length==1 && args[0]=="--self-test")
 {
+    if(!NativeBootIdentity.MayResume(true,"boot-a","boot-a")||NativeBootIdentity.MayResume(true,"boot-a","boot-b")||NativeBootIdentity.MayResume(true,"","")||NativeBootIdentity.MayResume(false,"boot-a","boot-a"))throw new Exception("Native boot ownership failed.");
     RepairBudgetTests.Run();
+    var calibrationBudget=new NativeCalibrationBudget();for(int i=0;i<32;i++)if(!calibrationBudget.TryAcquire(1000))throw new Exception("Calibration startup budget refused.");
+    if(calibrationBudget.TryAcquire(1000)||calibrationBudget.TryAcquire(60999)||calibrationBudget.TryAcquire(999)||!calibrationBudget.TryAcquire(61000))throw new Exception("Calibration must renew its bounded minute budget without clock rollback bursts.");
+    var observationFrame=JsonSerializer.Serialize(new{observations=Enumerable.Range(0,128).Select(i=>new{Domain="h"+i+".example.com",Application=@"C:\"+new string('x',480)+".exe",Address="1.1.1.1",Port=443}).ToArray()});
+    using(var frameStream=new MemoryStream(System.Text.Encoding.UTF8.GetBytes(observationFrame+"\n{\"next\":true}\n")))
+    using(var frameReader=new StreamReader(frameStream))
+    {
+        var large=await NativeAwgBackend.ReadReply(frameReader,CancellationToken.None,262144);var next=await NativeAwgBackend.ReadReply(frameReader,CancellationToken.None);
+        if(large.GetProperty("observations").GetArrayLength()!=128||!next.GetProperty("next").GetBoolean())throw new Exception("Bounded observation framing lost alignment.");
+    }
     var owner=JsonSerializer.SerializeToElement(new{state="RunningUnverified"});
     foreach(string code in new[]{"Closed","ConnectionReset","Timeout","CertificateRejected","Canceled","Unclassified"})
     {

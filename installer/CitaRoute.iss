@@ -76,6 +76,8 @@ Source: "{#PayloadDir}\force-direct.txt"; DestDir: "{app}\client"; Flags: onlyif
 Source: "{#PayloadDir}\force-vpn.txt"; DestDir: "{app}\client"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "InstallationGuard.ps1"; DestDir: "{app}\maintenance"; Flags: ignoreversion
 Source: "InstallationTransaction.ps1"; DestDir: "{app}\maintenance"; Flags: ignoreversion
+Source: "..\NativeMaintenance.ps1"; DestDir: "{app}\maintenance"; Flags: ignoreversion
+Source: "..\Uninstall-NativeAgent.ps1"; DestDir: "{app}\maintenance"; Flags: ignoreversion
 Source: "{#PayloadDir}\manifest.json"; DestName: "cita-install-manifest.json"; Flags: dontcopy
 #ifdef NeedsDesktopRuntime
 Source: "..\DesktopRuntime.ps1"; Flags: dontcopy
@@ -286,6 +288,7 @@ begin
   if GuardActive then begin Result := ''; exit; end;
   ExtractTemporaryFile('InstallationGuard.ps1');
   ExtractTemporaryFile('InstallationTransaction.ps1');
+  ExtractTemporaryFile('NativeMaintenance.ps1');
   ExtractTemporaryFile('cita-install-manifest.json');
   Result := AcquireGuard(ExpandConstant('{tmp}\InstallationGuard.ps1'), False);
 end;
@@ -317,6 +320,8 @@ var
 begin
   ScriptPath := ExpandConstant('{tmp}\InstallationGuard.ps1');
   Result := FileCopy(ExpandConstant('{app}\maintenance\InstallationGuard.ps1'), ScriptPath, False);
+  if Result then Result := FileCopy(ExpandConstant('{app}\maintenance\NativeMaintenance.ps1'), ExpandConstant('{tmp}\NativeMaintenance.ps1'), False);
+  if Result then Result := FileCopy(ExpandConstant('{app}\maintenance\Uninstall-NativeAgent.ps1'), ExpandConstant('{tmp}\Uninstall-NativeAgent.ps1'), False);
   if not Result then begin
     SuppressibleMsgBox('Не удалось проверить подключение перед удалением. Повтори установку клиента для восстановления.', mbError, MB_OK, IDOK);
     exit;

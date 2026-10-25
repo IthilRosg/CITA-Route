@@ -379,7 +379,7 @@ public partial class MainWindow : Window
     }
     private async Task<bool> PerformActionAsync(string action)
     {
-        if(action=="Stop"&&UseNativeBackend)return await NativeActionAsync(false);
+        if(UseNativeBackend&&action is "Start" or "Stop")return await NativeActionAsync(action=="Start");
         if(_rescueState.BlocksRouting){Notice("Дождись завершения автономного теста и восстановления.");return false;}
         if(_busy)return false;_busy=true;ConnectButton.IsEnabled=false;DiagnosticsButton.IsEnabled=false;UpdateFeedsButton.IsEnabled=false;
         ConnectButton.Content=action=="Start"?"Подключение…":action=="Stop"?"Отключение…":"Обновление…";

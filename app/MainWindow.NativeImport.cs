@@ -23,13 +23,13 @@ public partial class MainWindow
                 try{await input.ReadExactlyAsync(bytes,_connectionCancellation.Token);encoded=Convert.ToBase64String(bytes);}finally{CryptographicOperations.ZeroMemory(bytes);}
             }
             var before=(await _nativeClient.Command("status",cancellation:_connectionCancellation.Token)).Native;
-            if(before?.Phase!="Disconnected"||before.Desired)throw new IOException("Сначала отключи подключение и дождись завершения операции.");
+            if(before?.Phase is not ("Disconnected" or "Unconfigured")||before.Desired)throw new IOException("Сначала отключи подключение и дождись завершения операции.");
             operation=Guid.NewGuid().ToString("N");var reply=await _nativeClient.Import(encoded,Path.GetFileNameWithoutExtension(dialog.FileName),before.Operation,_connectionCancellation.Token,operation);
             if(!reply.Success||reply.Native==null)throw new IOException("Служба не приняла импорт. Проверь выбранный профиль.");
             _nativeChoice.Selected=true;AppPaths.Write(NativeChoicePath,_nativeChoice);
             _nativeModeChanging=true;try{_nativeMode.SelectedIndex=1;}finally{_nativeModeChanging=false;}
             using var deadline=CancellationTokenSource.CreateLinkedTokenSource(_connectionCancellation.Token);deadline.CancelAfter(TimeSpan.FromSeconds(60));
-            await _nativeClient.WaitImport(operation,new Progress<NativeRouteView>(ApplyNativeView),deadline.Token);
+            var selected=await _nativeClient.WaitImport(operation,new Progress<NativeRouteView>(ApplyNativeView),deadline.Token);_nativeChoice.ConfirmedProfile=selected.ProfileId;AppPaths.Write(NativeChoicePath,_nativeChoice);
             Notice("Профиль проверен и выбран. Можно подключаться.");
         }
         catch(Exception ex)

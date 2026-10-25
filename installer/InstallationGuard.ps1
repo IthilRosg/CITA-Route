@@ -9,6 +9,7 @@ $ErrorActionPreference='Stop'
 $held=New-Object 'System.Collections.Generic.List[System.IDisposable]'
 $owner=$null
 $transactionStarted=$false
+$nativeCoordinated=$false
 try{
     $owner=Get-Process -Id $OwnerPid -ErrorAction Stop
     $rootPath=[IO.Path]::GetFullPath($Root).TrimEnd('\')
@@ -83,6 +84,22 @@ try{
         try{if($process.Path -in $executables){throw 'Закрой эту копию CITA Route через «Отключить и выйти», затем повтори действие.'}}
         finally{$process.Dispose()}
     }
+    # The protected service is shared by installations. Touch it only when its
+    # protected configuration records this exact client root and Windows user.
+    $nativeRoot=Join-Path $env:ProgramFiles 'RoutePilot\Agent\native'
+    if(Test-Path -LiteralPath (Join-Path $nativeRoot 'service.json')){
+        $agentConfig=Join-Path $env:ProgramFiles 'RoutePilot\Agent\agent-config.json'
+        $agentOwner=[IO.File]::ReadAllText($agentConfig)|ConvertFrom-Json
+        if($agentOwner.UserSid -ne $userSid -or [IO.Path]::GetFullPath($agentOwner.AppRoot).TrimEnd('\') -ine $rootPath){throw 'Нативная служба принадлежит другой установке. Файлы не изменены.'}
+        . (Join-Path $PSScriptRoot 'NativeMaintenance.ps1')
+        Stop-NativeForMaintenance $nativeRoot
+        if($Mode -eq 'Uninstall'){
+            $remover=Join-Path $PSScriptRoot 'Uninstall-NativeAgent.ps1'
+            $encode=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(("& '"+$remover.Replace("'","''")+"' -AppRoot '"+$rootPath.Replace("'","''")+"' -UserSid '"+$userSid+"'")))
+            $info=[Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'));$info.UseShellExecute=$true;$info.Verb='runas';$info.WindowStyle='Hidden';$info.Arguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand '+$encode;$process=[Diagnostics.Process]::Start($info)
+            try{$process.WaitForExit();if($process.ExitCode -ne 0){throw 'Не удалось удалить защищённый модуль. Файлы клиента сохранены.'}}finally{$process.Dispose()}
+        }else{$null=Invoke-NativeMaintenanceRpc 'begin-operation';$nativeCoordinated=$true}
+    }
     if($owner.HasExited){throw 'Установщик уже завершён.'}
     if($Mode -eq 'Install'){
         . (Join-Path $PSScriptRoot 'InstallationTransaction.ps1')
@@ -117,6 +134,7 @@ try{
     [IO.File]::WriteAllText($ReadyFile,$problem,(New-Object Text.UTF8Encoding($true)))
     exit 1
 }finally{
+    if($nativeCoordinated){try{$null=Invoke-NativeMaintenanceRpc 'end-operation'}catch{}}
     for($index=$held.Count-1;$index -ge 0;$index--){$held[$index].Dispose()}
     if($owner){$owner.Dispose()}
 }

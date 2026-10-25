@@ -7,6 +7,7 @@ namespace RoutePilot.Agent;
 // Internal controller boundary; image and policy must come from protected service
 // storage. UI callers never supply executable paths or raw guard operations.
 internal sealed record NativeEndpointPermission(string Image,string Server,ushort Port);
+internal sealed record NativeDirectPermission(string Image,string Server,ushort Port,string Protocol,uint InterfaceIndex);
 internal sealed class NativeWfpGuard(string image,string run,JsonElement policy,Action<Process>? started=null,NativeEndpointPermission? endpoint=null)
 {
     readonly SemaphoreSlim gate=new(1);
@@ -15,9 +16,12 @@ internal sealed class NativeWfpGuard(string image,string run,JsonElement policy,
     internal string[] Prefixes{get;private set;}=[];
     internal ulong Luid{get;private set;}
     internal int Bindings{get;private set;}
+    internal int DirectPermits{get;private set;}
+    internal string DirectDigest{get;private set;}="";
+    internal string? ExpectedTunnelName{get;set;}
     internal string? LastFailureStage{get;private set;}
     internal string? LastFailureReason{get;private set;}
-    async Task<JsonElement> Request(string action,CancellationToken stop,uint index=0)
+    async Task<JsonElement> Request(string action,CancellationToken stop,uint index=0,NativeDirectPermission? direct=null,Action<JsonElement>? confirmed=null)
     {
         await gate.WaitAsync(stop);
         try
@@ -27,12 +31,13 @@ internal sealed class NativeWfpGuard(string image,string run,JsonElement policy,
             using var p=Process.Start(info)??throw new IOException("Guard helper unavailable.");started?.Invoke(p);_=p.StandardError.BaseStream.CopyToAsync(Stream.Null);
             try
             {
-                object request=action is "Arm" or "Plan"?new{Action=action,Run=run,Policy=policy,Endpoint=endpoint}:new{Action=action,Run=run,ExpectedPolicy=Digest,ExpectedEndpoint=EndpointDigest,InterfaceIndex=index};
+                object request=action is "Arm" or "Plan"?new{Action=action,Run=run,Policy=policy,Endpoint=endpoint}:new{Action=action,Run=run,ExpectedPolicy=Digest,ExpectedEndpoint=EndpointDigest,InterfaceIndex=index,Direct=direct};
                 await p.StandardInput.WriteLineAsync(JsonSerializer.Serialize(request).AsMemory(),budget.Token);p.StandardInput.Close();
                 var reply=await NativeAwgBackend.ReadReply(p.StandardOutput,budget.Token,action=="Plan"?262144:8192);await p.WaitForExitAsync(budget.Token);
                 if(p.ExitCode!=0||!reply.GetProperty("success").GetBoolean()||reply.GetProperty("run").GetString()!=run){LastFailureStage=reply.TryGetProperty("stage",out var failed)?failed.GetString():"InvalidReply";LastFailureReason=reply.TryGetProperty("reason",out var reason)?reason.GetString():null;if(reply.TryGetProperty("shape",out var shape))LastFailureReason+=" "+shape.GetRawText();throw new IOException("Guard operation refused.");}
                 if(action!="Plan"&&reply.GetProperty("policyDigest").GetString()!=Digest)throw new IOException("Guard policy identity mismatch.");
                 if(action!="Plan"&&(reply.TryGetProperty("endpointDigest",out var ep)?ep.GetString():"")!=EndpointDigest)throw new IOException("Guard endpoint identity mismatch.");
+                confirmed?.Invoke(reply);
                 return reply;
             }
             finally{if(!p.HasExited){p.Kill();await p.WaitForExitAsync();}}
@@ -52,7 +57,7 @@ internal sealed class NativeWfpGuard(string image,string run,JsonElement policy,
         {
             try
             {
-                var candidates=NetworkInterface.GetAllNetworkInterfaces().Where(n=>n.Name is "Cita-NativeLab" or "Cita-Route").ToArray();
+                var candidates=NetworkInterface.GetAllNetworkInterfaces().Where(n=>ExpectedTunnelName!=null?n.Name==ExpectedTunnelName:n.Name is "Cita-NativeLab" or "Cita-Route" or "Cita-Native").ToArray();
                 if(candidates.Length>1)throw new IOException("Ambiguous TUN interface.");
                 if(candidates.Length==1){index=checked((uint)candidates[0].GetIPProperties().GetIPv4Properties().Index);if(index!=0)break;}
             }
@@ -60,16 +65,18 @@ internal sealed class NativeWfpGuard(string image,string run,JsonElement policy,
             await Task.Delay(100,stop);
         }
         if(index==0)throw new IOException("Owned TUN interface unavailable.");
-        var reply=await Request("BindTunnel",stop,index);ulong luid=reply.GetProperty("tunnelLuid").GetUInt64();
-        if(luid==0||reply.GetProperty("permits").GetInt32()!=Prefixes.Count(p=>!p.Contains(':')))throw new IOException("Tunnel guard binding incomplete.");
-        Luid=luid;Bindings++;
+        await Request("BindTunnel",stop,index,confirmed:reply=>{ulong luid=reply.GetProperty("tunnelLuid").GetUInt64();if(luid==0||reply.GetProperty("permits").GetInt32()!=Prefixes.Count(p=>!p.Contains(':')))throw new IOException("Tunnel guard binding incomplete.");Luid=luid;Bindings++;});
     }
     internal async Task<bool> VerifyAsync(CancellationToken stop)
     {
-        try{var r=await Request("Inspect",stop);int expected=Luid==0?0:Prefixes.Count(p=>!p.Contains(':'));ulong seen=r.TryGetProperty("tunnelLuid",out var value)?value.GetUInt64():0;return seen==Luid&&r.GetProperty("permits").GetInt32()==expected&&r.GetProperty("rules").GetInt32()==Prefixes.Length+expected+(EndpointDigest.Length>0?1:0);}
+        try{bool valid=false;await Request("Inspect",stop,confirmed:r=>{int expected=Luid==0?0:Prefixes.Count(p=>!p.Contains(':'));ulong seen=r.TryGetProperty("tunnelLuid",out var value)?value.GetUInt64():0;int direct=r.TryGetProperty("directPermits",out var count)?count.GetInt32():0;string digest=r.TryGetProperty("directDigest",out var proof)?proof.GetString()??"":"";valid=seen==Luid&&r.GetProperty("permits").GetInt32()==expected&&direct==DirectPermits&&digest==DirectDigest&&r.GetProperty("rules").GetInt32()==Prefixes.Length+expected+DirectPermits+(EndpointDigest.Length>0?1:0);});return valid;}
         catch(OperationCanceledException)when(stop.IsCancellationRequested){throw;}catch{return false;}
     }
-    internal async Task CloseAsync(CancellationToken stop){await Request("CloseTunnel",stop);Luid=0;}
+    internal async Task SetDirectAsync(NativeDirectPermission permission,bool grant,CancellationToken stop)
+    {
+        await Request(grant?"GrantDirect":"RevokeDirect",stop,direct:permission,confirmed:reply=>{int count=reply.GetProperty("directPermits").GetInt32();string digest=reply.TryGetProperty("directDigest",out var proof)?proof.GetString()??"":"";if(count is <0 or >256||(count==0?digest.Length!=0:digest.Length!=64||!digest.All(Uri.IsHexDigit)))throw new IOException("Direct scope acknowledgement invalid.");DirectPermits=count;DirectDigest=digest;});
+    }
+    internal async Task CloseAsync(CancellationToken stop){await Request("CloseTunnel",stop,confirmed:_=>{Luid=0;DirectPermits=0;DirectDigest="";});}
     // Cleanup is deliberately separate from disposal: a service crash/stop must
     // not silently remove the persistent protection of a desired VPN session.
     internal async Task RemoveAsync(CancellationToken stop)
@@ -79,7 +86,7 @@ internal sealed class NativeWfpGuard(string image,string run,JsonElement policy,
         {
             var info=new ProcessStartInfo(Path.GetFullPath(image)){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
             using var p=Process.Start(info)??throw new IOException("Guard cleanup unavailable.");_=p.StandardError.BaseStream.CopyToAsync(Stream.Null);
-            try{await p.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new{Action="Cleanup",Run=run}));p.StandardInput.Close();var r=await NativeAwgBackend.ReadReply(p.StandardOutput,stop);await p.WaitForExitAsync(stop);if(p.ExitCode!=0||r.GetProperty("run").GetString()!=run||!r.GetProperty("success").GetBoolean()||r.GetProperty("rules").GetInt32()!=0)throw new IOException("Guard cleanup unconfirmed.");Luid=0;}
+            try{await p.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new{Action="Cleanup",Run=run}));p.StandardInput.Close();var r=await NativeAwgBackend.ReadReply(p.StandardOutput,stop);await p.WaitForExitAsync(stop);if(p.ExitCode!=0||r.GetProperty("run").GetString()!=run||!r.GetProperty("success").GetBoolean()||r.GetProperty("rules").GetInt32()!=0)throw new IOException("Guard cleanup unconfirmed.");Luid=0;DirectPermits=0;DirectDigest="";}
             finally{if(!p.HasExited){p.Kill();await p.WaitForExitAsync();}}
         }
         finally{gate.Release();}

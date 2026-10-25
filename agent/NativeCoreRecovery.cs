@@ -23,6 +23,23 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
     int leaseChecks;
     internal int ProcessId=>binding?.ProcessId??0;
     internal int Repairs=>Volatile.Read(ref repairs);
+    internal bool SupportsPolicy=>binding?.SupportsPolicy==true;
+    internal long PolicyDirectDials=>binding?.PolicyDirectDials??0;
+    internal long PolicyBlockedDials=>binding?.PolicyBlockedDials??0;
+    internal string? StartupIssue{get;private set;}
+    internal NativeObservedDestination[] Observations=>binding?.Observations??[];
+    internal async Task<bool> ProbeDirectAsync(NativeObservedDestination observed,int expectedPid,CancellationToken stop)
+    {
+        await gate.WaitAsync(stop);
+        try{if(binding==null||binding.ProcessId!=expectedPid||State!="Active")return false;return await binding.ProbeDirectAsync(observed,stop);}
+        finally{gate.Release();}
+    }
+    internal async Task PublishPolicyAsync(ulong revision,string document,string guardDigest,int expectedPid,CancellationToken stop)
+    {
+        await gate.WaitAsync(stop);
+        try{if(binding==null||binding.ProcessId!=expectedPid||State is not ("Active" or "TransportDegraded"))throw new InvalidOperationException("Native policy generation changed.");await binding.PublishPolicyAsync(revision,document,guardDigest,stop);}
+        finally{gate.Release();}
+    }
     string state="Stopped";
     internal string State{get=>Volatile.Read(ref state);private set=>Volatile.Write(ref state,value);}
     internal NativeCoreRecovery(Func<NativeCoreBinding> factory,Func<CancellationToken,Task<bool>> guard,Func<NativeCoreBinding,CancellationToken,Task>? afterStart=null,Func<CancellationToken,Task>? beforeRepair=null,bool persistentControl=false)
@@ -39,7 +56,7 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
             binding=factory();await binding.StartAsync(stop);leaseChecks=0;
             if(afterStart!=null)await afterStart(binding,stop);State="Closed";monitor=Monitor();
         }
-        catch{if(binding!=null){await binding.DisposeAsync();binding=null;}throw;}
+        catch{if(binding!=null){StartupIssue=binding.StartupIssue;await binding.DisposeAsync();binding=null;}throw;}
         finally{gate.Release();}
     }
     public async Task QuarantineAsync(JsonElement next,CancellationToken stop)

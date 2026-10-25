@@ -27,11 +27,12 @@ public static class NativeRoutePresentation
     public static string Title(NativeRouteView? s)=>s==null?"Служба недоступна":s.Phase switch{
         "Connected"=>s.Connected?"Подключено":"Проверяем подключение",
         "Importing"=>"Проверяем профиль","Preparing"=>"Подготавливаем подключение","Recovering" or "TransportDegraded" or "TransportUnavailable" or "TransportExhausted"=>"Восстанавливаем VPN",
-        "Stopping"=>"Отключаем VPN","Disconnected"=>"Отключено",_=>"Требуется внимание"};
+        "Stopping"=>"Отключаем VPN","Unconfigured"=>"Выбери профиль","Disconnected"=>"Отключено",_=>"Требуется внимание"};
     public static string Detail(NativeRouteView? s)=>s==null?"Не удалось связаться со службой. Повтори проверку.":s.Phase switch{
         "Importing"=>s.ImportStage switch{"ReadingProfile"=>"Читаем профиль и определяем адрес сервера…","ValidatingProfile"=>"Проверяем параметры профиля…","ProbingHttps"=>"Проверяем HTTPS через сервер…","ProbingUdp"=>"Проверяем передачу UDP через сервер…","CompilingPolicy"=>"Подготавливаем правила маршрутизации…","WritingSnapshot"=>"Сохраняем защищённый профиль…",_=>"Проверяем конфиг и доступ через сервер…"},
+        "Unconfigured"=>"Компоненты готовы. Импортируй свой профиль для подключения.",
         "Preparing"=>s.Runtime?.Phase switch{"CompilingPolicy"=>"Подготавливаем правила маршрутов…","ArmingGuard"=>"Включаем защиту соединения…","StartingCore"=>"Настраиваем сетевой адаптер…","Connecting"=>"Проверяем подключение через сервер…",_=>"Подготавливаем профиль…"},
-        "Connected"=>s.PolicyMode=="FullVpn"?"Интернет через VPN · локальная сеть напрямую · IPv4":"Подключение по подготовленным правилам · IPv4",
+        "Connected"=>s.PolicyMode=="FullVpn"?"VPN подключён. Проверенные HTTPS-домены могут идти напрямую.":"VPN подключён для адресов профиля. Проверенные HTTPS-домены могут идти напрямую.",
         "Recovering" or "TransportDegraded" or "TransportUnavailable" or "TransportExhausted"=>"Восстанавливаем соединение. Защищённые адреса не переключаются напрямую.",
         "Stopping"=>"Завершаем соединения и освобождаем адаптер…","Disconnected"=>"Готово к подключению",
         "Unavailable"=>"Компоненты встроенного режима требуют настройки.",_=>"Соединение требует внимания. Проверь журнал перед повторным подключением."};
@@ -40,7 +41,7 @@ public sealed class NativeRouteClient
 {
     public async Task<NativeControlReply> Command(string command,string? operation=null,CancellationToken cancellation=default)
     {
-        if(command is not ("status" or "native-start" or "native-stop"))throw new ArgumentException("Native command scope.");
+        if(command is not ("status" or "native-start" or "native-stop" or "native-capabilities"))throw new ArgumentException("Native command scope.");
         return await Exchange(new{Command=command,RunId=operation},cancellation);
     }
     public Task<NativeControlReply> Import(string base64,string name,string operation,CancellationToken cancellation,string requestId="")
@@ -57,7 +58,7 @@ public sealed class NativeRouteClient
     }
     public async Task<NativeRouteView> Wait(string operation,bool connected,IProgress<NativeRouteView>? progress,CancellationToken cancellation)
     {
-        while(true){cancellation.ThrowIfCancellationRequested();var reply=await Command("status",cancellation:cancellation);var state=reply.Native??throw new IOException("Встроенный режим не подготовлен.");progress?.Report(state);if(state.Operation!=operation)throw new IOException("Подключение изменилось. Проверь текущее состояние.");if(connected&&state.Connected||!connected&&state.Phase=="Disconnected"&&!state.Desired)return state;if(state.Phase is "RecoveryFailed" or "Unavailable")throw new IOException(NativeRoutePresentation.Detail(state));await Task.Delay(250,cancellation);}
+        while(true){cancellation.ThrowIfCancellationRequested();var reply=await Command("status",cancellation:cancellation);var state=reply.Native??throw new IOException("Встроенный режим не подготовлен.");progress?.Report(state);if(state.Operation!=operation)throw new IOException("Подключение изменилось. Проверь текущее состояние.");if(connected&&state.Connected||!connected&&(state.Phase is "Disconnected" or "Unconfigured")&&!state.Desired)return state;if(state.Phase is "RecoveryFailed" or "Unavailable")throw new IOException(NativeRoutePresentation.Detail(state));await Task.Delay(250,cancellation);}
     }
     public async Task<NativeRouteView> WaitImport(string operation,IProgress<NativeRouteView>? progress,CancellationToken cancellation)
     {

@@ -1,6 +1,6 @@
 param([Parameter(Mandatory)][string]$Core)
 $ErrorActionPreference='Stop'
-foreach($name in @('native_binding.go','native_binding_test.go','control_frames.go','control_frames_test.go')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $Core ('protocol\socks\cita_'+$name))}
+foreach($name in @('native_binding.go','native_binding_test.go','native_policy.go','native_policy_test.go','native_observation.go','native_observation_test.go','control_frames.go','control_frames_test.go')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $Core ('protocol\socks\cita_'+$name))}
 $options=@'
 package option
 type CitaNativeBindingOptions struct { Owner string `json:"owner"` }

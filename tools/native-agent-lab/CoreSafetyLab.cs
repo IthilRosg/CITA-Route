@@ -18,13 +18,13 @@ internal static class CoreSafetyLab
         using var p=Process.Start(info)!;_=p.StandardOutput.BaseStream.CopyToAsync(Stream.Null);_=p.StandardError.BaseStream.CopyToAsync(Stream.Null);
         var udpTask=StartupLab.Probe(native,"--os-dns-probe",new{Server=dns},stop);await p.WaitForExitAsync(stop);var udp=await udpTask;return p.ExitCode!=0&&!udp.GetProperty("success").GetBoolean();
     }
-    internal static async Task<JsonElement> Tun(string image,string dns,CancellationToken stop,Func<Task>? transition=null)
+    internal static async Task<JsonElement> Tun(string image,string dns,CancellationToken stop,Func<Task>? transition=null,bool domain=false)
     {
         var info=new ProcessStartInfo(image){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};info.ArgumentList.Add("--tun-client");
         using var p=Process.Start(info)!;_=p.StandardError.BaseStream.CopyToAsync(Stream.Null);
         try
         {
-            await p.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new{DnsServer=dns}));
+            await p.StandardInput.WriteLineAsync(domain?JsonSerializer.Serialize(new{DnsServer=dns,Domain="cloudflare-dns.com"}):JsonSerializer.Serialize(new{DnsServer=dns}));
             var first=await NativeAwgBackend.ReadReply(p.StandardOutput,stop);
             if(first.GetProperty("stage").GetString()!="RetentionClientReady")return first;
             if(transition!=null)await transition();

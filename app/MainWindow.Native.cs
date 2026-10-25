@@ -14,6 +14,7 @@ public partial class MainWindow
     NativeChoice _nativeChoice=new();NativeRouteView? _nativeView;
     ComboBox _nativeMode=new();ComboBoxItem _nativeItem=new();TextBlock _nativeHint=new();
     Button _nativeImportButton=new();
+    Button _nativeSetupButton=new();
     bool _nativeModeChanging;DateTime _nativeReadUtc;DateTime _nativeRetryUtc;Border? _nativeWireSockCard;
     bool UseNativeBackend=>_nativeChoice.Selected||_nativeView?.Desired==true||_nativeView?.Phase=="Importing";
     string NativeChoicePath=>Path.Combine(_root,"data","transport-choice.json");
@@ -23,7 +24,7 @@ public partial class MainWindow
         var wireSockCard=((FrameworkElement)CliPathLabel.Parent).Parent as Border;_nativeWireSockCard=wireSockCard;
         if(wireSockCard?.Parent is not StackPanel settings)return;
         var content=new StackPanel();content.Children.Add(new TextBlock{Text="Способ подключения",FontSize=18,FontWeight=FontWeights.SemiBold});
-        _nativeMode.Margin=new Thickness(0,12,0,0);_nativeMode.Items.Add(new ComboBoxItem{Content="Авто · WireSock"});_nativeItem=new ComboBoxItem{Content="Встроенный VPN · предварительный",IsEnabled=false};_nativeMode.Items.Add(_nativeItem);_nativeMode.SelectedIndex=_nativeChoice.Selected?1:0;
+        _nativeMode.Margin=new Thickness(0,12,0,0);_nativeMode.Items.Add(new ComboBoxItem{Content="Авто · WireSock"});_nativeItem=new ComboBoxItem{Content="Встроенный Авто · предварительный",IsEnabled=false};_nativeMode.Items.Add(_nativeItem);_nativeMode.SelectedIndex=_nativeChoice.Selected?1:0;
         _nativeMode.SelectionChanged+=async(_,_)=>
         {
             if(_nativeModeChanging)return;
@@ -32,6 +33,7 @@ public partial class MainWindow
         };
         content.Children.Add(_nativeMode);_nativeHint.TextWrapping=TextWrapping.Wrap;_nativeHint.FontSize=12;_nativeHint.Foreground=ConsoleTheme.Dim;_nativeHint.Margin=new Thickness(0,10,0,0);content.Children.Add(_nativeHint);
         _nativeImportButton.Content="Импорт .conf во встроенный режим";_nativeImportButton.Margin=new Thickness(0,12,0,0);_nativeImportButton.HorizontalAlignment=HorizontalAlignment.Left;_nativeImportButton.IsEnabled=false;_nativeImportButton.Click+=async(_,_)=>await ImportNativeProfileAsync();content.Children.Add(_nativeImportButton);
+        _nativeSetupButton.Content="Подготовить встроенный модуль";_nativeSetupButton.Margin=new Thickness(0,10,0,0);_nativeSetupButton.HorizontalAlignment=HorizontalAlignment.Left;_nativeSetupButton.Click+=async(_,_)=>await PrepareNativeComponentsAsync();content.Children.Add(_nativeSetupButton);
         settings.Children.Insert(0,new Border{Style=(Style)FindResource("Card"),Margin=new Thickness(0,0,0,16),Child=content});
     }
     async Task<bool> RefreshNativeAsync(bool force=false)
@@ -46,11 +48,12 @@ public partial class MainWindow
         }
         if(DateTime.UtcNow<_nativeRetryUtc){if(!UseNativeBackend)return false;ApplyNativeView(null);return true;}
         _nativeItem.IsEnabled=_nativeView?.Available==true;
-        _nativeImportButton.IsEnabled=_nativeView?.Phase=="Disconnected"&&!_busy&&!_discovering&&!_engineRunning;
+        _nativeSetupButton.IsEnabled=!_busy&&!_discovering&&!_engineRunning;_nativeSetupButton.Visibility=Visibility.Visible;_nativeSetupButton.Content=_nativeView?.Available==true?"Обновить встроенный модуль":"Подготовить встроенный модуль";
+        _nativeImportButton.IsEnabled=(_nativeView?.Phase is "Disconnected" or "Unconfigured")&&!_busy&&!_discovering&&!_engineRunning;
         SetNativeQualityCaption(UseNativeBackend);
         if(_nativeWireSockCard!=null)_nativeWireSockCard.Visibility=UseNativeBackend?Visibility.Collapsed:Visibility.Visible;
         _nativeMode.IsEnabled=!_busy&&!_discovering&&!_engineRunning&&_nativeView?.Desired!=true;
-        _nativeHint.Text=_nativeView?.Available==true?"Можно импортировать собственный IPv4-профиль с одним сервером. IPv6 в конфиге и команды запуска пока не поддерживаются. Живые списки «Авто» доступны через WireSock.":"Встроенный режим появится после подготовки его компонентов и профиля. Сейчас доступен «Авто» через WireSock.";
+        _nativeHint.Text=_nativeView?.Available==true?"Можно импортировать собственный IPv4-профиль с одним сервером. Для новых HTTPS-доменов проверяется прямой путь; до проверки используется VPN. IPv6 в конфиге и команды запуска пока не поддерживаются. Живые списки «Авто» доступны через WireSock.":"Встроенный режим появится после подготовки его компонентов и профиля. Сейчас доступен «Авто» через WireSock.";
         if(!UseNativeBackend)return false;
         if((_nativeView?.Desired==true||_nativeView?.Phase=="Importing")&&!_nativeChoice.Selected){_nativeChoice.Selected=true;AppPaths.Write(NativeChoicePath,_nativeChoice);_nativeModeChanging=true;_nativeMode.SelectedIndex=1;_nativeModeChanging=false;}
         ApplyNativeView(_nativeView);return true;
@@ -90,11 +93,14 @@ public partial class MainWindow
     }
     async Task<bool> NativeActionAsync(bool start,bool startOnly=false)
     {
+        if(start&&_nativeView?.Phase=="Unconfigured")
+        {if(startOnly){Notice("Автоподключение: сначала импортируй профиль встроенного режима.");return false;}await ImportNativeProfileAsync();if(_nativeView?.Phase!="Disconnected"||string.IsNullOrEmpty(_nativeView.ProfileId))return false;}
         if(_render)return false;if(_busy){_connectionCancellation?.Cancel();return false;}
         _busy=true;_connectionCancellation=new();SyncConnectionButtons();string? operation=null;bool requestedStart=false;
         try
         {
             var state=(await _nativeClient.Command("status")).Native;if(state==null||!state.Available)throw new IOException("Встроенный режим не подготовлен.");_nativeView=state;
+            if(start&&state.Phase=="Stopping"&&!state.Desired){using var cleanup=CancellationTokenSource.CreateLinkedTokenSource(_connectionCancellation.Token);cleanup.CancelAfter(TimeSpan.FromSeconds(35));state=await _nativeClient.Wait(state.Operation,false,new Progress<NativeRouteView>(ApplyNativeView),cleanup.Token);_nativeView=state;}
             if(startOnly&&(state.Desired||state.Phase=="Importing"))return true;
             if(state.Phase=="Importing")start=false;
             if(start&&!state.Desired&&!ConfirmNativeProfile())return false;

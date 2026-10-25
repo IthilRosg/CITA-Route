@@ -34,6 +34,7 @@ type request struct {
 	InterfaceIndex   uint32
 	Endpoint         *endpointPermission
 	ExpectedEndpoint string
+	Direct           *directPermission
 }
 type reply struct {
 	Run            string   `json:"run"`
@@ -48,6 +49,8 @@ type reply struct {
 	Reason         string   `json:"reason,omitempty"`
 	Shape          []string `json:"shape,omitempty"`
 	EndpointDigest string   `json:"endpointDigest,omitempty"`
+	DirectPermits  int      `json:"directPermits"`
+	DirectDigest   string   `json:"directDigest,omitempty"`
 }
 
 func identity(run, role string) windows.GUID {
@@ -60,11 +63,21 @@ func identity(run, role string) windows.GUID {
 	return g
 }
 func validate(r request) ([]netip.Prefix, error) {
+	if r.Action == "GrantDirect" || r.Action == "RevokeDirect" {
+		if _, _, e := directTarget(r.Direct); e != nil {
+			return nil, e
+		}
+		if len(r.ExpectedPolicy) != 64 || len(r.ExpectedEndpoint) != 64 {
+			return nil, errors.New("direct guard identity")
+		}
+	} else if r.Direct != nil {
+		return nil, errors.New("unexpected direct scope")
+	}
 	if r.Endpoint != nil && r.Action != "Arm" && r.Action != "Plan" {
 		return nil, errors.New("unexpected endpoint")
 	}
 	b, e := hex.DecodeString(r.Run)
-	if e != nil || len(b) != 16 || r.Run != strings.ToLower(r.Run) || r.Action != "Arm" && r.Action != "Inspect" && r.Action != "Cleanup" && r.Action != "Plan" && r.Action != "BindTunnel" && r.Action != "CloseTunnel" {
+	if e != nil || len(b) != 16 || r.Run != strings.ToLower(r.Run) || r.Action != "Arm" && r.Action != "Inspect" && r.Action != "Cleanup" && r.Action != "Plan" && r.Action != "BindTunnel" && r.Action != "CloseTunnel" && r.Action != "GrantDirect" && r.Action != "RevokeDirect" {
 		return nil, errors.New("identity")
 	}
 	if r.Action == "BindTunnel" {
@@ -311,6 +324,7 @@ func execute(r request, out io.Writer) (res reply) {
 		}
 		existing, e = owned(s, r)
 		expectedCount := len(prefixes) + permits
+  directCount,_,directError:=describeDirect(existing);if directError!=nil{return fail("ArmDirectShape",directError)};expectedCount+=directCount
 		if r.Endpoint != nil {
 			expectedCount++
 		}
@@ -328,7 +342,27 @@ func execute(r request, out io.Writer) (res reply) {
 		os.Stdin.Read(one[:])
 		return reply{Success: true, Stage: "SessionClosed", Rules: len(existing)}
 	case "Inspect":
-		return reply{Success: true, Stage: "Inspected", Rules: len(existing), PolicyDigest: policyDigest(protected), TunnelLuid: luid, Permits: permits, EndpointDigest: endpointDigest}
+		count, digest, e := describeDirect(existing)
+		if e != nil {
+			return fail("InspectDirect", e)
+		}
+		return reply{Success: true, Stage: "Inspected", Rules: len(existing), PolicyDigest: policyDigest(protected), TunnelLuid: luid, Permits: permits, EndpointDigest: endpointDigest, DirectPermits: count, DirectDigest: digest}
+	case "GrantDirect", "RevokeDirect":
+		if len(protected) == 0 {
+			return fail("DirectRequiresProtection", errors.New("empty guard"))
+		}
+		if e := updateDirect(s, r, existing, r.Action == "GrantDirect"); e != nil {
+			return fail("UpdateDirect", e)
+		}
+		now, e := owned(s, r)
+		if e != nil {
+			return fail("VerifyDirectOwnership", e)
+		}
+		count, digest, e := describeDirect(now)
+		if e != nil {
+			return fail("VerifyDirect", e)
+		}
+		return reply{Success: true, Stage: r.Action, Rules: len(now), PolicyDigest: policyDigest(protected), TunnelLuid: luid, Permits: permits, EndpointDigest: endpointDigest, DirectPermits: count, DirectDigest: digest}
 	case "BindTunnel":
 		value, e := bindTunnel(s, r, existing)
 		if e != nil {

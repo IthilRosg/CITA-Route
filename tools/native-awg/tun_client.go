@@ -32,12 +32,14 @@ func tunClient(input io.Reader, output io.Writer) int {
 	var spec struct {
 		DnsServer    string
 		HoldForFinal bool
+  Domain string
 	}
 	decoder := json.NewDecoder(io.LimitReader(input, 2048))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&spec) != nil {
 		return 1
 	}
+ if spec.Domain!=""&&spec.Domain!="cloudflare-dns.com"{return 1}
 	server, e := netip.ParseAddr(spec.DnsServer)
 	if e != nil || !publicTarget(server) {
 		return 1
@@ -67,7 +69,8 @@ func tunClient(input io.Reader, output io.Writer) int {
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	get := func(ctx context.Context) string {
-		request, e := http.NewRequestWithContext(ctx, "GET", "https://1.1.1.1/cdn-cgi/trace", nil)
+  host:="1.1.1.1";if spec.Domain!=""{host=spec.Domain}
+		request, e := http.NewRequestWithContext(ctx, "GET", "https://"+host+"/cdn-cgi/trace", nil)
 		if e != nil {
 			return ""
 		}

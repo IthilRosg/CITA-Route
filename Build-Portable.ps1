@@ -23,7 +23,7 @@ foreach($exe in @('runtime\app-build\RoutePilot.exe','runtime\agent-build\RouteP
 foreach($name in @('product.json','LICENSE','NOTICE')){Copy-Item -LiteralPath (Join-Path $root $name) -Destination $stage}
 Copy-Item -LiteralPath (Join-Path $root 'Directory.Build.props') -Destination (Join-Path $stage 'source')
 # Explicit allowlist: never recurse into this computer's private/runtime/data/log folders.
-$scripts=@('SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','NativeMaintenance.ps1','Verify-Routing.ps1','Install-Release.ps1','DesktopRuntime.ps1','Register-BrowserFeedback.ps1')
+$scripts=@('SmartRouting.ps1','FileStorage.ps1','RuleFeeds.ps1','WireSockCli.ps1','WireSockProfiles.ps1','WireSockRecovery.ps1','AgentLease.ps1','SessionRecovery.ps1','ConnectionEnvironment.ps1','Configure-Connection.ps1','AgentPackage.ps1','Install-Agent.ps1','NativeMaintenance.ps1','Install-NativeAgent.ps1','Install-NativeComponents.ps1','Uninstall-NativeAgent.ps1','Verify-Routing.ps1','Install-Release.ps1','DesktopRuntime.ps1','Register-BrowserFeedback.ps1')
 foreach($name in $scripts){Copy-Item -LiteralPath (Join-Path $root $name) -Destination $stage}
 Copy-Item -LiteralPath (Join-Path $root 'installer\desktop-runtime.json') -Destination (Join-Path $stage 'desktop-runtime.json')
 [void][IO.Directory]::CreateDirectory((Join-Path $stage 'browser-extension'))

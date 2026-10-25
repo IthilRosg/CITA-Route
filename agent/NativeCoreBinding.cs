@@ -28,6 +28,11 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
     bool faulted;
     internal JsonElement LastState{get;private set;}
     internal NativeValidationEvidence? LastValidation{get;private set;}
+    internal bool SupportsPolicy{get;private set;}
+    internal long PolicyDirectDials{get;private set;}
+    internal long PolicyBlockedDials{get;private set;}
+    internal string? StartupIssue{get;private set;}
+    internal NativeObservedDestination[] Observations{get;private set;}=[];
     internal int ProcessId{get{try{return process?.Id??0;}catch(InvalidOperationException){return 0;}}}
     internal NativeCoreBinding(string coreImage,string config,string nativeImage,string owner,string expectedExit,Func<JsonElement,CancellationToken,Task>? quarantined=null,Func<NativeAwgBackend,JsonElement,CancellationToken,Task>? beforeValidation=null,Func<JsonElement,string>? expectedEgress=null,bool persistentControl=false,Action<Process>? started=null)
     {this.coreImage=Path.GetFullPath(coreImage);this.config=Path.GetFullPath(config);this.nativeImage=Path.GetFullPath(nativeImage);this.owner=owner;this.expectedExit=expectedExit;this.quarantined=quarantined;this.beforeValidation=beforeValidation;this.expectedEgress=expectedEgress;this.persistentControl=persistentControl;this.started=started;}
@@ -36,12 +41,17 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
         var info=new ProcessStartInfo(coreImage){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};info.ArgumentList.Add("run");info.ArgumentList.Add("-c");info.ArgumentList.Add(config);
         info.Environment["CITA_NATIVE_BINDING_LAB"]="1";info.Environment["CITA_NATIVE_UDP_LIFETIME_LAB"]="1";
         if(persistentControl)info.Environment["CITA_NATIVE_PERSISTENT_CONTROL"]="1";
-        process=Process.Start(info)??throw new IOException("Binding core did not start.");started?.Invoke(process);_=process.StandardError.BaseStream.CopyToAsync(Stream.Null);
+        process=Process.Start(info)??throw new IOException("Binding core did not start.");started?.Invoke(process);var errors=ReadStartupErrors(process.StandardError.BaseStream);
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(stop);deadline.CancelAfter(TimeSpan.FromSeconds(10));
-        var ready=await NativeAwgBackend.ReadReply(process.StandardOutput,deadline.Token);
+        JsonElement ready;try{ready=await NativeAwgBackend.ReadReply(process.StandardOutput,deadline.Token);}catch{try{string text=await errors.WaitAsync(TimeSpan.FromSeconds(1));var field=Regex.Match(text,@"unknown field\s+""([a-zA-Z0-9_]{1,64})""");StartupIssue=field.Success?"UnsupportedField:"+field.Groups[1].Value:text.Contains("interface",StringComparison.OrdinalIgnoreCase)?"InterfaceInitializationFailed":text.Contains("wintun",StringComparison.OrdinalIgnoreCase)?"TunDriverUnavailable":text.Contains("address already in use",StringComparison.OrdinalIgnoreCase)?"AddressInUse":"CoreStartupRejected";}catch{StartupIssue="CoreStartupUnconfirmed";}throw;}
         if(ready.GetProperty("stage").GetString()!="BindingControlReady"||ready.GetProperty("owner").GetString()!=owner||!ready.GetProperty("success").GetBoolean())throw new IOException("Core control readiness mismatch.");
+        SupportsPolicy=ready.TryGetProperty("policyProtocol",out var protocol)&&protocol.GetInt32()==1;
     }
-    internal async Task<JsonElement> CommandAsync(string action,string id,ulong gen,int port=0,string token="",bool requireSuccess=true,CancellationToken stop=default)
+    static async Task<string> ReadStartupErrors(Stream input)
+    {
+        byte[] bytes=new byte[1024];using var captured=new MemoryStream();int count;while((count=await input.ReadAsync(bytes))>0){if(captured.Length<16384)captured.Write(bytes,0,(int)Math.Min(count,16384-captured.Length));}return System.Text.Encoding.UTF8.GetString(captured.ToArray());
+    }
+    internal async Task<JsonElement> CommandAsync(string action,string id,ulong gen,int port=0,string token="",bool requireSuccess=true,CancellationToken stop=default,object? policy=null,object? observation=null)
     {
         await gate.WaitAsync(stop);
         try
@@ -50,14 +60,18 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
             // Once written, consume the acknowledgement even if the initiating
             // user operation is cancelled. This keeps the private stream aligned.
             using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(4));
-            var command=JsonSerializer.Serialize(new{Owner=owner,Action=action,Session=id,Generation=gen,Port=port,Token=token});
+            var command=observation!=null?JsonSerializer.Serialize(new{Owner=owner,Action=action,Session=id,Generation=gen,Port=port,Token=token,Observation=observation}):policy==null?JsonSerializer.Serialize(new{Owner=owner,Action=action,Session=id,Generation=gen,Port=port,Token=token}):JsonSerializer.Serialize(new{Owner=owner,Action=action,Session=id,Generation=gen,Port=port,Token=token,Policy=policy});
             bool refused=false;
             try
             {
                 await process.StandardInput.WriteLineAsync(command.AsMemory(),deadline.Token);await process.StandardInput.FlushAsync(deadline.Token);
-                var reply=await NativeAwgBackend.ReadReply(process.StandardOutput,deadline.Token);
+                // The bounded 128-entry observation table can exceed an 8 KiB
+                // owner reply, especially with escaped Windows image paths.
+                var reply=await NativeAwgBackend.ReadReply(process.StandardOutput,deadline.Token,maxChars:262144);
                 if(reply.GetProperty("stage").GetString()!=action||reply.GetProperty("owner").GetString()!=owner||reply.GetProperty("session").GetString()!=id||reply.GetProperty("generation").GetUInt64()!=gen)throw new IOException("Core reply mismatch.");
                 LastState=reply;
+                if(action=="Snapshot"&&reply.TryGetProperty("observations",out var observed))Observations=JsonSerializer.Deserialize<NativeObservedDestination[]>(observed.GetRawText())??[];
+                if(reply.TryGetProperty("policyDirectDials",out var direct))PolicyDirectDials=direct.GetInt64();if(reply.TryGetProperty("policyBlockedDials",out var blocked))PolicyBlockedDials=blocked.GetInt64();
                 if(requireSuccess&&!reply.GetProperty("success").GetBoolean()){refused=true;throw new InvalidDataException("Core binding command refused.");}
                 return reply;
             }
@@ -115,6 +129,14 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
         stop.ThrowIfCancellationRequested();await CommandAsync("Activate",id.Session,id.Generation,port,token,stop:stop);stop.ThrowIfCancellationRequested();
     }
     public async Task CloseAsync(CancellationToken stop){if(generation!=0)await CommandAsync("Close",session,generation,stop:stop);}
+    internal async Task PublishPolicyAsync(ulong revision,string document,string guardDigest,CancellationToken stop)
+    {
+        byte[] bytes=System.Text.Encoding.UTF8.GetBytes(document);if(bytes.Length>65536)throw new InvalidDataException("Native policy document too large.");
+        string digest=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));var reply=await CommandAsync("Policy",session,generation,stop:stop,policy:new{Revision=revision,Document=Convert.ToBase64String(bytes),GuardDigest=guardDigest});
+        if(reply.GetProperty("policyRevision").GetUInt64()!=revision||!string.Equals(reply.GetProperty("policyDigest").GetString(),digest,StringComparison.OrdinalIgnoreCase))throw new IOException("Native policy acknowledgement differs.");
+    }
+    internal async Task<bool> ProbeDirectAsync(NativeObservedDestination observed,CancellationToken stop)
+    {var reply=await CommandAsync("ProbeDirect",session,generation,stop:stop,observation:observed);return reply.TryGetProperty("probeReachable",out var reachable)&&reachable.GetBoolean();}
     public async ValueTask DisposeAsync()
     {
         await gate.WaitAsync();

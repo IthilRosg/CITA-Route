@@ -96,7 +96,7 @@ internal static class NativeProfileImport
         // Retain immutable old revisions for rollback. Bound storage rather than
         // deleting unknown or leased files to make room.
         if(Directory.EnumerateFiles(root,"catalog-*.json").Take(32).Count()>=32)throw new IOException("Native profile revision limit reached.");
-        var policy=JsonSerializer.SerializeToElement(new{Vpn=input.Allowed.Append("::/0").ToArray(),Direct=oldPolicy.GetProperty("Direct").EnumerateArray().Select(x=>x.GetString()!).ToArray()});
+        var policy=JsonSerializer.SerializeToElement(new{Vpn=input.Allowed.Append("::/0").ToArray(),Direct=oldPolicy.GetProperty("Direct").EnumerateArray().Select(x=>x.GetString()!).Append("255.255.255.255/32").Distinct().ToArray()});
         progress?.Invoke("CompilingPolicy");var guard=new NativeWfpGuard(old.GuardPath,Guid.NewGuid().ToString("N"),policy);await guard.PlanAsync(stop);
         string id=Guid.NewGuid().ToString("N");var files=new List<string>();NativeTrustedBundle? candidate=null;
         string Add(string name,string text){string path=Path.Combine(root,name);files.Add(path);WritePrivate(path,text);return name;}

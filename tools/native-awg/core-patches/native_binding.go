@@ -8,10 +8,12 @@ import (
 	"errors"
 	"io"
 	"net"
+ "net/netip"
 	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
+ "time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
@@ -21,6 +23,7 @@ import (
 	"github.com/sagernet/sing-box/option"
 	M "github.com/sagernet/sing/common/metadata"
 	S "github.com/sagernet/sing/protocol/socks"
+ "github.com/sagernet/sing/service"
 )
 
 var nativeBindingClaim atomic.Bool
@@ -30,6 +33,8 @@ type bindingCommand struct {
 	Owner, Action, Session, Token string
 	Generation                    uint64
 	Port                          uint16
+ Policy *nativePolicyUpdate
+ Observation *nativeObservation
 }
 type bindingReply struct {
 	Stage             string `json:"stage"`
@@ -41,6 +46,13 @@ type bindingReply struct {
 	CurrentGeneration uint64 `json:"currentGeneration"`
 	TCPClosed         int    `json:"tcpClosed"`
 	UDPClosed         int    `json:"udpClosed"`
+ PolicyRevision uint64 `json:"policyRevision"`
+ PolicyDigest string `json:"policyDigest,omitempty"`
+ PolicyProtocol int `json:"policyProtocol,omitempty"`
+ PolicyDirectDials uint64 `json:"policyDirectDials"`
+ PolicyBlockedDials uint64 `json:"policyBlockedDials"`
+ Observations []nativeObservation `json:"observations,omitempty"`
+ ProbeReachable bool `json:"probeReachable,omitempty"`
 }
 type nativeBinding struct {
 	mu      sync.Mutex
@@ -121,6 +133,11 @@ type CitaNativeBinding struct {
 	seen           map[string]bool
 	tokens         map[[32]byte]bool
 	makeBinding    func(bindingCommand) (*nativeBinding, error)
+ policy nativePolicyTable
+ policyDirectDials atomic.Uint64
+ policyBlockedDials atomic.Uint64
+ outbounds adapter.OutboundManager
+ observations map[string]nativeObservation
 	once           sync.Once
 	closeOnce      sync.Once
 }
@@ -135,6 +152,7 @@ func NewCitaNativeBinding(ctx context.Context, _ adapter.Router, _ log.ContextLo
 	}
 	h := &CitaNativeBinding{Adapter: outbound.NewAdapter("cita_native_lab", tag, []string{"tcp", "udp"}, nil), ctx: ctx, owner: opt.Owner, state: "Closed", seen: make(map[string]bool), tokens: make(map[[32]byte]bool)}
 	h.makeBinding = h.create
+ h.outbounds=service.FromContext[adapter.OutboundManager](ctx)
 	return h, nil
 }
 func (h *CitaNativeBinding) create(c bindingCommand) (*nativeBinding, error) {
@@ -154,14 +172,20 @@ func (h *CitaNativeBinding) create(c bindingCommand) (*nativeBinding, error) {
 	return &nativeBinding{client: client, lease: lease, ctx: ctx, cancel: cancel, flows: make(map[io.Closer]bool)}, nil
 }
 func (h *CitaNativeBinding) apply(c bindingCommand) (r bindingReply) {
+ if c.Action=="ProbeDirect" {return h.probeDirect(c)}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	r = bindingReply{Stage: c.Action, Owner: h.owner, Session: c.Session, Generation: c.Generation}
-	defer func() { r.State = h.state; r.CurrentGeneration = h.generation }()
+	defer func() { r.State = h.state; r.CurrentGeneration = h.generation;r.PolicyRevision=h.policy.revision;r.PolicyDigest=h.policy.digest;r.PolicyDirectDials=h.policyDirectDials.Load();r.PolicyBlockedDials=h.policyBlockedDials.Load() }()
 	if c.Owner != h.owner {
 		return
 	}
 	switch c.Action {
+ case "Policy":
+  if c.Generation!=h.generation||c.Session!=h.session||c.Port!=0||c.Token!=""||h.state!="Active" {return}
+  next,e:=prepareNativePolicy(c.Policy,h.policy,time.Now());if e!=nil{return}
+  for _,rule:=range next.rules {if rule.Route=="direct"||rule.Route=="dpi" {if h.outbounds==nil{return};outbound,ok:=h.outbounds.Outbound("native-"+rule.Route);if !ok||outbound.Type()!="direct"{return}}}
+  h.policy=next;r.Success=true
 	case "Quarantine":
 		if !validBindingHex(c.Session, 16) || c.Generation <= h.generation || h.seen[c.Session] || len(h.seen) >= 1024 || c.Port != 0 || c.Token != "" {
 			return
@@ -172,6 +196,8 @@ func (h *CitaNativeBinding) apply(c bindingCommand) (r bindingReply) {
 		h.session = c.Session
 		h.seen[c.Session] = true
 		h.state = "Quarantined"
+  h.policy=nativePolicyTable{}
+  h.observations=nil
 		if old != nil {
 			r.TCPClosed, r.UDPClosed = old.revoke()
 		}
@@ -205,6 +231,7 @@ func (h *CitaNativeBinding) apply(c bindingCommand) (r bindingReply) {
 		r.Success = true
 	case "Snapshot":
 		r.Success = c.Generation == h.generation && c.Session == h.session && c.Port == 0 && c.Token == ""
+  if r.Success {for _,observation:=range h.observations {r.Observations=append(r.Observations,observation)}}
 	}
 	return
 }
@@ -231,7 +258,7 @@ func (h *CitaNativeBinding) Start(stage adapter.StartStage, scope *adapter.Scope
 		go func() {
 			defer h.closeActive()
 			encoder := json.NewEncoder(os.Stdout)
-			if encoder.Encode(bindingReply{Stage: "BindingControlReady", Owner: h.owner, Success: true, State: "Closed"}) != nil {
+			if encoder.Encode(bindingReply{Stage: "BindingControlReady", Owner: h.owner, Success: true, State: "Closed",PolicyProtocol:1}) != nil {
 				return
 			}
 			legacy := json.NewDecoder(io.LimitReader(os.Stdin, 131072))
@@ -239,7 +266,7 @@ func (h *CitaNativeBinding) Start(stage adapter.StartStage, scope *adapter.Scope
 			var decoder messageDecoder = legacy
 			persistent := os.Getenv("CITA_NATIVE_PERSISTENT_CONTROL") == "1"
 			if persistent {
-				decoder = newBoundedFrames(os.Stdin, 2048)
+				decoder = newBoundedFrames(os.Stdin, 131072)
 			}
 			for i := 0; persistent || i < 64; i++ {
 				var c bindingCommand
@@ -266,6 +293,11 @@ func (h *CitaNativeBinding) capture() (*nativeBinding, error) {
 	}
 	return h.active, nil
 }
+func(h *CitaNativeBinding) policyRoute(domain string,process *adapter.ConnectionOwner,network string,destination M.Socksaddr)(string,netip.Addr,bool){
+ if domain==""&&destination.IsFqdn(){domain=destination.Fqdn};application:="";if process!=nil{application=process.ProcessPath}
+ h.mu.Lock();policy:=h.policy;h.mu.Unlock()
+ rule,selected:=policy.selectRule(domain,application,network,destination.Port,destination.Addr,time.Now());if !selected{return "",netip.Addr{},false};return rule.Route,destination.Addr,true
+}
 func (b *nativeBinding) dialContext(ctx context.Context, lease bool) (context.Context, func()) {
 	child, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(b.ctx, cancel)
@@ -278,6 +310,11 @@ func (h *CitaNativeBinding) DialContext(ctx context.Context, network string, des
 	ctx, metadata := adapter.ExtendContext(ctx)
 	metadata.Outbound = h.Tag()
 	metadata.Destination = destination
+ if network=="tcp" {domain:=metadata.Domain;if domain==""&&destination.IsFqdn(){domain=destination.Fqdn};app:="";if metadata.ProcessInfo!=nil{app=metadata.ProcessInfo.ProcessPath};h.observe(nativeObservation{Domain:domain,Application:app,Address:destination.Addr.String(),Port:destination.Port})}
+ if route,ip,selected:=h.policyRoute(metadata.Domain,metadata.ProcessInfo,network,destination);selected {
+  if route=="blocked" {h.policyBlockedDials.Add(1);return nil,errNativePolicy}
+  if route=="direct"||route=="dpi" {outbound,ok:=h.outbounds.Outbound("native-"+route);if !ok{return nil,errNativePolicy};destination.Addr=ip;destination.Fqdn="";conn,err:=outbound.DialContext(ctx,network,destination);if err==nil{h.policyDirectDials.Add(1);return conn,nil};domain:=metadata.Domain;app:="";if metadata.ProcessInfo!=nil{app=metadata.ProcessInfo.ProcessPath};h.invalidatePolicy(domain,app,network,destination.Port)}
+ }
 	b, e := h.capture()
 	if e != nil {
 		return nil, e
@@ -305,6 +342,10 @@ func (h *CitaNativeBinding) ListenPacket(ctx context.Context, destination M.Sock
 	ctx, metadata := adapter.ExtendContext(ctx)
 	metadata.Outbound = h.Tag()
 	metadata.Destination = destination
+ if route,ip,selected:=h.policyRoute(metadata.Domain,metadata.ProcessInfo,"udp",destination);selected {
+  if route=="blocked" {h.policyBlockedDials.Add(1);return nil,errNativePolicy}
+  if route=="direct"||route=="dpi" {outbound,ok:=h.outbounds.Outbound("native-"+route);if !ok{return nil,errNativePolicy};destination.Addr=ip;destination.Fqdn="";conn,err:=outbound.ListenPacket(ctx,destination);if err==nil{h.policyDirectDials.Add(1)};return conn,err}
+ }
 	b, e := h.capture()
 	if e != nil {
 		return nil, e

@@ -13,6 +13,6 @@ try{
  & (Join-Path $PSScriptRoot 'Set-TestFirewall.ps1') -Image $testImage
  & $testImage '-test.timeout=60s';if($LASTEXITCODE -ne 0){throw 'Native AWG lab tests failed'}
  go vet ./...;if($LASTEXITCODE -ne 0){throw 'Native AWG lab analysis failed'}
- go build -mod=readonly -trimpath -o (Join-Path $root 'runtime\native-awg-lab.exe') .
+ go build -mod=readonly -buildvcs=false -trimpath -o (Join-Path $root 'runtime\native-awg-lab.exe') .
  if($LASTEXITCODE -ne 0){throw 'Native AWG lab build failed'}
 }finally{Pop-Location}
