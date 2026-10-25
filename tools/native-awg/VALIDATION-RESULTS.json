@@ -383,6 +383,53 @@
         "cleanupVerified": true,
         "rescueCheckedUtc": "2026-10-25T08:18:55.4252214Z"
       }
+    },
+    {
+      "accepted": {
+        "guardSha256": "21C2F446981495544EC2BD732F671AC31562CCBFC8C5ED8898886485E909A769",
+        "coreSha256": "D464FFBABD3878C1EB8FF086E63EBA545DA680C75BD54CAF1B55F4CE026CE247",
+        "agentBackendSha256": "4BD0633A0E775619A4E3FDF092AC62D42A71363B5B71FD607DC6BF479037F33C",
+        "cleanupVerified": true,
+        "scope": "Single peer; no new independent-server claim",
+        "finishedUtc": "2026-10-25T10:18:38.5376879Z",
+        "hashesMatched": true,
+        "nativeSha256": "C7329C03C05138EEE6E74DA97FB7FDF59BBD1367D09B1FBD605B11B8DF605B1D",
+        "receipt": "native-wfp-session-014417afe390416d89dffd9a17c63476.json",
+        "success": true
+      },
+      "case": "policy-bound-wfp-tun"
+    },
+    {
+      "accepted": {
+        "hashesMatched": true,
+        "guardSha256": "21C2F446981495544EC2BD732F671AC31562CCBFC8C5ED8898886485E909A769",
+        "sourceCommit": "66d8980",
+        "coreSha256": "D464FFBABD3878C1EB8FF086E63EBA545DA680C75BD54CAF1B55F4CE026CE247",
+        "candidateRemoved": true,
+        "finishedUtc": "2026-10-25T10:26:05.7385008Z",
+        "nativeSha256": "C7329C03C05138EEE6E74DA97FB7FDF59BBD1367D09B1FBD605B11B8DF605B1D",
+        "serviceRestored": true,
+        "agentSha256": "5A3536D551653EF24CD0DDA8D7B1813DB9DEEF06D50DE8192EAD4E7E369B9159",
+        "receipt": "native-scm-24684d4b8e624f47a9e6bdacf20da407.json",
+        "success": true
+      },
+      "case": "native-scm-committed-snapshot"
+    },
+    {
+      "accepted": {
+        "hashesMatched": true,
+        "guardSha256": "21C2F446981495544EC2BD732F671AC31562CCBFC8C5ED8898886485E909A769",
+        "sourceCommit": null,
+        "coreSha256": "D464FFBABD3878C1EB8FF086E63EBA545DA680C75BD54CAF1B55F4CE026CE247",
+        "candidateRemoved": true,
+        "finishedUtc": "2026-10-25T10:17:28.1278668Z",
+        "nativeSha256": "C7329C03C05138EEE6E74DA97FB7FDF59BBD1367D09B1FBD605B11B8DF605B1D",
+        "serviceRestored": true,
+        "agentSha256": "FB7C8AC3D36B9668B592EB7D99E380115304CFC41725C55569C315DF61E2C2EC",
+        "receipt": "native-scm-5fc9c677f75a457a86b941657f35758e.json",
+        "success": true
+      },
+      "case": "native-scm-workspace-snapshot"
     }
   ],
   "profileNodeInventory": [
@@ -411,7 +458,7 @@
   "independentServerIsolationVerified": false,
   "physicalNicSwitchVerified": false,
   "productionInstalled": false,
-  "recordedUtc": "2026-10-25T08:21:05.0983012Z",
+  "recordedUtc": "2026-10-25T10:31:29.1821552Z",
   "finalGuestCleanup": {
     "temporaryGuardCount": 0,
     "nativeProcessCount": 0,
@@ -426,7 +473,7 @@
   },
   "independentCandidateStatus": "Distinct exit and server key absent from known node; independent backend and core/TUN matrices passed with an explicit private full-route lab copy. Original profile policy unchanged. Independent server power-off not exercised.",
   "independentNodeHandoffVerified": true,
-  "productionServiceLifecycleVerified": false,
+  "productionServiceLifecycleVerified": true,
   "nativeIpv6PolicyVerified": false,
   "releaseReady": false,
   "rollingRecoveryUnitVerified": true,
@@ -437,22 +484,33 @@
     "sequentialTestRunsPassed": 2
   },
   "releaseBlockers": [
-    "Durable full-policy/interface/IPv6 guard",
-    "Production service, protected profiles/policy and ordinary UI/IPC lifecycle",
-    "Installed client upgrade, rollback and startup acceptance",
-    "Actual physical Wi-Fi/Ethernet switching",
-    "Corresponding-source packaging for accepted production artifacts"
+    "Desktop UI/profile setup and adaptive domain-policy publication for the native backend",
+    "Installer/updater native maintenance and rollback acceptance",
+    "Actual reboot/early-boot and physical Wi-Fi/Ethernet handoff",
+    "Public IPv6 carriage and real application coverage",
+    "Corresponding-source/license packaging and public release acceptance"
   ],
   "persistentPrefixGuardVerified": true,
   "persistentPrefixGuardUdpV6Verified": true,
   "persistentGuardVmLinkResetVerified": true,
   "persistentGuardIndependentRescueVerified": true,
   "finalWfpCleanup": {
+    "labTunPresent": false,
     "uplinkUp": true,
-    "checkedUtc": "2026-10-25T08:20:19.5962942Z",
+    "wfpMarkerOccurrences": 0,
+    "candidateServicePathActive": false,
+    "candidateDirectoryCount": 0,
+    "nativeProcessCount": 0,
     "fixtureAddressPresent": false,
-    "fixtureRuleCount": 0,
-    "helperProcessCount": 0,
-    "wfpMarkerOccurrences": 0
-  }
+    "serviceState": "Running",
+    "checkedUtc": "2026-10-25T10:29:10.038861Z",
+    "fixtureRuleCount": 0
+  },
+  "policyBoundTunVerified": true,
+  "protectedNativeSnapshotVerified": true,
+  "serviceLifecycleScope": "Actual SCM service in isolated W11; protected optional snapshot, not a public desktop/backend rollout",
+  "nativeOwnerAutomaticRecoveryVerified": true,
+  "nativeManualDisconnectPersistenceVerified": true,
+  "nativeIpv6BlockingVerified": true,
+  "nativeIpv6CarriageVerified": false
 }

@@ -58,6 +58,12 @@ pin the tested artifacts. `tools/native-awg/VALIDATION-RESULTS.json` selects the
 accepted runs; failed attempts are retained. A successful receipt certifies only
 its own binaries, not every subsequent rebuild.
 
+The service matrix also passed on an agent rebuilt from the committed `agent/`
+tree at `66d8980`, independently of unrelated pending workspace changes. The
+receipt identifies that separate artifact as `native-agent-clean-compile`.
+Final independent WFP audit found no test objects, processes, TUN, temporary
+addresses or candidate directories; the original guest service was running.
+
 ## Findings corrected during integration
 
 - Windows can enumerate effective WFP weights as zero through the pinned API.
