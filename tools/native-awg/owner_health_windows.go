@@ -122,7 +122,13 @@ func(o *proxyOwner)decideProbe(ctx context.Context,child *ownedProxy,result owne
  if ctx.Err()!=nil||o.child!=child{return false};copy:=result;o.status.HealthProbe=&copy
  if result.HTTPS&&!result.UDP{o.status.Health="UdpDegraded"};if !result.HTTPS&&result.UDP{o.status.Health="HttpsDegraded"};return repair
 }
+// Retry spacing applies only within one continuously unreachable episode.
+// A working protocol ends the episode, but never replenishes the shared budget.
+const socketRepairRetryInterval = 8 * time.Second
 func (o *proxyOwner) decideRepair(ctx context.Context, child *ownedProxy, healthy bool) bool {
+ return o.decideRepairAt(ctx, child, healthy, time.Now())
+}
+func (o *proxyOwner) decideRepairAt(ctx context.Context, child *ownedProxy, healthy bool, now time.Time) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if ctx.Err() != nil || o.child != child {
@@ -130,6 +136,7 @@ func (o *proxyOwner) decideRepair(ctx context.Context, child *ownedProxy, health
 	}
 	if healthy {
 		o.verified = true
+  o.nextSocketRepair = time.Time{}
 		o.failures = 0
 		o.status.Health = "Reachable"
 		return false
@@ -140,12 +147,12 @@ func (o *proxyOwner) decideRepair(ctx context.Context, child *ownedProxy, health
 		return false
 	}
 	o.status.Health = "Suspect"
-	if o.failures < 2 {
+	if o.failures < 2 || now.Before(o.nextSocketRepair) {
 		return false
 	}
 	allowed := false
 	if persistentControl() {
-		allowed = o.repairBudget.acquire(time.Now(), "socket")
+		allowed = o.repairBudget.acquire(now, "socket")
 	} else {
 		allowed = o.status.BudgetUsed < 3 && o.status.SocketRepairs < 2
 	}
@@ -153,7 +160,8 @@ func (o *proxyOwner) decideRepair(ctx context.Context, child *ownedProxy, health
 		o.status.Health = "Exhausted"
 		return false
 	}
-	o.status.SocketRepairs++
+	o.nextSocketRepair = now.Add(socketRepairRetryInterval)
+ o.status.SocketRepairs++
 	o.status.BudgetUsed++
 	o.failures = 0
 	o.status.Health = "Repairing"

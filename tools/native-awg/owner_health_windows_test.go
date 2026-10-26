@@ -118,3 +118,32 @@ func TestOwnedChildHasLocalRepairCap(t *testing.T) {
 		t.Fatal("child repair cap escaped")
 	}
 }
+
+func TestSocketRepairRetrySpacing(t *testing.T) {
+ for _, persistent:=range []string{"", "1"} { t.Run("persistent="+persistent,func(t *testing.T){
+  t.Setenv("CITA_NATIVE_PERSISTENT_CONTROL", persistent)
+  child:=&ownedProxy{};o:=&proxyOwner{coordinated:true,child:child};ctx:=context.Background();at:=time.Unix(1000,0)
+  o.decideRepairAt(ctx,child,true,at)
+  if o.decideRepairAt(ctx,child,false,at)||!o.decideRepairAt(ctx,child,false,at){t.Fatal("first repair delayed")}
+  for i:=1;i<80;i++ {if o.decideRepairAt(ctx,child,false,at.Add(time.Duration(i)*100*time.Millisecond)){t.Fatal("continuous outage repeated repair too early")}}
+  if o.status.BudgetUsed!=1||o.status.SocketRepairs!=1{t.Fatal("deferred attempts spent budget")}
+  if !o.decideRepairAt(ctx,child,false,at.Add(8*time.Second)){t.Fatal("bounded retry never resumed")}
+  o.decideRepairAt(ctx,child,true,at.Add(8100*time.Millisecond))
+  if o.decideRepairAt(ctx,child,false,at.Add(8200*time.Millisecond)){t.Fatal("new failure skipped confirmation")}
+  allowed:=o.decideRepairAt(ctx,child,false,at.Add(8300*time.Millisecond))
+  if allowed {t.Fatal("health reset shared socket cap")}
+  fresh:=&proxyOwner{coordinated:true,child:child}
+  fresh.decideRepairAt(ctx,child,true,at);fresh.decideRepairAt(ctx,child,false,at);fresh.decideRepairAt(ctx,child,false,at)
+  fresh.decideRepairAt(ctx,child,true,at.Add(time.Second))
+  fresh.decideRepairAt(ctx,child,false,at.Add(1100*time.Millisecond))
+  if !fresh.decideRepairAt(ctx,child,false,at.Add(1200*time.Millisecond)){t.Fatal("new outage inherited retry delay")}
+  canceled,cancel:=context.WithCancel(ctx);cancel()
+  before:=o.status.BudgetUsed
+  if o.decideRepairAt(canceled,child,false,at.Add(time.Minute))||o.decideRepairAt(ctx,&ownedProxy{},false,at.Add(time.Minute))||o.status.BudgetUsed!=before{t.Fatal("Stop or stale child spent budget")}
+ }) }
+}
+func TestRetryWindowClearsOnChildReplacement(t *testing.T) {
+ o:=&proxyOwner{coordinated:true,child:&ownedProxy{},nextSocketRepair:time.Now().Add(time.Hour)}
+ o.clear()
+ if !o.nextSocketRepair.IsZero(){t.Fatal("retired child retained retry window")}
+}

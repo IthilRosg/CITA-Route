@@ -46,6 +46,7 @@ type proxyOwner struct {
 	coordinated  bool
 	verified     bool
 	failures     int
+ nextSocketRepair time.Time
 	repairBudget repairWindow
 }
 
@@ -65,6 +66,7 @@ func (o *proxyOwner) clear() {
 		o.status.Health = "Unavailable"
 		o.verified = false
 		o.failures = 0
+  o.nextSocketRepair = time.Time{}
 		o.status.Transport = nil
   o.status.HealthProbe=nil
 	}
@@ -107,6 +109,7 @@ func (o *proxyOwner) publish(ctx context.Context, child *ownedProxy) bool {
   o.status.HealthProbe=nil
 		o.verified = false
 		o.failures = 0
+  o.nextSocketRepair = time.Time{}
 		o.status.Transport = nil
 	}
 	return true
