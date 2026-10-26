@@ -6,6 +6,7 @@ import (
  "crypto/tls"
  "fmt"
  "io"
+ "net"
  "net/http"
  "net/netip"
  "time"
@@ -15,6 +16,11 @@ import (
 // No URL, cookies, application payload or credentials are captured or replayed.
 // Unknown traffic keeps the VPN path while an anonymous probe is evaluated.
 type nativeObservation struct { Domain,Application,Address string; Port uint16 }
+// Dial, TLS and body reads share one absolute probe deadline. Giving the
+// socket a fresh timeout after Dial can overrun the controller's reply budget.
+func nativeProbeSetDeadline(ctx context.Context,conn net.Conn) error {
+ deadline,ok:=ctx.Deadline();if !ok{return fmt.Errorf("probe requires a bounded context")};return conn.SetDeadline(deadline)
+}
 func nativePublic(ip netip.Addr) bool {
  if !ip.Is4()||!ip.IsGlobalUnicast()||ip.IsPrivate()||ip.IsLoopback()||ip.IsLinkLocalUnicast(){return false}
  for _,prefix:=range []string{"0.0.0.0/8","100.64.0.0/10","224.0.0.0/4","240.0.0.0/4"}{if netip.MustParsePrefix(prefix).Contains(ip){return false}}
@@ -40,7 +46,7 @@ func(h *CitaNativeBinding) probeDirect(c bindingCommand)(r bindingReply){
  o,ok:=normalizeObservation(*c.Observation);if !ok{h.mu.Unlock();return};_,seen:=h.observations[observationKey(o)];var lease *nativeDirectLease;if seen{lease=h.acquireDirectLocked(nativeDirectScope{Address:o.Address,Network:"tcp",Port:o.Port})};h.mu.Unlock();if lease==nil{return};defer lease.release();if h.outbounds==nil{return}
  outbound,ok:=h.outbounds.Outbound("native-direct");if !ok||outbound.Type()!="direct"{return};r.Success=true
  ctx,cancel:=context.WithTimeout(h.ctx,2500*time.Millisecond);defer cancel()
- conn,e:=outbound.DialContext(ctx,"tcp",M.ParseSocksaddr(fmt.Sprintf("%s:443",o.Address)));if e!=nil{return};defer conn.Close();_ = conn.SetDeadline(time.Now().Add(2300*time.Millisecond))
+ conn,e:=outbound.DialContext(ctx,"tcp",M.ParseSocksaddr(fmt.Sprintf("%s:443",o.Address)));if e!=nil{return};defer conn.Close();if nativeProbeSetDeadline(ctx,conn)!=nil{return}
  secure:=tls.Client(conn,&tls.Config{ServerName:o.Domain,MinVersion:tls.VersionTLS12});if secure.HandshakeContext(ctx)!=nil{return}
  if _,e=io.WriteString(secure,"GET / HTTP/1.1\r\nHost: "+o.Domain+"\r\nUser-Agent: CITA-Route-Connectivity/1\r\nConnection: close\r\n\r\n");e!=nil{return}
  response,e:=http.ReadResponse(bufio.NewReader(io.LimitReader(secure,12288)),nil);if e!=nil{return};defer response.Body.Close();if response.StatusCode<200||response.StatusCode>=400{return}

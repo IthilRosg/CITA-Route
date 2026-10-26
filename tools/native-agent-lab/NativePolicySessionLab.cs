@@ -7,7 +7,7 @@ using RoutePilot.Agent;
 internal static class NativePolicySessionLab
 {
     static void Check(bool value){if(!value)throw new IOException("Native policy route proof failed.");}
-    internal static async Task<int> Run(string root,string run,bool automatic=false,bool performance=false)
+    internal static async Task<int> Run(string root,string run,bool automatic=false,bool performance=false,bool coverage=false)
     {
         string stage="prepare";var report=new Dictionary<string,object?>{{"success",false}};NativeGuardedSession? runtime=null;
         try
@@ -44,6 +44,7 @@ internal static class NativePolicySessionLab
                 runtime.Core.CalibrationObserver=null;
                 stage="automatic-direct";var next=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true);Check(next.GetProperty("success").GetBoolean());for(int i=0;i<30&&runtime.Core.PolicyDirectDials==0;i++)await Task.Delay(100,stop);Check(runtime.Core.PolicyDirectDials>0);report["automaticDomainSelectionVerified"]=true;
                 if(performance){stage="performance-baseline";report["performance"]=await NativePerformanceLab.Measure(runtime,root,stop);}
+                if(coverage){stage="domain-coverage";report["coverage"]=await NativeCoverageLab.Measure(runtime,root,stop);}
                 timer.Restart();await runtime.DisconnectAsync(stop);report["disconnectMs"]=timer.ElapsedMilliseconds;report["success"]=true;return 0;
             }
             string epoch=Guid.NewGuid().ToString("N");NativePolicyRequest Rules(string route)=>new(epoch,[new("cloudflare-dns.com","","tcp",route,443,route=="direct"?["1.1.1.1"]:[],DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeMilliseconds())]);

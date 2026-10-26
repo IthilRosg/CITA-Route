@@ -1,5 +1,15 @@
 package socks
-import("testing";"fmt")
+import("testing";"fmt";"context";"net";"time")
+func TestCitaNativePolicyProbeSharedDeadline(t *testing.T){
+ a,b:=net.Pipe();defer a.Close();defer b.Close()
+ if nativeProbeSetDeadline(context.Background(),a)==nil{t.Fatal("unbounded probe accepted")}
+ // Dial/TLS have already used the whole budget. Reading must time out now,
+ // rather than gaining another socket timeout after the expired context.
+ ctx,cancel:=context.WithDeadline(context.Background(),time.Now().Add(-time.Millisecond));defer cancel()
+ if e:=nativeProbeSetDeadline(ctx,a);e!=nil{t.Fatal(e)}
+ safety:=time.AfterFunc(250*time.Millisecond,func(){a.Close()});defer safety.Stop()
+ _,e:=a.Read(make([]byte,1));timeout,ok:=e.(net.Error);if !ok||!timeout.Timeout(){t.Fatalf("read escaped the absolute deadline: %v",e)}
+}
 func TestCitaNativePolicyObservationScope(t *testing.T){
  h:=&CitaNativeBinding{state:"Active"};good:=nativeObservation{Domain:"example.com",Address:"1.1.1.1",Port:443};h.observe(good);if len(h.observations)!=1{t.Fatal("missing observation")}
  for _,address:=range []string{"127.0.0.1","10.0.0.1","100.100.100.100","0.1.2.3","240.1.2.3","::1"}{bad:=good;bad.Address=address;h.observe(bad)};if len(h.observations)!=1{t.Fatal("private or reserved scope accepted")}

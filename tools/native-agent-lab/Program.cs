@@ -1,5 +1,7 @@
 using System.Text.Json;
 using RoutePilot.Agent;
+if(args.Length==1&&args[0]=="--queue-stress"){Console.WriteLine(JsonSerializer.Serialize(NativeQueueStressLab.Run()));return 0;}
+if(args.Length==3&&args[0]=="--native-policy-coverage-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],automatic:true,coverage:true);
 if(args.Length==3&&args[0]=="--native-policy-session-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2]);
 if(args.Length==3&&args[0]=="--native-policy-auto-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],true);
 if(args.Length==3&&args[0]=="--native-policy-performance-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],true,true);
