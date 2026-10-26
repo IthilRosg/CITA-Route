@@ -1,3 +1,11 @@
+CITA Route 0.6.6 Standalone Native Preview — independent client.
+
+- Native transport is the only runtime backend. No WireSock discovery, installation, selector or legacy startup controller.
+- First Connect prepares the protected bundled engine and prompts for an IPv4 .conf. Imported profiles are retained for later launches.
+- Exclude WireSock helpers, old routing scripts, smart-router and vpn-bridge from the payload; remove those application-owned leftovers on upgrade.
+- Hide unsupported legacy rules/DPI/rescue settings, and prevent updates from reinstalling the old hybrid edition. Preview updates are manual for now.
+- Reject legacy agent CLI/RPC operations. The standalone service was tested for HTTPS/UDP, import and recovery in W11 after WireSock was uninstalled.
+
 CITA Route 0.6.5 Native Preview — separate experimental native transport build.
 
 - Bundle the verified AWG 3.1/WG userspace transport, routing core and scoped native guard with EXE Setup; preparation uses the bundled archive after SHA-256 verification.

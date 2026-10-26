@@ -34,6 +34,7 @@ public partial class MainWindow
     private Task? _discoveryWork;
     private Task DiscoverConnectionsAsync(string cli="")
     {
+        if(ClientEdition.NativeOnly)return Task.CompletedTask;
         if(_discoveryWork is {IsCompleted:false})return _discoveryWork;
         return _discoveryWork=DiscoverConnectionsCoreAsync(cli);
     }

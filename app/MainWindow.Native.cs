@@ -16,14 +16,16 @@ public partial class MainWindow
     Button _nativeImportButton=new();
     Button _nativeSetupButton=new();
     bool _nativeModeChanging;DateTime _nativeReadUtc;DateTime _nativeRetryUtc;Border? _nativeWireSockCard;
-    bool UseNativeBackend=>_nativeChoice.Selected||_nativeView?.Desired==true||_nativeView?.Phase=="Importing";
+    bool UseNativeBackend=>ClientEdition.NativeOnly||_nativeChoice.Selected||_nativeView?.Desired==true||_nativeView?.Phase=="Importing";
     string NativeChoicePath=>Path.Combine(_root,"data","transport-choice.json");
     void InitializeNativeUi()
     {
         _nativeChoice=AppPaths.Read(NativeChoicePath,()=>new NativeChoice());
+        if(ClientEdition.NativeOnly)_nativeChoice.Selected=true;
         var wireSockCard=((FrameworkElement)CliPathLabel.Parent).Parent as Border;_nativeWireSockCard=wireSockCard;
         if(wireSockCard?.Parent is not StackPanel settings)return;
-        var content=new StackPanel();content.Children.Add(new TextBlock{Text="Способ подключения",FontSize=18,FontWeight=FontWeights.SemiBold});
+        if(ClientEdition.NativeOnly)ConfigureStandaloneSettings(settings);
+        var content=new StackPanel();content.Children.Add(new TextBlock{Text=ClientEdition.NativeOnly?"Подключение · WireGuard / AmneziaWG":"Способ подключения",FontSize=18,FontWeight=FontWeights.SemiBold});
         _nativeMode.Margin=new Thickness(0,12,0,0);_nativeMode.Items.Add(new ComboBoxItem{Content="Авто · WireSock"});_nativeItem=new ComboBoxItem{Content="Встроенный Авто · предварительный",IsEnabled=false};_nativeMode.Items.Add(_nativeItem);_nativeMode.SelectedIndex=_nativeChoice.Selected?1:0;
         _nativeMode.SelectionChanged+=async(_,_)=>
         {
@@ -31,7 +33,7 @@ public partial class MainWindow
             if(_busy||_engineRunning||_nativeView?.Desired==true){_nativeModeChanging=true;_nativeMode.SelectedIndex=_nativeChoice.Selected?1:0;_nativeModeChanging=false;Notice("Сначала отключи текущее подключение.");return;}
             _nativeChoice.Selected=_nativeMode.SelectedIndex==1;AppPaths.Write(NativeChoicePath,_nativeChoice);_nativeReadUtc=DateTime.MinValue;await DiscoverConnectionsAsync();await RefreshAsync();
         };
-        content.Children.Add(_nativeMode);_nativeHint.TextWrapping=TextWrapping.Wrap;_nativeHint.FontSize=12;_nativeHint.Foreground=ConsoleTheme.Dim;_nativeHint.Margin=new Thickness(0,10,0,0);content.Children.Add(_nativeHint);
+        if(!ClientEdition.NativeOnly)content.Children.Add(_nativeMode);_nativeHint.TextWrapping=TextWrapping.Wrap;_nativeHint.FontSize=12;_nativeHint.Foreground=ConsoleTheme.Dim;_nativeHint.Margin=new Thickness(0,10,0,0);content.Children.Add(_nativeHint);
         _nativeImportButton.Content="Импорт .conf во встроенный режим";_nativeImportButton.Margin=new Thickness(0,12,0,0);_nativeImportButton.HorizontalAlignment=HorizontalAlignment.Left;_nativeImportButton.IsEnabled=false;_nativeImportButton.Click+=async(_,_)=>await ImportNativeProfileAsync();content.Children.Add(_nativeImportButton);
         _nativeSetupButton.Content="Подготовить встроенный модуль";_nativeSetupButton.Margin=new Thickness(0,10,0,0);_nativeSetupButton.HorizontalAlignment=HorizontalAlignment.Left;_nativeSetupButton.Click+=async(_,_)=>await PrepareNativeComponentsAsync();content.Children.Add(_nativeSetupButton);
         settings.Children.Insert(0,new Border{Style=(Style)FindResource("Card"),Margin=new Thickness(0,0,0,16),Child=content});
@@ -52,8 +54,8 @@ public partial class MainWindow
         _nativeImportButton.IsEnabled=(_nativeView?.Phase is "Disconnected" or "Unconfigured")&&!_busy&&!_discovering&&!_engineRunning;
         SetNativeQualityCaption(UseNativeBackend);
         if(_nativeWireSockCard!=null)_nativeWireSockCard.Visibility=UseNativeBackend?Visibility.Collapsed:Visibility.Visible;
-        _nativeMode.IsEnabled=!_busy&&!_discovering&&!_engineRunning&&_nativeView?.Desired!=true;
-        _nativeHint.Text=_nativeView?.Available==true?"Можно импортировать собственный IPv4-профиль с одним сервером. Для новых HTTPS-доменов проверяется прямой путь; до проверки используется VPN. IPv6 в конфиге и команды запуска пока не поддерживаются. Живые списки «Авто» доступны через WireSock.":"Встроенный режим появится после подготовки его компонентов и профиля. Сейчас доступен «Авто» через WireSock.";
+        _nativeMode.IsEnabled=!ClientEdition.NativeOnly&&!_busy&&!_discovering&&!_engineRunning&&_nativeView?.Desired!=true;
+        _nativeHint.Text=_nativeView?.Available==true?"Импортируй свой IPv4-профиль с одним сервером. Новые HTTPS-домены сначала используют VPN, затем проверяется прямой путь. IPv6 и команды запуска из профиля пока не поддерживаются.":"Нажми «Подключить»: CITA подготовит собственный движок и предложит импортировать .conf. Отдельный VPN-клиент не требуется.";
         if(!UseNativeBackend)return false;
         if((_nativeView?.Desired==true||_nativeView?.Phase=="Importing")&&!_nativeChoice.Selected){_nativeChoice.Selected=true;AppPaths.Write(NativeChoicePath,_nativeChoice);_nativeModeChanging=true;_nativeMode.SelectedIndex=1;_nativeModeChanging=false;}
         ApplyNativeView(_nativeView);return true;
@@ -77,11 +79,12 @@ public partial class MainWindow
     }
     void SetNativeQualityCaption(bool native)
     {
+        native|=ClientEdition.NativeOnly;
         if(CompactVpnRtt.Parent is Grid panel&&panel.Parent is StackPanel content&&content.Children.Count>0&&content.Children[0] is TextBlock label)label.Text=native?"ТУННЕЛЬ VPN / ВСТРОЕННЫЙ":"ТУННЕЛЬ VPN / WIRESOCK";
     }
     bool ConfirmNativeProfile(bool force=false)
     {
-        var state=_nativeView;if(state?.Available!=true){Notice("Встроенный профиль ещё не подготовлен. Выбери «Авто · WireSock» или дождись настройки встроенного режима.",true);return false;}
+        var state=_nativeView;if(state?.Available!=true){Notice("Сначала подготовь встроенный модуль и импортируй профиль .conf.",true);return false;}
         string id=state.ProfileId.Length>0?state.ProfileId:state.ProfileName;
         if(!force&&_nativeChoice.ConfirmedProfile==id)return true;
         var window=new Window{Title="Профиль встроенного VPN",Owner=this,Width=360,SizeToContent=SizeToContent.Height,ResizeMode=ResizeMode.NoResize,WindowStartupLocation=WindowStartupLocation.CenterOwner,Background=ConsoleTheme.Brush("#101010"),Foreground=ConsoleTheme.Text};

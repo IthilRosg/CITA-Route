@@ -5,6 +5,10 @@ $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'Build-Dotnet.ps1')
 $root=$PSScriptRoot
 $version=([IO.File]::ReadAllText((Join-Path $root 'product.json')) | ConvertFrom-Json).version
+if((Get-Content (Join-Path $root 'product.json') -Raw|ConvertFrom-Json).edition -eq 'native'){
+    & (Join-Path $root 'Build-Standalone.ps1') -NativeSourceReceipt $NativeSourceReceipt
+    return
+}
 if($NativePreview){
     $previewProduct=Get-Content (Join-Path $root 'product.json') -Raw|ConvertFrom-Json
     if($previewProduct.channel -ne 'native-preview'){throw 'Native preview packaging requires an explicitly marked preview product.'}

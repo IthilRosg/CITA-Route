@@ -67,7 +67,7 @@ public partial class MainWindow
         void Add(string label,Action action){var item=new MenuItem{Header=label};item.Click+=(_,_)=>action();menu.Items.Add(item);}
         Add("Расширенный вид",()=>ApplyView(false));
         Add("Проверить обновления",async()=>await CheckUpdatesAsync(true));
-        Add("WireSock · установка и совместимость",()=>{ApplyView(false);PreviewPage(4);});
+        if(!ClientEdition.NativeOnly)Add("WireSock · установка и совместимость",()=>{ApplyView(false);PreviewPage(4);});
         Add("Не открывается сайт · проверить",()=>{ApplyView(false);PreviewPage(2);});
         Add("Состояние ресурсов Windows",ShowResourceDetails);
         menu.Items.Add(new Separator());
@@ -212,7 +212,14 @@ public partial class MainWindow
     }
     private async Task ToggleAsync(bool startOnly=false)
     {
-        if(UseNativeBackend){await NativeActionAsync(_nativeView?.Desired!=true,startOnly);return;}
+        if(UseNativeBackend){
+            if(ClientEdition.NativeOnly&&!_render&&!_busy&&_nativeView?.Desired!=true&&(_nativeView?.Available!=true||!StandaloneAgentMatchesPackage())){
+                if(startOnly){Notice("Для автоподключения сначала нажми «Подключить» и импортируй .conf.");return;}
+                await PrepareNativeComponentsAsync();await RefreshNativeAsync(true);
+                if(_nativeView?.Available!=true)return;
+            }
+            await NativeActionAsync(_nativeView?.Desired!=true,startOnly);return;
+        }
         if(_render)return;
         // Automatic startup must never turn an existing connection into Stop,
         // or cancel an operation already started by the user/service.

@@ -15,8 +15,12 @@ public static class AppPaths
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         for (int i=0;i<7 && directory!=null;i++,directory=directory.Parent)
-            if (File.Exists(Path.Combine(directory.FullName,"SmartRouting.ps1"))) return directory.FullName;
-        throw new InvalidOperationException("Рядом с приложением не найден SmartRouting.ps1. Сохрани всю папку RoutePilot целиком.");
+            if(ClientEdition.NativeOnly){
+                string product=Path.Combine(directory.FullName,"product.json");
+                if(!File.Exists(product)||!File.Exists(Path.Combine(directory.FullName,"Install-NativeComponents.ps1"))||!File.Exists(Path.Combine(directory.FullName,"runtime","native-components.zip")))continue;
+                try{using var json=System.Text.Json.JsonDocument.Parse(File.ReadAllText(product));if(json.RootElement.GetProperty("edition").GetString()=="native")return directory.FullName;}catch{}
+            }else if(File.Exists(Path.Combine(directory.FullName,"SmartRouting.ps1")))return directory.FullName;
+        throw new InvalidOperationException("Не найдены файлы установленной CITA Route. Повтори установку или распакуй полный пакет.");
     }
     public static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive=true,WriteIndented=true };
     public static T Read<T>(string path,Func<T> fallback)

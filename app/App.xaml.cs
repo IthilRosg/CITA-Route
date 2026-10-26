@@ -18,7 +18,7 @@ public partial class App : Application
         base.OnStartup(e);
         string root;
         try{root=AppPaths.FindRoot();}
-        catch(Exception ex){MessageBox.Show(ex.Message,"RoutePilot",MessageBoxButton.OK,MessageBoxImage.Error);Shutdown(1);return;}
+        catch(Exception ex){if(e.Args.Contains("--self-test"))Console.Error.WriteLine(ex.Message);else MessageBox.Show(ex.Message,"RoutePilot",MessageBoxButton.OK,MessageBoxImage.Error);Shutdown(1);return;}
         if(InstallationMaintenance.Problem(root) is string maintenanceProblem)
         {
             if(e.Args.Contains("--self-test"))

@@ -10,6 +10,7 @@ public static class SelfTests
 {
     public static void Run(string root)
     {
+        if(ClientEdition.NativeOnly){StandaloneTests.Run(root);return;}
         var preferenceFixture=Path.Combine(root,"runtime","preferences-encoding-"+Guid.NewGuid().ToString("N")+".json");
         try
         {

@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Setup)
+param([Parameter(Mandatory=$true)][string]$Setup,[switch]$NativeStandalone)
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 $setupPath=[IO.Path]::GetFullPath($Setup)
@@ -67,14 +67,15 @@ function Uninstall([string]$Log){
 function Test-InterruptedCopy {
     $marker=Join-Path $client 'runtime\fixture-copy-paused.pid'
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-    $smart=Join-Path $client 'SmartRouting.ps1'
+$faultFile=if($NativeStandalone){'Install-NativeComponents.ps1'}else{'SmartRouting.ps1'}
+$smart=Join-Path $client $faultFile
     [IO.File]::AppendAllText($smart,"`r`n# Original public-file sentinel for rollback acceptance.`r`n")
     $saved=@{}
     foreach($file in ([IO.File]::ReadAllText((Join-Path $client 'manifest.json'))|ConvertFrom-Json).files){
         if($file.path -in @('force-direct.txt','force-vpn.txt')){continue}
         $saved[$file.path]=(Get-FileHash -LiteralPath (Join-Path $client $file.path)).Hash
     }
-    $process=Start-Process -FilePath $setupPath -WindowStyle Hidden -PassThru -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/CONFIRMVERSION='+$fixtureVersion),'/FAILAFTERCOPY=SmartRouting.ps1',('/DIR="'+$target+'"'),('/LOG="'+(Join-Path $base 'interrupted-copy.log')+'"'))
+    $process=Start-Process -FilePath $setupPath -WindowStyle Hidden -PassThru -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',('/CONFIRMVERSION='+$fixtureVersion),('/FAILAFTERCOPY='+$faultFile),('/DIR="'+$target+'"'),('/LOG="'+(Join-Path $base 'interrupted-copy.log')+'"'))
     $null=$process.Handle;$actual=$null
     try{
         $watch=[Diagnostics.Stopwatch]::StartNew()

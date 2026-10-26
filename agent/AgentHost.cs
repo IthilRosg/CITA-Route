@@ -37,8 +37,8 @@ public sealed class AgentHost
     public void PrepareForShutdown(){_boot?.PrepareForShutdown();_native?.PrepareForShutdown();}
     public async Task Run(CancellationToken stop)
     {
-        SaveVpnusProof();
-        if(_store.State.Active || _store.State.Phase==RunPhase.RecoveryFailed)
+        if(!ClientEdition.NativeOnly)SaveVpnusProof();
+        if(!ClientEdition.NativeOnly&&(_store.State.Active || _store.State.Phase==RunPhase.RecoveryFailed))
         {
             if(_store.State.Kind==TestKind.DryRun && _store.State.Active)_store.State.Results.Add(new("IndependentGuard",true,"The restarted service detected and recovered an unfinished dry run."));
             await Recover("Service restarted with an unfinished run.");
@@ -47,7 +47,7 @@ public sealed class AgentHost
         Task native=Task.CompletedTask;
         try{_native=NativeServiceRoute.TryLoad();if(_native!=null)native=_native.Run(stop);}catch(Exception e){_nativeFailure=e.GetType().Name;}
         Task startup=Task.CompletedTask;
-        if(_native==null&&_nativeFailure==null){_boot=new BootRouting(_config);startup=_boot.Run(stop);}
+        if(!ClientEdition.NativeOnly&&_native==null&&_nativeFailure==null){_boot=new BootRouting(_config);startup=_boot.Run(stop);}
         using var resourceStop=CancellationTokenSource.CreateLinkedTokenSource(stop);
         var resources=Task.Run(()=>ResourceMonitor.Run(_config.DataDirectory,_config.AppRoot,resourceStop.Token));
         try
@@ -175,6 +175,7 @@ public sealed class AgentHost
             if(_operation!=null && _operation.Pid==caller.Id && _operation.Matches()){_operation=null;File.Delete(Path.Combine(_config.DataDirectory,"operation.json"));}
             return Reply(true,"Operation lease released.");
         }
+        if(ClientEdition.NativeOnly)return Reply(false,"This standalone client supports only native transport operations.");
         if(request.Command=="worker-hello")
         {
             var state=_store.State;

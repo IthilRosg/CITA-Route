@@ -109,7 +109,7 @@ public partial class MainWindow : Window
         _backgroundInitialized=true;
         await DiscoverConnectionsAsync();
         if(_exiting)return;
-        await CheckWireSockMaintenanceAsync();
+        if(!ClientEdition.NativeOnly)await CheckWireSockMaintenanceAsync();
         if(_exiting)return;
         UpdateTelemetryInterval();_timer.Start();await RefreshAsync();
         if(_exiting)return;
@@ -120,7 +120,7 @@ public partial class MainWindow : Window
             await ToggleAsync(startOnly:true);
             AppPaths.Write(Path.Combine(_root,"runtime","launch-connect.json"),new{schema=1,phase=_engineRunning?"Running":"NotConnected",updatedUtc=DateTime.UtcNow,busy=_busy,blocked=_rescueState.BlocksRouting,startupActive=Cita.Startup.StartupPaths.Read().Active,profileAvailable=ProfileInput.SelectedItem!=null,managementReady=_inventory.ManagementReady,message=Backend.Redact(NoticeText.Text)});
         }
-        _=CheckUpdatesAsync();
+        if(!ClientEdition.NativeOnly)_=CheckUpdatesAsync();
     }
     private void CreateTray()
     {
@@ -174,7 +174,7 @@ public partial class MainWindow : Window
         {
             RefreshResourceState();
             if(await RefreshNativeAsync())
-            {if(!_exiting){if(_pendingUpdatePrompt)await ShowUpdatePromptAsync();await TryAutoInstallAsync();}return;}
+            {if(!_exiting&&!ClientEdition.NativeOnly){if(_pendingUpdatePrompt)await ShowUpdatePromptAsync();await TryAutoInstallAsync();}return;}
             var session=AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession());
             var cachedHealth=SessionHealthCache.Read(_root,session,DateTime.UtcNow);
             bool owned=session.Running && !string.IsNullOrWhiteSpace(session.Id) && _backend.EngineRunning(session);
@@ -331,6 +331,7 @@ public partial class MainWindow : Window
     private void Event(string text){_events.Insert(0,Format.Time+"  "+text);if(_events.Count>50)_events.RemoveAt(_events.Count-1);}
     private void RefreshRescueState()
     {
+        if(ClientEdition.NativeOnly){_rescueState=new();return;}
         try{_rescueState=_rescue.ReadState();}
         catch{_rescueState=new RescueState{Phase="RecoveryFailed",LastMessage="Не удалось прочитать состояние службы."};}
         string phase=_rescueState.Phase switch{"Testing"=>"Выполняется тест","Armed"=>"Подготовка теста","Restoring"=>"Восстановление","RecoveryFailed"=>"Требуется восстановление","Restored"=>_rescueState.Passed?"Проверка пройдена":"Тест не пройден · очистка завершена",_=>"Готово к проверке"};
@@ -440,6 +441,7 @@ public partial class MainWindow : Window
     private async void Connect_Click(object sender,RoutedEventArgs e)=>await ToggleAsync();
     private async void Diagnostics_Click(object sender,RoutedEventArgs e)
     {
+        if(ClientEdition.NativeOnly){await RefreshNativeAsync(true);Notice(_nativeView?.Connected==true?"Встроенный туннель подключён. Состояние получено из защищённой службы.":"Подключение встроенного туннеля пока не подтверждено.",_nativeView?.Connected!=true);return;}
         if(_rescueState.BlocksRouting){Notice("Дождись завершения автономного теста и восстановления.");return;}
         if(_busy)return;
         if(_engineRunning){Notice("Для изолированной проверки сначала отключи умный маршрут.");return;}

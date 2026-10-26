@@ -49,12 +49,15 @@ try{
         Copy-Item -LiteralPath $source -Destination $target
         $entries+=$entry
     }
-    foreach($required in @('RoutePilot.exe','SmartRouting.ps1','Install-Release.ps1','product.json','force-vpn.txt','force-direct.txt','runtime\agent-build\RoutePilot.Agent.exe')){
+    $nativeOnly=$manifest.edition -eq 'native'
+    $requiredFiles=if($nativeOnly){@('RoutePilot.exe','Install-NativeAgent.ps1','Install-NativeComponents.ps1','NativeMaintenance.ps1','runtime\native-components.zip','product.json','force-vpn.txt','force-direct.txt','runtime\agent-build\RoutePilot.Agent.exe')}else{@('RoutePilot.exe','SmartRouting.ps1','Install-Release.ps1','product.json','force-vpn.txt','force-direct.txt','runtime\agent-build\RoutePilot.Agent.exe')}
+    foreach($required in $requiredFiles){
         if(-not(Test-Path -LiteralPath (Join-Path $payload $required))){throw ('Incomplete installer: '+$required)}
     }
     $manifest.files=$entries
     [IO.File]::WriteAllText((Join-Path $payload 'manifest.json'),($manifest | ConvertTo-Json -Depth 10),(New-Object Text.UTF8Encoding($false)))
     $compilerArguments=@('/Qp',('/DPayloadDir='+$payload),('/DArtworkDir='+$artwork),('/DProductVersion='+$version),('/DOutputDir='+(Join-Path $root 'dist')))
+    if($nativeOnly){$compilerArguments+='/DNativeStandalone=1'}
     if(-not $manifest.selfContained){$compilerArguments+=@('/DNeedsDesktopRuntime=1',('/DRuntimeUrl='+$runtime.url),('/DRuntimeSha512='+$runtime.sha512),('/DRuntimeVersion='+$runtime.version))}
     if($TestBuild){$compilerArguments+='/DTestBuild=1'}
     $compilerArguments+=(Join-Path $root 'installer\CitaRoute.iss')

@@ -68,6 +68,20 @@ russian.WelcomeLabel1=УСТАНОВКА CITA ROUTE
 russian.WelcomeLabel2=Прямой доступ. Обход DPI. VPN.%n%nВыбери папку установки. В настройках CITA Route можно отдельно включить запуск программы при входе в Windows и подключение при запуске программы.%n%nВерсия {#ProductVersion}
 russian.SelectDirLabel3=Выбери папку для CITA Route. Профили и настройки будут храниться внутри неё.
 
+#ifdef NativeStandalone
+[InstallDelete]
+Type: files; Name: "{app}\client\WireSockCli.ps1"
+Type: files; Name: "{app}\client\WireSockProfiles.ps1"
+Type: files; Name: "{app}\client\WireSockRecovery.ps1"
+Type: files; Name: "{app}\client\SmartRouting.ps1"
+Type: files; Name: "{app}\client\Configure-Connection.ps1"
+Type: files; Name: "{app}\client\ConnectionEnvironment.ps1"
+Type: files; Name: "{app}\client\Install-Agent.ps1"
+Type: files; Name: "{app}\client\Install-Release.ps1"
+Type: files; Name: "{app}\client\SessionRecovery.ps1"
+Type: files; Name: "{app}\client\runtime\vpn-bridge.exe"
+Type: files; Name: "{app}\client\runtime\smart-router.exe"
+#endif
 [Files]
 ; Public payload only: generated from the verified portable manifest.
 Source: "{#PayloadDir}\*"; DestDir: "{app}\client"; Excludes: "force-direct.txt,force-vpn.txt"; Flags: ignoreversion recursesubdirs createallsubdirs{#CopyHook}

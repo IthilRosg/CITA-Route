@@ -12,6 +12,8 @@ public static class Program
     {
         try
         {
+            if(ClientEdition.NativeOnly&&(args.Length==0||args[0] is not ("--self-test" or "--service" or "--configure-service-recovery" or "--export-diagnostics" or "--resource-snapshot" or "--network-signature")))
+            {Console.Error.WriteLine("Unsupported command in the standalone native client.");return 64;}
             if(args.Length>0&&args[0].StartsWith("chrome-extension://",StringComparison.Ordinal)){await BrowserNativeHost.Run(args);return 0;}
             if(args.Length==2&&args[0]=="--register-browser-feedback"){BrowserNativeHost.Register(Path.GetFullPath(args[1]),true);return 0;}
             if(args.Length==2&&args[0]=="--unregister-browser-feedback"){BrowserNativeHost.Unregister(Path.GetFullPath(args[1]));return 0;}

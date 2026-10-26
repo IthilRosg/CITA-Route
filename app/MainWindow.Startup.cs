@@ -20,12 +20,13 @@ public partial class MainWindow
             AppPaths.Write(Path.Combine(_root,"data","preferences.json"),_preferences);
         }
         ConnectOnLaunchBox.IsChecked=_preferences.ConnectOnLaunch;
-        StartupStatusLabel.Text=state.Owns(_root)&&state.Enabled?
+        StartupStatusLabel.Text=!ClientEdition.NativeOnly&&state.Owns(_root)&&state.Enabled?
             "Сохранено прежнее подключение до входа. Для перехода отключи маршрут и нажми «Применить автозапуск». Текущее подключение сохраняется.":
             "Запуск окна и подключение настраиваются отдельно. При автоподключении используется последний профиль.";
     }
     private async Task<bool> RetireLegacyStartupAsync()
     {
+        if(ClientEdition.NativeOnly)return true;
         var state=StartupPaths.Read();
         if(!state.Owns(_root)||!state.Enabled)return true;
         if(state.Active||_engineRunning||_rescueState.BlocksRouting)return false;

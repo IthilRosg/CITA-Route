@@ -12,7 +12,11 @@ if($service){
  if($service.PathName -ine ('"'+(Join-Path $root 'RoutePilot.Agent.exe')+'" --service')){throw 'The existing service belongs to another protected installation'}
  $oldConfig=Read-JsonFile (Join-Path $root 'agent-config.json');if($oldConfig.UserSid -ne $UserSid -or [IO.Path]::GetFullPath($oldConfig.AppRoot).TrimEnd('\') -ine [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')){throw 'The service belongs to another Windows user or client installation'}
  try{$cap=Invoke-NativeMaintenanceRpc 'native-capabilities';if($cap.Native.setupProtocol -eq 1 -and (Get-FileHash (Join-Path $root 'RoutePilot.Agent.exe')).Hash -eq (Get-FileHash $source).Hash){return}}catch{}
- $boot=Join-Path $root 'startup-settings.json';if((Test-Path $boot) -and (Read-JsonFile $boot).Enabled){throw 'Retire the legacy boot route before native setup'}
+ $boot=Join-Path $root 'startup-settings.json'
+ if((Test-Path $boot) -and (Read-JsonFile $boot).Enabled){
+  $retired=Invoke-NativeMaintenanceRpc 'boot-disable'
+  if(-not $retired.Success -or (Read-JsonFile $boot).Enabled){throw 'Disconnect the previous boot route before native setup; the active route was not stopped.'}
+ }
  Stop-NativeForMaintenance (Join-Path $root 'native')
  Invoke-AgentCoordinator 'begin-operation';$backup=Join-Path $root ('agent-native-backup-'+[guid]::NewGuid().ToString('N')+'.exe');$temporary=Join-Path $root ('agent-native-stage-'+[guid]::NewGuid().ToString('N')+'.exe');$saved=$false;$promoted=$false
  try{
