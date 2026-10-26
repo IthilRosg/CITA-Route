@@ -1,5 +1,6 @@
+param([string]$SourceReceipt='runtime/native-corresponding-source.zip.receipt.json')
 $ErrorActionPreference='Stop';$root=$PSScriptRoot
-$original=Get-Content (Join-Path $root 'runtime/native-corresponding-source.zip.receipt.json') -Raw
+$original=Get-Content (Join-Path $root $SourceReceipt) -Raw
 $path=Join-Path $root ('runtime/native-package-negative-'+[guid]::NewGuid().ToString('N')+'.json');$passed=@()
 try{
  foreach($test in @('UnverifiedSource','native-core.exe','native-owner.exe','native-guard.exe')){

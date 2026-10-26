@@ -42,12 +42,15 @@ public sealed class PolicyPorts
 
 internal static class PolicyTransport
 {
-    internal static CandidateResult HttpResponse(int status,long milliseconds)
+    internal static CandidateResult HttpResponse(int status,long milliseconds,bool verifyBody=false)
     {
         // A valid TLS response proves the peer, not that this route can serve
         // the application. 451 explicitly refuses access. A generic 403 may be
         // a browser challenge/authentication requirement on every route.
         bool restricted=status==451;
+        if(verifyBody&&status!=200&&!restricted)
+            return new(false,false,"TLS established; HTTP "+status+" requires application context; content delivery unconfirmed",milliseconds)
+                {ConnectionEstablished=true,HttpStatus=status,Evidence="BodyUnknown"};
         return new(!restricted,!restricted,restricted?"TLS established; HTTP 451 access restriction":"TLS established; HTTP "+status,milliseconds)
         {ConnectionEstablished=true,HttpStatus=status};
     }
@@ -78,10 +81,31 @@ internal static class PolicyTransport
     }
     internal static HttpClient Client(int port,IPAddress address,TimeSpan timeout,Action<SslPolicyErrors>? certificateResult=null,Action? connected=null)
     {
-        var handler=new SocketsHttpHandler{UseProxy=false,AllowAutoRedirect=false,ConnectTimeout=timeout,
+        var handler=new SocketsHttpHandler{UseProxy=false,UseCookies=false,AllowAutoRedirect=false,ConnectTimeout=timeout,
             ConnectCallback=async(_,stop)=>{var stream=await Socks(port,address.ToString(),443,stop);connected?.Invoke();return stream;}};
         if(certificateResult!=null)handler.SslOptions.RemoteCertificateValidationCallback=(_,_,_,errors)=>{certificateResult(errors);return errors==SslPolicyErrors.None;};
         return new HttpClient(handler){Timeout=timeout};
+    }
+    internal static Uri? Redirect(Uri original,int status,Uri? location,int followed)
+    {
+        if(followed>=2||status is not (301 or 302 or 303 or 307 or 308)||location==null||location.OriginalString.Length>2048)return null;
+        if(!Uri.TryCreate(original,location,out var target)||target.Scheme!="https"||!target.IsDefaultPort||target.UserInfo.Length>0||
+            !string.Equals(target.IdnHost,original.IdnHost,StringComparison.OrdinalIgnoreCase))return null;
+        return target;
+    }
+    static async Task<HttpResponseMessage> RootResponse(HttpClient client,string domain,bool verifyBody,CancellationToken stop)
+    {
+        var current=new Uri("https://"+domain+"/");
+        for(int followed=0;;followed++)
+        {
+            using var request=new HttpRequestMessage(verifyBody?HttpMethod.Get:HttpMethod.Head,current){Version=HttpVersion.Version11,VersionPolicy=HttpVersionPolicy.RequestVersionExact};
+            var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,stop);
+            Uri? next=verifyBody?Redirect(current,(int)response.StatusCode,response.Headers.Location,followed):null;
+            if(next==null)return response;
+            // Only this independent anonymous probe follows redirects. The
+            // hostname/address/TLS verification and original 3s budget remain.
+            response.Dispose();current=next;
+        }
     }
     internal static async Task<CandidateResult> Probe(string domain,IPAddress address,int port,CancellationToken stop,bool verifyBody=false)
     {
@@ -89,15 +113,14 @@ internal static class PolicyTransport
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(stop);timeout.CancelAfter(TimeSpan.FromSeconds(3));
         int rejectedCertificate=0,connectionEstablished=0;
         using var client=Client(port,address,TimeSpan.FromSeconds(3),errors=>{if(errors!=SslPolicyErrors.None)Interlocked.Exchange(ref rejectedCertificate,1);},()=>Interlocked.Exchange(ref connectionEstablished,1));
-        using var request=new HttpRequestMessage(verifyBody?HttpMethod.Get:HttpMethod.Head,"https://"+domain+"/"){Version=HttpVersion.Version11,VersionPolicy=HttpVersionPolicy.RequestVersionExact};
         var timer=Stopwatch.StartNew();
         try
         {
-            using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,timeout.Token);
+            using var response=await RootResponse(client,domain,verifyBody,timeout.Token);
             if(!verifyBody)return HttpResponse((int)response.StatusCode,timer.ElapsedMilliseconds);
-            // No redirects, credentials, cookies, paths or user-request replay.
+            // No cross-host redirects, credentials, cookies or user-request replay.
             // A refusal/challenge is not evidence of usable resource delivery.
-            if(response.StatusCode!=HttpStatusCode.OK)return HttpResponse((int)response.StatusCode,timer.ElapsedMilliseconds);
+            if(response.StatusCode!=HttpStatusCode.OK)return HttpResponse((int)response.StatusCode,timer.ElapsedMilliseconds,verifyBody:true);
             await using var input=await response.Content.ReadAsStreamAsync(timeout.Token);
             var body=await PolicyBodyProbe.Read(input,response.Content.Headers.ContentLength,timeout.Token,stop);
             return new(body.Success,false,body.Evidence,timer.ElapsedMilliseconds){ConnectionEstablished=true,HttpStatus=200,Evidence=body.Evidence,BodyBytes=body.Bytes};

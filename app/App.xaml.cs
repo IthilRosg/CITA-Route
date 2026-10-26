@@ -21,6 +21,12 @@ public partial class App : Application
         catch(Exception ex){MessageBox.Show(ex.Message,"RoutePilot",MessageBoxButton.OK,MessageBoxImage.Error);Shutdown(1);return;}
         if(InstallationMaintenance.Problem(root) is string maintenanceProblem)
         {
+            if(e.Args.Contains("--self-test"))
+            {
+                Directory.CreateDirectory(Path.Combine(root,"logs"));
+                File.WriteAllText(Path.Combine(root,"logs","app-self-test.log"),maintenanceProblem);
+                Shutdown(1);return;
+            }
             MessageBox.Show(maintenanceProblem,"CITA Route",MessageBoxButton.OK,MessageBoxImage.Information);Shutdown(1);return;
         }
         if (e.Args.Contains("--self-test"))

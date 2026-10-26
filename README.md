@@ -1,5 +1,9 @@
 # CITA Route
 
+> **Native Preview branch:** this branch builds experimental CITA Route 0.6.5
+> with a bundled native AWG/WG transport. See [setup and limits](docs/NATIVE-PREVIEW.md).
+> The stable 0.6.4 release remains available through GitHub Releases.
+
 Windows client for adaptive routing through **WireSock Secure Connect**.
 Part of the CITA family: [AWG CITA](https://github.com/IthilRosg/AWG-CITA) manages VPN interfaces and client configurations; CITA Route chooses how local applications reach the network.
 

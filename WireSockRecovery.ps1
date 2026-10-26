@@ -44,6 +44,17 @@ function Get-SessionBridge($Session) {
 function Get-BridgeListenerObservation($Session) {
     $owned=@(Get-SessionBridge $Session)
     if($owned.Count -ne 1){return 'Missing'}
+    if($script:nativeListenerSupported -ne $false){
+        try{
+            $agent=Join-Path $env:ProgramFiles 'RoutePilot\Agent\RoutePilot.Agent.exe'
+            $state=(Read-HelperOutput $agent ('--bridge-listener "'+$root.TrimEnd('\')+'"') -join '').Trim()
+            if($state -in @('Ready','Missing','Foreign','Unknown')){$script:nativeListenerSupported=$true;return $state}
+        }catch{}
+        # One compatibility fallback for old protected agents; a transient failure
+        # of a previously supported reader remains Unknown, never Missing.
+        if($script:nativeListenerSupported -eq $true){return 'Unknown'}
+        $script:nativeListenerSupported=$false
+    }
     try {
         $listeners=@(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort 20808 -ErrorAction Stop)
         if(-not $listeners.Count){return 'Missing'}

@@ -18,7 +18,7 @@ function Get-StartupRouteState([string]$Root,[string]$StateFile='') {
     $state=Read-JsonFile $StateFile
     if($state.Schema -ne 1 -or -not $state.SourceRoot){throw 'Startup state is invalid.'}
     if([IO.Path]::GetFullPath($state.SourceRoot).TrimEnd('\') -ine [IO.Path]::GetFullPath($Root).TrimEnd('\')){return $null}
-    if($state.Phase -in @('WaitingForNetwork','Starting','Connected','Stopping','StopFailed','NeedsAttention')){return $state}
+    if($state.Phase -in @('WaitingForStorage','WaitingForNetwork','Starting','Connected','Stopping','StopFailed','NeedsAttention')){return $state}
     return $null
 }
 

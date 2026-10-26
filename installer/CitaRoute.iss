@@ -65,7 +65,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: 
 
 [Messages]
 russian.WelcomeLabel1=УСТАНОВКА CITA ROUTE
-russian.WelcomeLabel2=Прямой доступ. Обход DPI. VPN.%n%nВыбери папку установки и настрой запуск приложения. Для подключения до входа в Windows включи отдельную опцию в настройках после выбора профиля.%n%nВерсия {#ProductVersion}
+russian.WelcomeLabel2=Прямой доступ. Обход DPI. VPN.%n%nВыбери папку установки. В настройках CITA Route можно отдельно включить запуск программы при входе в Windows и подключение при запуске программы.%n%nВерсия {#ProductVersion}
 russian.SelectDirLabel3=Выбери папку для CITA Route. Профили и настройки будут храниться внутри неё.
 
 [Files]

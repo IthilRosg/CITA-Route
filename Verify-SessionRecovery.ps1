@@ -5,6 +5,9 @@ $fixture=Join-Path $PSScriptRoot ('runtime\session-tests-'+[guid]::NewGuid().ToS
 New-Item -ItemType Directory -Path $fixture | Out-Null
 $runtime=$fixture
 try {
+    foreach($case in @(@(0,900,2000),@(1,900,1100),@(2,1900,200),@(3,9000,200),@(1,-10,2000))){
+        if((Get-WatchDelayMilliseconds $case[0] $case[1]) -ne $case[2]){throw 'Fault sampling cadence must deduct work, preserve healthy idle delay and avoid a busy loop.'}
+    }
     if((Get-WatchRecoveryAction $true 0 'Disconnected' 2) -ne 'Observe' -or (Get-WatchRecoveryAction $true 0 'Disconnected' 3) -ne 'RepairVpn'){throw 'An explicit disconnect retains three-poll confirmation.'}
     if((Get-WatchRecoveryAction $true 0 'Connected' 99) -ne 'Observe'){throw 'Connected packet loss must not become a disconnect repair.'}
     Write-JsonFile (Join-Path $runtime 'session.json') @{id='timing';running=$true;bridgeGeneration=4}

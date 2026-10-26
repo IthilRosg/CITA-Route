@@ -119,7 +119,7 @@ public partial class MainWindow
             UpdateStatusLabel.Text=blocked;if(manual)Notice(blocked);return;
         }
         _updateInstalling=true;_busy=true;RefreshRescueState();ConnectButton.IsEnabled=false;
-        Process? installer=null;Task<string>? stdout=null,stderr=null;FileStream? preparation=null;
+        Process? installer=null;Task<string>? stdout=null,stderr=null;IDisposable? preparation=null;
         try
         {
             var prepared=_updates.Prepared;
@@ -143,7 +143,7 @@ public partial class MainWindow
             if(owned)
             {
                 _updates.Phase="Disconnecting";SaveUpdates();UpdateStatusLabel.Text="Отключаем маршрут перед установкой…";SetConnectionStage("Stopping");
-                var stopped=await ConnectionOperation.Run(_root,"Stop",true,progress:OperationProgress(),cancellation:_updateLifetime.Token);
+                var stopped=await ConnectionOperation.Run(_root,"Stop",true,progress:OperationProgress(),cancellation:_updateLifetime.Token,maintenanceReserved:true);
                 if(!stopped.Success)throw new IOException("Не удалось отключить маршрут: "+Backend.FriendlyError(stopped.Message));
                 _engineRunning=false;_engineAvailable=false;ClearNativeQuality();
             }

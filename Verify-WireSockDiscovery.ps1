@@ -1,8 +1,13 @@
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'ConnectionEnvironment.ps1')
+. (Join-Path $PSScriptRoot 'WireSockCli.ps1')
 function Check([bool]$condition,[string]$message){if(-not $condition){throw $message}}
 $base=Join-Path $PSScriptRoot ('runtime\discovery-test-'+[guid]::NewGuid().ToString('N'))
 try {
+ $usage="list`r`nconnect <profile> [-network-lock <mode>] [-exit] [-log-level <level>]`r`ndisconnect`r`nstatus`r`nimport <file>`r`nexport <profile> <file>`r`ndelete <profile>"
+ Check (Test-WireSockManagementUsage $usage) 'Modern management capabilities must be explicit in help output.'
+ foreach($required in @('list','export','delete','-network-lock','-exit','-log-level')){Check (-not(Test-WireSockManagementUsage $usage.Replace($required,'unsupported'))) 'Missing command or option must not be inferred from the executable name/version.'}
+ Check (-not(Test-WireSockManagementUsage 'install run -config filename')) 'The SDK console cannot be passed profile management operations.'
  foreach($name in @('OldRoot','NewRoot\command-line','NewRoot\bin','NewRoot\service','RootCli','Unknown')){New-Item -ItemType Directory (Join-Path $base $name) -Force|Out-Null}
  foreach($name in @('OldRoot\wiresock-client.exe','NewRoot\command-line\wiresock-connect-cli.exe','NewRoot\bin\WireSockConnect.exe','NewRoot\service\wiresock-connect-service.exe','RootCli\wiresock-connect-cli.exe','Unknown\unrelated.exe')){[IO.File]::WriteAllBytes((Join-Path $base $name),[byte[]]@())}
  $fromApp=Resolve-WireSockInstallationHints @((Join-Path $base 'NewRoot\bin\WireSockConnect.exe'))

@@ -48,7 +48,7 @@ public sealed class RescueClient
     }
     public async Task<RescueReply> Command(string command,string? id=null)
     {
-        if(command is not ("status" or "dry-run" or "test-vpnus" or "test-wiresock" or "test-system" or "recover" or "boot-stop" or "boot-disable"))throw new ArgumentException("Unknown rescue command.");
+        if(command is not ("status" or "dry-run" or "test-vpnus" or "test-wiresock" or "test-system" or "recover" or "boot-stop" or "boot-disable" or "begin-operation" or "end-operation"))throw new ArgumentException("Unknown rescue command.");
         using var pipe=new NamedPipeClientStream(".","RoutePilot.Rescue.v1",PipeDirection.InOut,PipeOptions.Asynchronous,TokenImpersonationLevel.Identification);
         using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(8));await pipe.ConnectAsync(timeout.Token);
         await pipe.WriteAsync(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new{Command=command,RunId=id})+"\n"),timeout.Token);await pipe.FlushAsync(timeout.Token);

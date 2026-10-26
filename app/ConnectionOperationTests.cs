@@ -124,7 +124,7 @@ public static class ConnectionOperationTests
             {
                 var blocked=await ConnectionOperation.Run(folder,"Start",false);
                 if(blocked.Success)throw new Exception("An update preparation must reject a concurrent Start.");
-                var stopDuringUpdate=await ConnectionOperation.Run(folder,"Stop",false);
+                var stopDuringUpdate=await ConnectionOperation.Run(folder,"Stop",false,maintenanceReserved:true);
                 if(!stopDuringUpdate.Success)throw new Exception("An update preparation must allow its own Stop.");
             }
         }

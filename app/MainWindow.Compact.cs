@@ -16,6 +16,7 @@ public partial class MainWindow
     bool _pendingConnectionOperation;
     CancellationTokenSource? _connectionCancellation;
     string _operationPhase="";
+    bool _wireSockSetupRequested;
     DateTime _phaseStarted;
     bool _lastNoticeError;
     DateTime _lastNoticeAt=DateTime.MinValue;
@@ -66,6 +67,8 @@ public partial class MainWindow
         void Add(string label,Action action){var item=new MenuItem{Header=label};item.Click+=(_,_)=>action();menu.Items.Add(item);}
         Add("Расширенный вид",()=>ApplyView(false));
         Add("Проверить обновления",async()=>await CheckUpdatesAsync(true));
+        Add("WireSock · установка и совместимость",()=>{ApplyView(false);PreviewPage(4);});
+        Add("Не открывается сайт · проверить",()=>{ApplyView(false);PreviewPage(2);});
         Add("Состояние ресурсов Windows",ShowResourceDetails);
         menu.Items.Add(new Separator());
         Add("Открыть журнал",()=>{ApplyView(false);PreviewPage(3);});
@@ -80,7 +83,8 @@ public partial class MainWindow
         CompactStage.Foreground=ConsoleTheme.Text;
         CompactStage.Text=phase=="Discovering"?"Ищем WireSock и доступные профили…":ConnectionProgress.Label(phase);
         CompactStage.ToolTip=CompactStage.Text;
-        if(phase=="Stopping")SetStatus("Отключение…",false);
+        if(phase is "DownloadingWireSock" or "InstallingWireSock")SetStatus("Обновление WireSock",false);
+        else if(phase=="Stopping")SetStatus("Отключение…",false);
         else if(phase!="UpdatingRules")SetStatus(phase=="Cancelling"?"Отмена подключения":"Подключение…",false);
         SyncConnectionButtons();
     }
@@ -92,7 +96,7 @@ public partial class MainWindow
         CompactConnectButton.Content=label;CompactConnectButton.IsEnabled=enabled;
         ConnectButton.Content=label;ConnectButton.IsEnabled=enabled;
         CompactProfileButton.IsEnabled=!_busy&&!_engineRunning&&!startup&&!_rescueState.BlocksRouting&&!_pendingConnectionOperation;
-        bool active=_busy||_updateDownloading||_updateInstalling||(startup&&state.Phase is "WaitingForNetwork" or "Starting" or "Stopping");
+        bool active=_busy||_updateDownloading||_updateInstalling||(startup&&state.Phase is "WaitingForStorage" or "WaitingForNetwork" or "Starting" or "Stopping");
         CompactActivity.Visibility=active?Visibility.Visible:Visibility.Collapsed;
         CompactActivity.IsIndeterminate=active&&IsVisible&&WindowState!=WindowState.Minimized;
     }
@@ -118,16 +122,18 @@ public partial class MainWindow
         }
         CompactStage.ToolTip=CompactStage.Text;SyncNativeCompact();SyncConnectionButtons();
     }
-    async Task<ConnectionSelection?> SelectConnectionAsync(bool force,CancellationToken cancellation)
+    async Task<ConnectionSelection?> SelectConnectionAsync(bool force,CancellationToken cancellation,bool allowPrompt=true)
     {
+        _wireSockSetupRequested=false;
         SetConnectionStage("Discovering");
         await DiscoverConnectionsAsync(_inventory.CliPath);
         cancellation.ThrowIfCancellationRequested();
         while(true)
         {
             string? selected=ProfileInput.SelectedItem as string;
-            if(!force && _inventory.CliPath.Length>0 && selected!=null && _inventory.Profiles.Contains(selected))
+            if(!force && WireSockCompatibility.Assess(_inventory).CanManage && _inventory.CliPath.Length>0 && selected!=null && _inventory.Profiles.Contains(selected))
                 return new(_inventory.CliPath,selected,selected==_inventory.SelectedProfile?_inventory.ExpectedEgressIp:"");
+            if(!allowPrompt){Notice("Автоподключение: проверь WireSock и выбери профиль кнопкой «Подключить».",true);return null;}
             bool missing=_profileMemory.Preferred(_inventory.CliPath,_inventory.SelectedProfile).Length>0 && selected==null;
             var prompt=new ProfilePrompt(_inventory,selected,missing,!force){Owner=this};
             SetConnectionStage("ChoosingProfile");
@@ -137,6 +143,14 @@ public partial class MainWindow
             {
                 ProfileInput.SelectedItem=prompt.SelectedProfile;SyncCompact();
                 return new(_inventory.CliPath,prompt.SelectedProfile,prompt.SelectedProfile==_inventory.SelectedProfile?_inventory.ExpectedEgressIp:"");
+            }
+            if(prompt.Action=="InstallWireSock")
+            {
+                _wireSockSetupRequested=true;
+                // The connection transaction has not started yet. Leave profile
+                // selection before offering maintenance to avoid nested leases.
+                Notice("Открой настройки → WireSock → «Установить / обновить». После установки выбери профиль.");
+                ApplyView(false);PreviewPage(4);return null;
             }
             if(prompt.Action=="Browse")
             {
@@ -200,6 +214,9 @@ public partial class MainWindow
     {
         if(UseNativeBackend){await NativeActionAsync(_nativeView?.Desired!=true,startOnly);return;}
         if(_render)return;
+        // Automatic startup must never turn an existing connection into Stop,
+        // or cancel an operation already started by the user/service.
+        if(startOnly&&(_busy||_engineRunning||_backend.EngineRunning(AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession()))||Cita.Startup.StartupPaths.Read().Active))return;
         if(_pendingConnectionOperation || ConnectionOperation.Active(_root)){Notice("Предыдущая операция ещё завершается. Подробности — в журнале.",true);return;}
         if(_busy){_connectionCancellation?.Cancel();if(_connectionCancellation!=null)SetConnectionStage("Cancelling");return;}
         if(_engineRunning||(Cita.Startup.StartupPaths.Read() is {Active:true} startup&&startup.Owns(_root))){await PerformActionAsync("Stop");return;}
@@ -207,8 +224,9 @@ public partial class MainWindow
         _busy=true;_lastNoticeError=false;_connectionCancellation=new();SyncConnectionButtons();
         try
         {
-            var selection=await SelectConnectionAsync(false,_connectionCancellation.Token);
-            if(selection==null){Notice("Подключение отменено.");return;}
+            var selection=await SelectConnectionAsync(false,_connectionCancellation.Token,!startOnly);
+            if(selection==null){if(!startOnly&&!_wireSockSetupRequested)Notice("Подключение отменено.");return;}
+            if(startOnly&&(_backend.EngineRunning(AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession()))||Cita.Startup.StartupPaths.Read().Active))return;
             bool setup=NeedsConnectionSetup(selection);
             var progress=OperationProgress();
             var result=await ConnectionOperation.Run(_root,"Start",true,setup?selection:null,progress,_connectionCancellation.Token);

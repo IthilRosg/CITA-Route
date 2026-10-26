@@ -16,6 +16,14 @@ public static class Program
             if(args.Length==2&&args[0]=="--register-browser-feedback"){BrowserNativeHost.Register(Path.GetFullPath(args[1]),true);return 0;}
             if(args.Length==2&&args[0]=="--unregister-browser-feedback"){BrowserNativeHost.Unregister(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==1 && args[0]=="--self-test"){await AgentTests.Run();return 0;}
+            if(args.Length==1&&args[0]=="--startup-activation")
+            {Console.WriteLine(JsonSerializer.Serialize(new{schema=1,activationAvailable=WindowsActivation.Current.Length==64,kernelBootUtc=BootRouting.BootUtc}));return 0;}
+            if(args.Length==3&&args[0]=="--diagnose-route")
+            {
+                using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(12));
+                var report=await RouteDiagnostic.Run(Path.GetFullPath(args[1]),args[2],stop.Token);
+                Console.WriteLine(JsonSerializer.Serialize(report,Storage.Json));return 0;
+            }
             if(args.Length==1 && args[0]=="--browser-feedback-logic-test"){await PolicyBrowserFeedbackTests.Run(false);return 0;}
             if(args.Length==2&&args[0]=="--diagnostics-journal-benchmark"){DiagnosticEvidenceLab.Run(Path.GetFullPath(args[1]));return 0;}
             if(args.Length==3&&args[0]=="--diagnostics-replay"){DiagnosticEvidenceLab.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]));return 0;}
@@ -81,6 +89,11 @@ public static class Program
                 if(!int.TryParse(args[3],out int generation)||generation<0)throw new ArgumentException("Invalid bridge generation.");
                 var result=await ComponentLiveness.PauseBridge(root,args[2],generation,Path.Combine(AppContext.BaseDirectory,"vpn-bridge.exe"),()=>Telemetry.WireSockStatistics.Read(config.WireSockCliPath));
                 Console.WriteLine(JsonSerializer.Serialize(result,Storage.Wire));return 0;
+            }
+            if(args.Length==2 && args[0]=="--bridge-listener")
+            {
+                string root=Path.GetFullPath(args[1]);ComponentLiveness.Configured(root);
+                Console.WriteLine(TcpListenerOwnership.Bridge(root));return 0;
             }
             if(args.Length==2 && args[0]=="--network-signature"){Console.WriteLine(PolicyNetwork.Signature(Path.GetFullPath(args[1])));return 0;}
             if(args.Length==3 && args[0]=="--check-site"){await PolicyLiveCheck.Site(Path.GetFullPath(args[1]),args[2]);return 0;}

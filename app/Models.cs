@@ -29,6 +29,13 @@ public static class AppPaths
                 path=Path.Combine(Cita.Startup.StartupPaths.RoutingRoot(root),"runtime",Path.GetFileName(path));
             }
             using var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+            // Windows PowerShell 5.1 writes a UTF-8 BOM. Accept it rather than
+            // silently replacing otherwise valid saved preferences with defaults.
+            if(stream.Length>=3)
+            {
+                Span<byte> prefix=stackalloc byte[3];stream.ReadExactly(prefix);
+                if(prefix[0]!=0xEF||prefix[1]!=0xBB||prefix[2]!=0xBF)stream.Position=0;
+            }
             return JsonSerializer.Deserialize<T>(stream,Json) ?? fallback();
         }
         catch { return fallback(); }
@@ -91,6 +98,10 @@ public sealed class Preferences
     public bool CloseToTray{get;set;}=true;
     public int RefreshSeconds{get;set;}=1;
     public bool AutoInstallUpdates{get;set;}=true;
+    public bool AutoUpdateWireSock{get;set;}
+    public bool ConnectOnLaunch{get;set;}
+    public int StartupBehaviorVersion{get;set;}
+    public string WireSockNotifiedVersion{get;set;}="";
     public string ViewMode{get;set;}="Compact";
     public bool ResourceNotificationsEnabled{get;set;}
     public string ResourceNotificationKey{get;set;}="";

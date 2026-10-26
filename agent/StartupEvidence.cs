@@ -9,6 +9,7 @@ internal sealed class StartupEvidence
 {
     public int Schema{get;set;}=1;
     public DateTime BootUtc{get;set;}
+    public string ActivationId{get;set;}=WindowsActivation.Current;
     public DateTime StartedUtc{get;set;}=DateTime.UtcNow;
     public DateTime? ConnectedUtc{get;set;}
     public int ServiceSessionId{get;set;}=Process.GetCurrentProcess().SessionId;

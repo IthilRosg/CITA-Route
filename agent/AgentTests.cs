@@ -9,6 +9,7 @@ public static class AgentTests
     public static async Task Run()
     {
         StartupTests.Run();
+        TcpListenerOwnership.Test();
         ResourceGuardTests.Run();
         ComponentLivenessTests.Run();
         SystemRouterTests.Run();
@@ -22,6 +23,7 @@ public static class AgentTests
         await PolicyDnsTests.Run();
         await PolicyDnsFallbackTests.Run();
         await PolicyBodyProbeTests.Run();
+        await RouteDiagnosticTests.Run();
         await PolicyWarmupTests.Run();
         await PolicyFirstUseTests.Run();
         await PolicyTimingTests.Run();

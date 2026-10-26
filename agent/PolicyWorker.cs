@@ -9,7 +9,7 @@ using System.Text.RegularExpressions;
 namespace RoutePilot.Agent;
 
 public sealed record PolicyKey(string Epoch,string Domain,string Application,int Port,string Protocol="tcp",string Strategy=PolicyKey.CurrentStrategy)
-{public const string CurrentStrategy="tls-record-ipv4-body-v4";}
+{public const string CurrentStrategy="tls-record-ipv4-body-v5";}
 public sealed record PolicyDecision(PolicyKey Key,string Route,string Reason,DateTime CheckedUtc,DateTime ExpiresUtc,long Milliseconds)
 {public string Evidence{get;init;}="Headers";}
 public sealed class PolicyOptions {public string Mode{get;set;}="Lists";public bool AllowListedDpi{get;set;}public bool ExperimentalFastTcp{get;set;}public bool ExperimentalBrowserFeedback{get;set;}public bool VerifyBody{get;set;}=true;public bool Warmup{get;set;}=true;public bool FirstUseGate{get;set;}}

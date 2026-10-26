@@ -30,6 +30,8 @@ public sealed class ConnectionProgress
         "Verifying"=>"Проверяем соединение через VPN…",
         "Stopping"=>"Отключаем маршрут…",
         "UpdatingRules"=>"Обновляем списки маршрутов…",
+        "DownloadingWireSock"=>"Загружаем и проверяем WireSock…",
+        "InstallingWireSock"=>"Устанавливаем WireSock. Дождись завершения установщика…",
         "Cancelling"=>"Отменяем подключение и завершаем очистку…",
         _=>"Выполняется операция…"
     };
@@ -97,8 +99,13 @@ public static class ConnectionOperation
             "$operationLock=$null; try{$operationLock=[IO.File]::Open((Join-Path $runtime 'connection-operation.lock'),'OpenOrCreate','ReadWrite','None'); "+startGuard+"Assert-ConnectionOperation; "+steps+"Write-JsonFile "+Literal(report)+" @{id=$OperationId;success=$true;applied=$applied;cancelled=$false;message=''}}"+
             "catch{$failure=$_.Exception.Message; "+cleanup+restore+"Write-JsonFile "+Literal(report)+" @{id=$OperationId;success=$false;applied=$applied;cancelled=(Test-ConnectionCancellation);message=$failure};exit 1}finally{if($operationLock){$operationLock.Dispose()}}";
     }
-    public static async Task<ConnectionResult> Run(string root,string action,bool elevated,ConnectionSelection? setup=null,IProgress<ConnectionProgress>? progress=null,CancellationToken cancellation=default,TimeSpan? timeout=null)
+    public static async Task<ConnectionResult> Run(string root,string action,bool elevated,ConnectionSelection? setup=null,IProgress<ConnectionProgress>? progress=null,CancellationToken cancellation=default,TimeSpan? timeout=null,bool maintenanceReserved=false)
     {
+        if(action=="Start"&&WireSockMaintenance.BlockReason(root) is string dependencyProblem)return new(){Message=dependencyProblem};
+        MachineOperationLease? machine;
+        try{machine=maintenanceReserved?null:MachineOperationLease.Acquire(allowInstaller:action=="Stop");}
+        catch(IOException ex){return new(){Message=ex.Message};}
+        using var machineReservation=machine;
         var startup=Cita.Startup.StartupPaths.Read();
         if(startup.Active&&startup.Owns(root))
         {
@@ -129,6 +136,7 @@ public static class ConnectionOperation
         string id=Guid.NewGuid().ToString("N"),prefix=Path.Combine(root,"runtime","operation-"+id);
         string sid=WindowsIdentity.GetCurrent().User!.Value,user=Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         string command=Command(root,id,action,setup,sid,user);
+        if(!maintenanceReserved)command=MachineOperationLease.GuardPowerShell(command);
         using var deadline=new CancellationTokenSource(timeout??TimeSpan.FromMinutes(6));
         using var lifetime=CancellationTokenSource.CreateLinkedTokenSource(cancellation,deadline.Token);
         using var registration=lifetime.Token.Register(()=>{try{File.WriteAllText(prefix+".cancel",id);}catch(IOException){}catch(UnauthorizedAccessException){}});
@@ -150,6 +158,9 @@ public static class ConnectionOperation
             catch{try{File.Delete(transaction);}catch(IOException){}catch(UnauthorizedAccessException){}throw;}
         }
         using var process=await Launch();
+        // The child now takes the same machine mutex. Release the temporary UI
+        // reservation so ownership survives a closed/crashed GUI and Pending.
+        machine?.Dispose();
         DateTime last=DateTime.MinValue,cancelAt=DateTime.MaxValue;bool cancelReported=false,pending=false;
         try
         {

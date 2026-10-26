@@ -32,13 +32,20 @@ public static class UpdateJournal
         state.NetworkRetries=0;state.NextRetryUtc=DateTime.MinValue;state.DeferredUntilUtc=DateTime.MinValue;
         return true;
     }
-    public static FileStream ReservePreparation(string root)
+    public static IDisposable ReservePreparation(string root)
     {
+        var machine=MachineOperationLease.Acquire();
+        try
+        {
         // Both sides take the operation lock before testing/reserving this gate.
         // Stop remains available; a new Start must fail until installer ownership.
         using var operation=new FileStream(Path.Combine(root,"runtime","connection-operation.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
-        return new FileStream(Path.Combine(root,"runtime","update-preparation.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
+        return new PreparationLease(machine,new FileStream(Path.Combine(root,"runtime","update-preparation.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None));
+        }
+        catch{machine.Dispose();throw;}
     }
+    sealed class PreparationLease(IDisposable machine,IDisposable local):IDisposable
+    {public void Dispose(){try{local.Dispose();}finally{machine.Dispose();}}}
     public static string? PreparationBlockReason(string root,bool busy,bool ownedEngine,bool diagnostic,bool globalEngine)
     {
         if(busy)return "Дождись завершения текущей операции.";

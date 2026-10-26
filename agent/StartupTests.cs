@@ -18,7 +18,20 @@ internal static class StartupTests
         Assert(StartupPaths.SameBoot(boot.AddMilliseconds(200),boot),"Service restart must not reconnect after manual Stop in the same Windows boot.");
         Assert(!StartupPaths.SameBoot(boot.AddHours(-1),boot),"A new Windows boot must permit the configured startup attempt.");
         Assert(!StartupPaths.SameBoot(default,boot),"Missing startup journal cannot claim a previous attempt.");
-        foreach(string phase in new[]{"WaitingForNetwork","Starting","Connected","Stopping","StopFailed","NeedsAttention"})Assert(new StartupState{Phase=phase}.Active,"Uncertain startup ownership must block parallel route operations: "+phase);
+        string first=new('A',64),second=new('B',64);
+        var activation=new StartupState{BootUtc=boot,ActivationId=first,Phase="StoppedForBoot"};
+        Assert(StartupPaths.SameActivation(activation,boot,first),"Service restart or sleep in one activation must preserve manual Stop.");
+        Assert(!StartupPaths.SameActivation(activation,boot,second),"Fast Startup may preserve kernel boot time but must permit the next configured connection.");
+        Assert(!StartupPaths.SameActivation(activation,boot.AddHours(1),first),"A stale boot event cannot suppress a real kernel restart.");
+        activation.ActivationId="";Assert(StartupPaths.SameActivation(activation,boot,second),"An older journal must preserve same-boot manual Stop during migration.");
+        Assert(NativeService.RearmStartup(5)&&NativeService.RearmStartup(15)&&!NativeService.RearmStartup(1)&&!NativeService.RearmStartup(13),"Shutdown/preshutdown rearm startup; ordinary service Stop and suspend do not.");
+        string Event(int id,string provider,DateTime at)=>$"<Event><System><Provider Name='{provider}'/><EventID>{id}</EventID><EventRecordID>123</EventRecordID><TimeCreated SystemTime='{at:O}'/></System></Event>";
+        var eventNow=DateTime.UtcNow;
+        string marker=WindowsActivation.Parse(Event(27,"Microsoft-Windows-Kernel-Boot",eventNow.AddMinutes(-2)),eventNow);
+        Assert(marker.Length==64&&marker==WindowsActivation.Parse(Event(27,"Microsoft-Windows-Kernel-Boot",eventNow.AddMinutes(-2)),eventNow),"A boot marker must be stable across service restarts.");
+        Assert(WindowsActivation.Parse(Event(27,"Other",eventNow),eventNow)==""&&WindowsActivation.Parse(Event(1,"Microsoft-Windows-Kernel-Boot",eventNow),eventNow)==""&&
+            WindowsActivation.Parse(Event(27,"Microsoft-Windows-Kernel-Boot",eventNow.AddMinutes(1)),eventNow)=="","Unrelated or future events cannot authorize another boot connection.");
+        foreach(string phase in new[]{"WaitingForStorage","WaitingForNetwork","Starting","Connected","Stopping","StopFailed","NeedsAttention"})Assert(new StartupState{Phase=phase}.Active,"Uncertain startup ownership must block parallel route operations: "+phase);
         foreach(string phase in new[]{"Disabled","ReadyForBoot","StoppedForBoot"})Assert(!new StartupState{Phase=phase}.Active,"An intentionally inactive startup route cannot block ordinary connection.");
         string root=Path.Combine(Path.GetTempPath(),"CITA startup source");
         var state=new StartupState{SourceRoot=root};

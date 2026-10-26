@@ -25,7 +25,29 @@ internal static class NativeComponentDownload
         Trusted(response);await using var input=await response.Content.ReadAsStreamAsync(stop);using var data=new MemoryStream();byte[] buffer=new byte[16384];int count;while((count=await input.ReadAsync(buffer,stop))>0){if(data.Length+count>maximum)throw new IOException("Ответ сервера слишком большой.");data.Write(buffer,0,count);}return data.ToArray();
     }
     internal static async Task<NativeComponentArchive> Fetch(string root,IProgress<int>? progress,CancellationToken stop)
-    {using var http=ReleaseUpdates.CreateClient(false);return await Fetch(http,root,progress,stop);}
+    {
+        if(Bundled(root,stop) is { } bundled){progress?.Report(100);return bundled;}
+        using var http=ReleaseUpdates.CreateClient(false);return await Fetch(http,root,progress,stop);
+    }
+    internal static NativeComponentArchive? Bundled(string root,CancellationToken stop)
+    {
+        string product=Path.Combine(root,"product.json");
+        if(!File.Exists(product))return null;
+        using var json=JsonDocument.Parse(File.ReadAllText(product));
+        if(!json.RootElement.TryGetProperty("distribution",out var distribution)||
+           !distribution.TryGetProperty("nativeComponentSha256",out var digest))return null;
+        string expected=digest.GetString()??"";
+        if(expected.Length!=64||expected.Any(c=>!Uri.IsHexDigit(c)))throw new IOException("Некорректная контрольная сумма встроенного модуля.");
+        string path=Path.Combine(root,"runtime","native-components.zip");
+        var file=new FileInfo(path);
+        if(!file.Exists||file.Length is <1 or >201326592||file.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            throw new IOException("Встроенный модуль установщика отсутствует или повреждён. Повтори установку CITA.");
+        stop.ThrowIfCancellationRequested();
+        using var input=File.OpenRead(path);string actual=Convert.ToHexString(SHA256.HashData(input));
+        stop.ThrowIfCancellationRequested();
+        if(!actual.Equals(expected,StringComparison.OrdinalIgnoreCase))throw new IOException("Контрольная сумма встроенного модуля установщика не совпала. Повтори установку CITA.");
+        return new(path,actual);
+    }
     internal static async Task<NativeComponentArchive> Fetch(HttpClient http,string root,IProgress<int>? progress,CancellationToken stop)
     {
         string tag="v"+ReleaseUpdates.Current.ToString(3),name="CITA-Route-native-"+ReleaseUpdates.Current.ToString(3)+"-win-x64.zip";

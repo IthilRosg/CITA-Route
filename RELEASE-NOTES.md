@@ -1,3 +1,10 @@
+CITA Route 0.6.5 Native Preview — separate experimental native transport build.
+
+- Bundle the verified AWG 3.1/WG userspace transport, routing core and scoped native guard with EXE Setup; preparation uses the bundled archive after SHA-256 verification.
+- Keep WireSock available and retain explicit native setup, profile import and backend selection. No automatic migration of an active connection.
+- Download the Microsoft .NET prerequisite separately only when missing. Native corresponding source and offline rebuild recipe are provided as a separate preview asset.
+- Include the current native DNS, scoped routing, coordinated recovery and bounded socket-repair work. This is a pre-release, not a stable-channel update; see docs/NATIVE-PREVIEW.md for limitations and test evidence.
+
 CITA Route 0.6.4 — socket resource cleanup, resource delivery, Mini Apps and WireSock discovery.
 
 - Fix Windows TCP/UDP readiness state after a read deadline in both router and bridge. Closed or expired associations can release their sockets without periodically restarting active traffic. Includes corrected source and regression tests.

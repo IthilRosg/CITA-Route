@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -35,6 +36,20 @@ public partial class MainWindow
         double advancedWidth=Math.Max(MinWidth,Math.Min(1200,SystemParameters.WorkArea.Width-24)),advancedHeight=Math.Max(MinHeight,Math.Min(780,SystemParameters.WorkArea.Height-24));
         Width=advancedWidth;Height=advancedHeight;UpdateLayout();
         Assert(AdvancedHost.IsVisible&&!CompactHost.IsVisible,"Advanced view must retain the complete interface.");
+        _connections=new(){new(){Id="grid",Host="example.com",Upload=1}};UpdateConnectionGrids();
+        var stableGrid=ConnectionsGrid.ItemsSource;var stableRecent=RecentGrid.ItemsSource;UpdateConnectionGrids();
+        Assert(ReferenceEquals(stableGrid,ConnectionsGrid.ItemsSource)&&ReferenceEquals(stableRecent,RecentGrid.ItemsSource),"Unchanged connection snapshots must preserve DataGrid bindings instead of rebuilding rows each tick.");
+        var displayedRow=ConnectionsGrid.Items.Cast<ConnectionRow>().Single();int counterUpdates=0;
+        displayedRow.PropertyChanged+=(_,eventArgs)=>{if(eventArgs.PropertyName==nameof(ConnectionRow.Uploaded))counterUpdates++;};
+        _connections[0].Upload=2;UpdateConnectionGrids();
+        Assert(ReferenceEquals(stableGrid,ConnectionsGrid.ItemsSource)&&displayedRow.Uploaded==Format.Bytes(2)&&counterUpdates>0,"A reused row must notify the bound traffic counter without rebuilding the grid.");
+        counterUpdates=0;_connections=new(){new(){Id="grid",Host="example.com",Upload=3}};UpdateConnectionGrids();
+        Assert(ReferenceEquals(stableGrid,ConnectionsGrid.ItemsSource)&&displayedRow.Uploaded==Format.Bytes(3)&&counterUpdates>0,"A fresh snapshot with the same connection ID must update the existing bound counter.");
+        _inventory=new(){Kind="ApplicationOnly",ExecutablePath="fixture.exe",Version="2.4.23.1"};RefreshWireSockCompatibility();
+        Assert(InstallWireSockButton.Visibility==Visibility.Visible&&WireSockCompatibilityLabel.Text.Contains("несовместимая"),"WireSock 2.x must offer an upgrade instead of asking for a nonexistent CLI.");
+        _inventory=new(){Kind="SecureConnectCli",CliPath="fixture.exe",Version="3.7.2.1",CliTrusted=true,ManagementReady=true};RefreshWireSockCompatibility();
+        Assert(InstallWireSockButton.Visibility==Visibility.Collapsed&&WireSockCompatibilityLabel.Text.Contains("новее"),"A newer WireSock cannot be offered a silent downgrade.");
+        _inventory=new(){CliPath="fixture.exe",Profiles=new[]{"first","second"}};
         PreviewPage(2);ApplyView(true);
         Assert(_engineRunning && (string)ProfileInput.SelectedItem=="second" && _routingPolicy.Mode=="Lists" && _routingPolicy.AllowListedDpi,"Changing presentation must not change routing/profile state.");
         ApplyView(false);

@@ -1,9 +1,18 @@
 ﻿[CmdletBinding()]
-param([ValidateRange(1,240)][int]$ReadinessDelaySeconds=185)
+param(
+    [ValidateRange(1,240)][int]$ReadinessDelaySeconds=185,
+    [switch]$DisposableLab,
+    [string]$FixtureCliDirectory='',
+    [switch]$KeepForPowerCycle
+)
 $ErrorActionPreference='Stop'
 # This test installs a real SYSTEM service with a synthetic filesystem-only
 # transport. It must never run on a user's existing installation.
-if($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted'){throw 'Startup service integration requires a disposable GitHub-hosted Windows runner.'}
+if($DisposableLab){
+    $uuid=(Get-CimInstance Win32_ComputerSystemProduct).UUID
+    if($uuid -ne '7FD94D56-8371-9517-13D4-69A8082A2F01'){throw 'Startup integration requires the explicitly owned disposable Windows 10 lab.'}
+}elseif($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted'){throw 'Startup service integration requires a disposable GitHub-hosted Windows runner.'}
+if($KeepForPowerCycle -and -not $DisposableLab){throw 'Power-cycle retention is restricted to the owned disposable lab.'}
 $root=$PSScriptRoot
 $protected=Join-Path $env:ProgramFiles 'RoutePilot\Agent'
 $shared=Join-Path $env:ProgramData 'RoutePilot'
@@ -15,6 +24,7 @@ $agent=Join-Path $protected 'RoutePilot.Agent.exe'
 $bootClient=Join-Path $protected 'startup-client'
 $stateFile=Join-Path $shared 'startup-state.json'
 $created=$false
+$passed=$false
 function Assert($Value,[string]$Message){if(-not $Value){throw $Message}}
 function ReadState{
     # The service atomically replaces this file. Allow replacement while the
@@ -29,7 +39,7 @@ function WaitPhase([string]$Phase){
     throw ('Startup phase was not reached: '+$Phase+'; observed '+(ReadState).Phase)
 }
 function NewBoot{
-    $state=ReadState;$state.BootUtc=[datetime]::UtcNow.AddDays(-1).ToString('o')
+    $state=ReadState;$state.BootUtc=[datetime]::UtcNow.AddDays(-1).ToString('o');$state|Add-Member -NotePropertyName ActivationId -NotePropertyValue '' -Force
     [IO.File]::WriteAllText($stateFile,($state|ConvertTo-Json))
 }
 function StopFixtureService{
@@ -47,8 +57,13 @@ try{
     }
     Copy-Item -LiteralPath (Join-Path $root 'runtime\agent-build\RoutePilot.Agent.exe') -Destination $agent
     Copy-Item -LiteralPath (Join-Path $root 'runtime\smart-router.exe') -Destination (Join-Path $protected 'smart-router.exe')
-    & dotnet publish (Join-Path $root 'tools\startup-cli-fixture\Cita.StartupCliFixture.csproj') -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o (Join-Path $protected 'fixture-cli')
-    if($LASTEXITCODE -ne 0){throw 'Startup CLI fixture did not build.'}
+    if($FixtureCliDirectory){
+        if(-not $DisposableLab -or -not(Test-Path -LiteralPath (Join-Path $FixtureCliDirectory 'wiresock-connect-cli.exe'))){throw 'Invalid prebuilt disposable-lab fixture.'}
+        Copy-Item -LiteralPath $FixtureCliDirectory -Destination (Join-Path $protected 'fixture-cli') -Recurse
+    }else{
+        & dotnet publish (Join-Path $root 'tools\startup-cli-fixture\Cita.StartupCliFixture.csproj') -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o (Join-Path $protected 'fixture-cli')
+        if($LASTEXITCODE -ne 0){throw 'Startup CLI fixture did not build.'}
+    }
     $cli=Join-Path $protected 'fixture-cli\wiresock-connect-cli.exe'
     $ready=Join-Path $protected 'fixture-cli\fixture-ready.txt'
     [IO.File]::WriteAllText($ready,'ready')
@@ -136,6 +151,14 @@ if($Action -eq 'Start'){
     WaitPhase 'StoppedForBoot'
     StopFixtureService;Start-Service -Name $serviceName;Start-Sleep -Seconds 2
     Assert ((ReadState).Phase -eq 'StoppedForBoot') 'Service restart undid intentional manual Stop.'
+    # A late secondary installation drive must wait rather than fail startup.
+    StopFixtureService;NewBoot
+    $missing=$client+'-temporarily-unavailable'
+    Move-Item -LiteralPath $client -Destination $missing
+    try{
+        Start-Service -Name $serviceName;WaitPhase 'WaitingForStorage'
+        & $agent boot-stop $client|Out-Null;WaitPhase 'StoppedForBoot'
+    }finally{StopFixtureService;Move-Item -LiteralPath $missing -Destination $client}
     # A late WireSock dependency may become ready after the former 3-minute
     # limit. Only the explicitly dispatched extended test waits that long.
     StopFixtureService;Remove-Item -LiteralPath $ready;NewBoot;Start-Service -Name $serviceName;WaitPhase 'WaitingForNetwork'
@@ -197,12 +220,23 @@ if($Action -eq 'Start'){
     Assert ($LASTEXITCODE -eq 0 -and -not (ReadState).Enabled) 'Uninstall could not disable the inactive startup setting.'
     StopFixtureService;NewBoot;Start-Service -Name $serviceName;Start-Sleep -Seconds 2
     Assert ((ReadState).Phase -eq 'Disabled') 'Disabled startup connected after a new boot.'
+    if($KeepForPowerCycle){
+        StopFixtureService
+        & $agent --configure-boot $client on
+        Assert ($LASTEXITCODE -eq 0) 'Power-cycle fixture could not be armed.'
+        Start-Service -Name $serviceName
+        Assert ((ReadState).Phase -eq 'ReadyForBoot') 'Power-cycle fixture must wait for actual Windows activation.'
+        [IO.File]::WriteAllText((Join-Path $root 'runtime\startup-power-cycle.json'),(@{ClientRoot=$client;StateFile=$stateFile;SyntheticTransport=$true;ArmedUtc=[datetime]::UtcNow.ToString('o')}|ConvertTo-Json))
+    }
+    $passed=$true
     Write-Output 'PASS: real SYSTEM/session-0 service, protected snapshot, delayed activation, one startup, disconnect, no same-boot reconnect, waiting cancellation, stale reboot journal, failed-health rollback, update/code invalidation and disable. Synthetic transport only; no VPN/driver/network mutation.'
 }finally{
+    if(-not($passed -and $KeepForPowerCycle)){
     if($created){StopFixtureService;& sc.exe delete $serviceName|Out-Null}
     foreach($target in @($protected,$shared,$base)){
         $absolute=[IO.Path]::GetFullPath($target)
         if($absolute -ne [IO.Path]::GetFullPath($protected) -and $absolute -ne [IO.Path]::GetFullPath($shared) -and -not $absolute.StartsWith([IO.Path]::GetFullPath((Join-Path $root 'runtime\startup-service-fixture-')),[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe startup fixture cleanup.'}
         if(Test-Path -LiteralPath $absolute){Remove-Item -LiteralPath $absolute -Recurse -Force}
+    }
     }
 }

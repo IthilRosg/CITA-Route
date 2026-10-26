@@ -30,6 +30,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           $product=Get-Content product.json -Raw | ConvertFrom-Json
+          if($product.channel -eq 'native-preview'){throw 'Native preview builds must not be published by the stable release workflow'}
           if($env:RELEASE_TAG -cne ('v'+$product.version)){throw 'Tag must match product.json'}
           if((Select-Xml -Path Directory.Build.props -XPath '//Version').Node.InnerText -ne $product.version){throw 'Assembly version differs'}
           git merge-base --is-ancestor $env:GITHUB_SHA origin/main

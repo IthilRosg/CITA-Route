@@ -1,4 +1,29 @@
-# Installation and Windows startup (0.5.7)
+# Installation and startup
+
+## Next development version: one auto-connect setting
+
+Settings separates **Open CITA in tray at Windows sign-in** from **Connect when
+CITA Route starts**. The latter uses the selected profile once per application
+process, including `--startup`. Opening a window from the tray or launching a
+second copy does not reconnect. Manual Stop remains effective for that process;
+after exiting and starting CITA again, enabled auto-connect attempts a new
+connection. A missing profile or incompatible WireSock displays an explanation
+without a hidden modal profile prompt. The ordinary Connect button can select
+the profile. Active ordinary/startup sessions and maintenance block a duplicate
+automatic attempt. Progress and cancellation use the normal connection flow.
+
+The old before-sign-in checkbox is removed. Its enabled preference migrates to
+program-start auto-connect. An inactive old startup setting is disabled through
+the protected service. An active old route is preserved, and Settings explains
+that it must be stopped before applying the new settings. Failed retirement is
+reported; a running route is never stopped merely to show the application.
+
+This behavior is in development, not yet in the published 0.6.4 release.
+
+## Legacy protected before-sign-in implementation (0.5.7–0.6.4)
+
+The following describes the retained compatibility implementation, not an
+additional checkbox offered by the next version.
 
 Setup shows the destination folder on a clean installation, remembers it for
 updates, and uses the CITA dark console palette with red artwork. An existing

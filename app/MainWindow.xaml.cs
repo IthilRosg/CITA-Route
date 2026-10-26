@@ -81,6 +81,7 @@ public partial class MainWindow : Window
         _preferences.RefreshSeconds=Math.Clamp(_preferences.RefreshSeconds,1,3);
         CloseToTrayBox.IsChecked=_preferences.CloseToTray;RefreshIntervalInput.SelectedIndex=_preferences.RefreshSeconds-1;
         ResourceNotificationsBox.IsChecked=_preferences.ResourceNotificationsEnabled;
+        AutoUpdateWireSockBox.IsChecked=_preferences.AutoUpdateWireSock;
         InitializeUpdates();
         InitializeStartup();
         InitializeQuality();
@@ -108,9 +109,18 @@ public partial class MainWindow : Window
         _backgroundInitialized=true;
         await DiscoverConnectionsAsync();
         if(_exiting)return;
+        await CheckWireSockMaintenanceAsync();
+        if(_exiting)return;
         UpdateTelemetryInterval();_timer.Start();await RefreshAsync();
         if(_exiting)return;
-        await RefreshStartupAfterUpdateAsync();_=CheckUpdatesAsync();
+        bool startupReady=await RefreshStartupAfterUpdateAsync();
+        if(!_exiting&&startupReady&&_preferences.ConnectOnLaunch)
+        {
+            AppPaths.Write(Path.Combine(_root,"runtime","launch-connect.json"),new{schema=1,phase="Attempting",updatedUtc=DateTime.UtcNow});
+            await ToggleAsync(startOnly:true);
+            AppPaths.Write(Path.Combine(_root,"runtime","launch-connect.json"),new{schema=1,phase=_engineRunning?"Running":"NotConnected",updatedUtc=DateTime.UtcNow,busy=_busy,blocked=_rescueState.BlocksRouting,startupActive=Cita.Startup.StartupPaths.Read().Active,profileAvailable=ProfileInput.SelectedItem!=null,managementReady=_inventory.ManagementReady,message=Backend.Redact(NoticeText.Text)});
+        }
+        _=CheckUpdatesAsync();
     }
     private void CreateTray()
     {
@@ -251,7 +261,7 @@ public partial class MainWindow : Window
             var startup=Cita.Startup.StartupPaths.Read();
             if(startup.Owns(_root))StartupStatusLabel.Text=startup.Message;
             if(startup.Owns(_root)&&startup.Active&&startup.Phase!="Connected")
-            {SetStatus(startup.Phase=="WaitingForNetwork"?"Ожидание сети":startup.Phase=="Starting"?"Подключение…":startup.Phase=="Stopping"?"Отключение…":"Требуется внимание",false);FooterStatus.Text=startup.Message;}
+            {SetStatus(startup.Phase=="WaitingForStorage"?"Ожидание диска":startup.Phase=="WaitingForNetwork"?"Ожидание сети":startup.Phase=="Starting"?"Подключение…":startup.Phase=="Stopping"?"Отключение…":"Требуется внимание",false);FooterStatus.Text=startup.Message;}
             if(vpnReady)_lastNoticeError=false;
             _pendingConnectionOperation=ConnectionOperation.Active(_root)&&!_busy;
             if(_pendingConnectionOperation){SetStatus("Ожидается завершение",false);FooterStatus.Text="Предыдущая операция завершается. Подробности — в журнале.";}
@@ -273,13 +283,24 @@ public partial class MainWindow : Window
         StatusBadge.Background=ConsoleTheme.Brush(connected?"#19221B":attention?"#2A231A":"#1B191B");
         StatusLabel.Foreground=connected?ConsoleTheme.Ok:attention?ConsoleTheme.Warn:ConsoleTheme.Dim;SidebarDot.Fill=StatusLabel.Foreground;
     }
+    string _feedStamp="";
+    DateTime _feedRetryUtc;
     private void UpdateFeedState()
     {
         string path=Path.Combine(_root,"runtime","feeds-state.json");
+        string rulePath=Path.Combine(_root,"runtime","rules","russia_inside.json");
+        string Stamp(string file){try{var info=new FileInfo(file);return info.Exists?info.Length+":"+info.LastWriteTimeUtc.Ticks:"missing";}catch{return "unavailable";}}
+        string stamp=Stamp(path)+"|"+Stamp(rulePath);
+        if(stamp==_feedStamp&&DateTime.UtcNow<_feedRetryUtc)return;
+        _feedStamp=stamp;_feedRetryUtc=DateTime.UtcNow.AddSeconds(5);
         string domains="";
-        try{using var rules=JsonDocument.Parse(File.ReadAllText(Path.Combine(_root,"runtime","rules","russia_inside.json")));int count=rules.RootElement.GetProperty("rules").EnumerateArray().Sum(r=>r.TryGetProperty("domain_suffix",out var d)?d.GetArrayLength():0);domains=count+" доменов · ";}catch{}
+        bool failed=false;
+        try{using var input=new FileStream(rulePath,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);if(input.Length>16*1024*1024)throw new IOException("Rule UI budget exceeded.");using var rules=JsonDocument.Parse(input);int count=rules.RootElement.GetProperty("rules").EnumerateArray().Sum(r=>r.TryGetProperty("domain_suffix",out var d)?d.GetArrayLength():0);domains=count+" доменов · ";}catch{failed=File.Exists(rulePath);}
         try{using var state=JsonDocument.Parse(File.ReadAllText(path));var utc=DateTime.Parse(state.RootElement.GetProperty("updatedUtc").GetString()!).ToUniversalTime();var date=TimeZoneInfo.ConvertTimeFromUtc(utc,TimeZoneInfo.FindSystemTimeZoneById("Russian Standard Time"));FeedStateLabel.Text=domains+"Обновлено "+date.ToString("dd.MM HH:mm");}
-        catch{FeedStateLabel.Text=domains+"Начальные списки загружены";}
+        catch{failed|=File.Exists(path);FeedStateLabel.Text=domains+"Начальные списки загружены";}
+        // On unchanged files only metadata is read. A transient rule read error
+        // retries after five seconds instead of being cached indefinitely.
+        if(!failed)_feedRetryUtc=DateTime.MaxValue;
     }
     ConnectionGridRow[] _displayedConnections=Array.Empty<ConnectionGridRow>(),_displayedRecent=Array.Empty<ConnectionGridRow>();
     private void UpdateConnectionGrids()
@@ -321,6 +342,7 @@ public partial class MainWindow : Window
         if(_rescueState.Phase=="RecoveryFailed")RescueDetailLabel.Text+=Environment.NewLine+Backend.Redact(_rescueState.LastMessage);
         InstallRescueButton.IsEnabled=!_busy&&!_engineRunning&&!_rescueState.BlocksRouting;
         ProfileInput.IsEnabled=FindWireSockButton.IsEnabled=BrowseCliButton.IsEnabled=ImportProfileButton.IsEnabled=ApplyConnectionButton.IsEnabled=ExpectedEgressInput.IsEnabled=!_busy&&!_discovering&&!_engineRunning&&!_rescueState.BlocksRouting;
+        InstallWireSockButton.IsEnabled=!_busy&&!_discovering&&!_updateInstalling&&!_updateDownloading&&!_rescueState.BlocksRouting;
         GuardTestButton.IsEnabled=_rescue.Installed&&!_busy&&!_engineRunning&&!_rescueState.BlocksRouting;
         WireSockTestButton.IsEnabled=VpnusTestButton.IsEnabled=SystemTestButton.IsEnabled=GuardTestButton.IsEnabled && RoutePilot.Agent.NetworkProbe.Vpnus!=null;
         if(!_engineRunning && RoutePilot.Agent.NetworkProbe.Vpnus==null)RescueDetailLabel.Text+="\nРасширенные автономные тесты требуют настроенного VPNUS. Обычный маршрут и встроенная проверка HTTPS работают без него.";
@@ -333,12 +355,25 @@ public partial class MainWindow : Window
         try
         {
             using var stream=new FileStream(Path.Combine(Cita.Startup.StartupPaths.RoutingRoot(_root),"runtime","policy-state.json"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+            if(stream.Length>2*1024*1024)throw new InvalidDataException("Policy state exceeds the UI budget.");
             using var document=JsonDocument.Parse(stream);var state=document.RootElement;
             var updated=state.GetProperty("updatedUtc").GetDateTime();
             string phase=state.GetProperty("phase").GetString()!;
             var session=AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession());
             bool sameSession=_engineRunning && state.GetProperty("epoch").GetString()!.StartsWith(session.Id+":",StringComparison.Ordinal);
-            bool live=sameSession && (DateTime.UtcNow-updated).TotalSeconds<10;
+            bool live=sameSession && SessionHealthCache.Fresh(updated,DateTime.UtcNow,10);
+            if(RouteDecisionsExpander.IsExpanded)
+            {
+                var rows=RouteDecisionPresentation.Read(state,state.GetProperty("epoch").GetString()??"",live,DateTime.UtcNow);
+                var previous=RouteDecisionsGrid.ItemsSource as RouteDecisionRow[];
+                if(previous==null||!previous.SequenceEqual(rows))
+                {
+                    var selected=RouteDecisionsGrid.SelectedItem as RouteDecisionRow;
+                    RouteDecisionsGrid.ItemsSource=rows;
+                    RouteDecisionsGrid.SelectedItem=selected==null?null:rows.FirstOrDefault(r=>r.Domain==selected.Domain&&r.Application==selected.Application&&r.Route==selected.Route);
+                    if(RouteDecisionsGrid.SelectedItem==null)RouteDecisionDetail.Text=live?"Выбери решение для просмотра причины.":"Нет свежих решений текущей сессии.";
+                }
+            }
             PolicyStateLabel.Foreground=!live?ConsoleTheme.Dim:phase=="Error"?ConsoleTheme.Red:phase is "Applying" or "NetworkChanged"?ConsoleTheme.Warn:phase is "Auto" or "Lists"?ConsoleTheme.Ok:ConsoleTheme.Dim;
             PolicyStateLabel.Text=sameSession && phase=="NetworkChanged"?"Сеть изменилась · ожидается восстановление":sameSession && phase=="Error"?"Ошибка контроллера · ожидается восстановление":!live || phase=="Stopped"?"Контроллер маршрутов остановлен":phase=="Applying"?"Подтверждается применение маршрутов":phase=="Auto"?"Авто · выбираются новые маршруты":"Режим списков · VPN для ограничений";
             if(live && phase=="Applying" && state.TryGetProperty("publication",out var pendingPublication) && pendingPublication.GetProperty("phase").GetString()=="ApplyFailed")PolicyStateLabel.Text="Новые правила не подтверждены · ожидается повторная проверка";
@@ -350,7 +385,7 @@ public partial class MainWindow : Window
             if(state.TryGetProperty("stale",out var stale) && stale.GetInt32()>0)PolicyDetailLabel.Text+=Environment.NewLine+"Сохранён прежний выход до перепроверки: "+stale.GetInt32()+".";
             if(state.TryGetProperty("publication",out var publication) && publication.TryGetProperty("phase",out var applied) && applied.GetString()=="Applied")PolicyDetailLabel.Text+=Environment.NewLine+"Последнее применение правил: "+publication.GetProperty("milliseconds").GetInt64()+" мс.";
         }
-        catch{PolicyStateLabel.Text=_engineRunning?"Контроллер маршрутов недоступен":"Контроллер маршрутов остановлен";PolicyDetailLabel.Text="В режиме «Авто» первая неудачная попытка может завершиться ошибкой. Проверки не повторяют данные приложения.";}
+        catch{RouteDecisionsGrid.ItemsSource=null;RouteDecisionDetail.Text="Свежие решения недоступны.";PolicyStateLabel.Text=_engineRunning?"Контроллер маршрутов недоступен":"Контроллер маршрутов остановлен";PolicyDetailLabel.Text="В режиме «Авто» первая неудачная попытка может завершиться ошибкой. Проверки не повторяют данные приложения.";}
     }
     private void RoutingPolicy_Changed(object sender,RoutedEventArgs e)
     {

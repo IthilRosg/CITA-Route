@@ -13,7 +13,8 @@ public sealed class StartupState
     public string Message{get;set;}="";
     public DateTime UpdatedUtc{get;set;}
     public DateTime BootUtc{get;set;}
-    public bool Active=>Phase is "WaitingForNetwork" or "Starting" or "Connected" or "Stopping" or "StopFailed" or "NeedsAttention";
+    public string ActivationId{get;set;}="";
+    public bool Active=>Phase is "WaitingForStorage" or "WaitingForNetwork" or "Starting" or "Connected" or "Stopping" or "StopFailed" or "NeedsAttention";
     public bool Owns(string root)=>Schema==1&&SourceRoot.Length>0&&Path.GetFullPath(SourceRoot).TrimEnd('\\').Equals(Path.GetFullPath(root).TrimEnd('\\'),StringComparison.OrdinalIgnoreCase);
 }
 
@@ -35,4 +36,10 @@ public static class StartupPaths
     public static string RoutingRoot(string root)
     {var state=Read();return state.Active&&state.Owns(root)?Client:root;}
     public static bool SameBoot(DateTime recorded,DateTime boot)=>recorded!=default&&Math.Abs((recorded.ToUniversalTime()-boot.ToUniversalTime()).TotalSeconds)<10;
+    public static bool SameActivation(StartupState recorded,DateTime boot,string activation)
+    {
+        bool Valid(string? value)=>value?.Length==64&&System.Text.RegularExpressions.Regex.IsMatch(value,@"\A[A-F0-9]{64}\z");
+        if(!SameBoot(recorded.BootUtc,boot))return false;
+        return !Valid(recorded.ActivationId)||!Valid(activation)||recorded.ActivationId==activation;
+    }
 }

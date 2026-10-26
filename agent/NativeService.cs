@@ -21,6 +21,7 @@ public static class NativeService
     static AgentHost? _host;
     static Timer? _stoppingTimer;
     static uint _checkpoint;
+    internal static bool RearmStartup(uint control)=>control is 5 or 15;
     public static void Run()
     {
         if(!StartServiceCtrlDispatcher(new[]{new TableEntry{Name=Program.ServiceName,Main=MainDelegate},new TableEntry()}))throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -29,7 +30,7 @@ public static class NativeService
     {var status=new Status{Type=0x10,State=state,Accepted=accepted,WaitHint=hint,Checkpoint=state==3?++_checkpoint:0,Win32Exit=failed?1066u:0,SpecificExit=failed?1u:0};SetServiceStatus(_handle,ref status);}
     static uint Control(uint control,uint eventType,IntPtr _,IntPtr __)
     {
-        if(control is 1 or 5){if(control==5)_host?.PrepareForShutdown();Report(3,0,90000);_stoppingTimer??=new Timer(_=>Report(3,0,90000),null,2000,2000);Stop.Cancel();}
+        if(control is 1 or 5 or 15){if(RearmStartup(control))_host?.PrepareForShutdown();Report(3,0,90000);_stoppingTimer??=new Timer(_=>Report(3,0,90000),null,2000,2000);Stop.Cancel();}
         if(control==13 && eventType is 4 or 7 or 18)_host?.RequestRecovery("System suspend/resume");
         return 0;
     }
@@ -41,7 +42,7 @@ public static class NativeService
         {
             var config=Storage.Read<AgentConfig>(Path.Combine(AppContext.BaseDirectory,"agent-config.json"));
             _host=new AgentHost(config);
-            Report(4,1|4|0x40);
+            Report(4,1|4|0x40|0x100);
             _host.Run(Stop.Token).GetAwaiter().GetResult();Report(1);
         }
         catch(Exception ex)
@@ -58,10 +59,12 @@ public static class ServiceRecovery
     [StructLayout(LayoutKind.Sequential)]struct ActionEntry {public int Kind;public uint Delay;}
     [StructLayout(LayoutKind.Sequential)]struct Actions {public uint Reset;public IntPtr Reboot,Command;public uint Count;public IntPtr Entries;}
     [StructLayout(LayoutKind.Sequential)]struct Flag {public int Enabled;}
+    [StructLayout(LayoutKind.Sequential)]struct Preshutdown {public uint Timeout;}
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]static extern IntPtr OpenSCManager(string? machine,string? database,uint access);
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]static extern IntPtr OpenService(IntPtr manager,string name,uint access);
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]static extern bool ChangeServiceConfig2(IntPtr service,uint level,ref Actions actions);
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]static extern bool ChangeServiceConfig2(IntPtr service,uint level,ref Flag flag);
+    [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]static extern bool ChangeServiceConfig2(IntPtr service,uint level,ref Preshutdown settings);
     [DllImport("advapi32.dll")]static extern bool CloseServiceHandle(IntPtr handle);
     public static void Configure()
     {
@@ -78,6 +81,10 @@ public static class ServiceRecovery
             Marshal.StructureToPtr(new ActionEntry{Kind=1,Delay=15000},entries+size*2,false);
             var actions=new Actions{Reset=86400,Count=3,Entries=entries};var flag=new Flag{Enabled=1};
             if(!ChangeServiceConfig2(service,2,ref actions)||!ChangeServiceConfig2(service,4,ref flag))throw new Win32Exception(Marshal.GetLastWin32Error());
+            // Rearming is a small local write. Do not inherit the default long
+            // preshutdown timeout or change Windows' global shutdown settings.
+            var preshutdown=new Preshutdown{Timeout=10000};
+            if(!ChangeServiceConfig2(service,7,ref preshutdown))throw new Win32Exception(Marshal.GetLastWin32Error());
         }
         finally{if(entries!=IntPtr.Zero)Marshal.FreeHGlobal(entries);if(service!=IntPtr.Zero)CloseServiceHandle(service);CloseServiceHandle(manager);}
     }

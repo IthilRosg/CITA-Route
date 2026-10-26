@@ -14,6 +14,8 @@ public sealed class ConnectionInventory
     public string ExecutablePath{get;set;}="";
     public string Kind{get;set;}="";
     public string Version{get;set;}="";
+    public bool CliTrusted{get;set;}
+    public bool ManagementReady{get;set;}
     public string[] Profiles{get;set;}=Array.Empty<string>();
     public string[] ProfileDirectories{get;set;}=Array.Empty<string>();
     public string SelectedProfile{get;set;}="";
@@ -60,15 +62,18 @@ public sealed class ConnectionSetup
     }
     public async Task Apply(string action,string cli,string profile="",string import="",string egress="")
     {
+        if(WireSockMaintenance.BlockReason(_root) is string dependencyProblem)throw new IOException(dependencyProblem);
+        using var machine=MachineOperationLease.Acquire();
         Directory.CreateDirectory(Path.Combine(_root,"runtime"));Directory.CreateDirectory(Path.Combine(_root,"logs"));
         string id=Guid.NewGuid().ToString("N");
         string report=Path.Combine(_root,"runtime","connection-operation.json");
         string sid=System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value;
         string user=Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        string command=OperationCommand(_root,id,action,cli,profile,import,egress,sid,user);
+        string command=MachineOperationLease.GuardPowerShell(OperationCommand(_root,id,action,cli,profile,import,egress,sid,user));
         var info=new ProcessStartInfo("powershell.exe"){UseShellExecute=true,Verb="runas",WindowStyle=ProcessWindowStyle.Hidden,WorkingDirectory=_root,
             Arguments="-NoProfile -ExecutionPolicy Bypass -EncodedCommand "+Convert.ToBase64String(Encoding.Unicode.GetBytes(command))};
         using var process=Process.Start(info)??throw new IOException("Не удалось запустить настройку.");
+        machine.Dispose();
         using var timeout=new CancellationTokenSource(TimeSpan.FromMinutes(4));await process.WaitForExitAsync(timeout.Token);
         using var result=JsonDocument.Parse(await File.ReadAllTextAsync(report));
         if(result.RootElement.GetProperty("id").GetString()!=id || !result.RootElement.GetProperty("success").GetBoolean())

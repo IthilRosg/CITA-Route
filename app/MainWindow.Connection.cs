@@ -45,15 +45,17 @@ public partial class MainWindow
         try
         {
             _inventory=await new ConnectionSetup(_root,_backend).Discover(cli);
+            WireSockMaintenance.Reconcile(_root,_inventory);
             string settingsFile=Path.Combine(_root,"data","connection.json"),sessionFile=Path.Combine(_root,"runtime","session.json");
             DateTime choiceAt=File.Exists(settingsFile)?File.GetLastWriteTimeUtc(settingsFile):File.Exists(sessionFile)?File.GetLastWriteTimeUtc(sessionFile):DateTime.MinValue;
-            _backend.CliPath=_inventory.CliPath;
+            _backend.CliPath=_inventory.CliTrusted?_inventory.CliPath:"";
             ProfileLabel.Text=string.IsNullOrEmpty(_inventory.SelectedProfile)?"Профиль: выбери подключение в настройках":"Профиль: "+_inventory.SelectedProfile;
             if(!_render && !File.Exists(Path.Combine(_root,"data","connection.json")) && !string.IsNullOrEmpty(_inventory.SelectedProfile) &&
                 AppPaths.Read(Path.Combine(_root,"runtime","session.json"),()=>new EngineSession()).SourceProfile==_inventory.SelectedProfile)
                 AppPaths.Write(Path.Combine(_root,"data","connection.json"),new{Version=1,SourceProfile=_inventory.SelectedProfile,CliPath=_inventory.CliPath,ExpectedEgressIp=""});
             string detectedPath=string.IsNullOrEmpty(_inventory.ExecutablePath)?_inventory.CliPath:_inventory.ExecutablePath;
             CliPathLabel.Text=string.IsNullOrEmpty(detectedPath)?"WireSock не найден":detectedPath+" · "+_inventory.Version;
+            RefreshWireSockCompatibility();
             if(!_render && _inventory.SelectedProfile.Length>0 && File.Exists(Path.Combine(_root,"data","connection.json")))
                 try{_profileMemory.Remember(_inventory.SelectedProfile,_inventory.CliPath,choiceAt,false);}catch(IOException){}catch(UnauthorizedAccessException){}
             ProfileInput.ItemsSource=_inventory.Profiles;

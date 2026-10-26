@@ -56,6 +56,7 @@ if($ValidateOnly){Write-Output 'PASS: verified release payload; disconnected ins
 . (Join-Path $root 'NativeMaintenance.ps1')
 Stop-NativeForMaintenance
 $connectionOperationLock=$null;$setupLock=$null;$upgradeLock=$null;$controlLock=$null;$coordinated=$false;$applied=New-Object 'System.Collections.Generic.List[object]'
+$machineGate=$null;$machineHeld=$false
 $backup=Join-Path $root ('runtime\update-backup-'+[guid]::NewGuid().ToString('N'))
 $report=@{version=$Version;operationId=$OperationId;success=$false;restored=$false;startedUtc=[DateTime]::UtcNow.ToString('o');backup=$backup}
 try{
@@ -73,6 +74,11 @@ try{
         if(-not $gui.WaitForExit(25000)){throw 'Close the interface before updating.'}
     }
     elseif($OperationId){throw 'GUI exited before update ownership was acknowledged.'}
+    # The GUI retained this reservation during preparation. Take over only
+    # after it exits, and retain ownership through copy/rollback after crashes.
+    $machineGate=New-Object Threading.Mutex($false,'Global\CITA.Route.NetworkOperation')
+    try{$machineHeld=$machineGate.WaitOne(2500)}catch [Threading.AbandonedMutexException]{$machineHeld=$true}
+    if(-not $machineHeld){throw 'Another CITA operation owns network maintenance.'}
     Assert-NoAgentRun;Assert-Disconnected
     New-Item -ItemType Directory -Path $backup -Force | Out-Null
     foreach($name in $files){
@@ -111,6 +117,7 @@ try{
     }
     $report.restored=($restoreErrors.Count -eq 0);if($restoreErrors.Count){$report.restoreErrors=$restoreErrors}
 }finally{
+    if($machineHeld){$machineGate.ReleaseMutex()};if($machineGate){$machineGate.Dispose()}
     foreach($held in @($controlLock,$upgradeLock,$setupLock,$connectionOperationLock)){if($held){$held.Dispose()}}
     if($coordinated){Invoke-AgentCoordinator 'end-operation'}
     $report.finishedUtc=[DateTime]::UtcNow.ToString('o')

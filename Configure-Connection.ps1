@@ -21,13 +21,15 @@ $settings=Get-ConnectionSettings $root
 $installation=Get-WireSockInstallation $(if($CliPath){$CliPath}else{$settings.CliPath})
 $cli=$installation.CliPath
 if($Action -eq 'Discover'){
-    $profiles=@();$message='';$version=$installation.Version
+    $profiles=@();$message='';$version=$installation.Version;$cliTrusted=$false;$managementReady=$false
     if($cli){
-        try{Assert-ProtectedWireSockCli $cli;$profiles=@(Get-WireSockProfileNames)}catch{$message='WireSock найден, но список профилей недоступен. Проверь службу WireSock и установку в Program Files с действительной цифровой подписью.'}
+        try{Assert-ProtectedWireSockCli $cli;$cliTrusted=$true;$managementReady=Test-WireSockManagementCapabilities;$profiles=@(Get-WireSockProfileNames)
+            if(-not $managementReady){$message='WireSock найден, но необходимые команды управления не подтверждены. Обнови WireSock до проверенной версии.'}
+        }catch{$message='WireSock найден, но список профилей недоступен. Проверь службу WireSock и установку в Program Files с действительной цифровой подписью.'}
     }elseif($installation.Kind -eq 'LegacyClient'){$message='Найден WireSock с другим интерфейсом команд (wiresock-client.exe). Эта редакция пока не поддерживает управление профилями в CITA Route. Нужна редакция Secure Connect с wiresock-connect-cli.exe; последняя версия не обязательна.'}
     elseif($installation.Kind -eq 'ApplicationOnly'){$message='Приложение WireSock найдено, но совместимый командный интерфейс wiresock-connect-cli.exe отсутствует. Выбери папку полной установки или установи редакцию с этим интерфейсом.'}
     else{$message='WireSock не найден. Укажи исполняемый файл WireSock вручную.'}
-    @{CliPath=$cli;ExecutablePath=$installation.ExecutablePath;Kind=$installation.Kind;Version=$version;Profiles=$profiles;ProfileDirectories=@(Get-WireSockProfileDirectories);SelectedProfile=$settings.SourceProfile;ExpectedEgressIp=$settings.ExpectedEgressIp;Message=$message} | ConvertTo-Json -Compress
+    @{CliPath=$cli;CliTrusted=$cliTrusted;ManagementReady=$managementReady;ExecutablePath=$installation.ExecutablePath;Kind=$installation.Kind;Version=$version;Profiles=$profiles;ProfileDirectories=@(Get-WireSockProfileDirectories);SelectedProfile=$settings.SourceProfile;ExpectedEgressIp=$settings.ExpectedEgressIp;Message=$message} | ConvertTo-Json -Compress
     exit 0
 }
 if(-not $cli){throw 'WireSock Secure Connect CLI was not found.'}
@@ -35,6 +37,7 @@ if(Get-StartupRouteState $root){throw 'Disconnect the startup route before confi
 $isAdmin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if(-not $isAdmin){throw 'Connection setup requires elevation.'}
 Assert-ProtectedWireSockCli $cli
+if($Action -in @('Apply','Import') -and -not(Test-WireSockManagementCapabilities)){throw 'WireSock management commands are not compatible. Update WireSock before configuring this connection.'}
 if($Action -in @('ReleaseConflicts','CompleteHandoff','RestoreHandoff')){
     if(-not $OperationId){throw 'A connection handoff requires an operation identity.'}
     . (Join-Path $root 'AgentLease.ps1')

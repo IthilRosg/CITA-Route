@@ -1,9 +1,15 @@
 [CmdletBinding()]
-param([switch]$FrameworkDependent=$true)
+param([switch]$FrameworkDependent=$true,[switch]$NativePreview,
+      [string]$NativeSourceReceipt='runtime\native-corresponding-source.zip.receipt.json')
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'Build-Dotnet.ps1')
 $root=$PSScriptRoot
 $version=([IO.File]::ReadAllText((Join-Path $root 'product.json')) | ConvertFrom-Json).version
+if($NativePreview){
+    $previewProduct=Get-Content (Join-Path $root 'product.json') -Raw|ConvertFrom-Json
+    if($previewProduct.channel -ne 'native-preview'){throw 'Native preview packaging requires an explicitly marked preview product.'}
+    & (Join-Path $root 'Build-NativeComponents.ps1') -SourceReceipt $NativeSourceReceipt
+}
 $dist=Join-Path $root 'dist'
 $flavor=if($FrameworkDependent){'-framework'}else{''}
 $stage=Join-Path $dist ('CITA-Route-'+$version+'-win-x64'+$flavor+'-'+[guid]::NewGuid().ToString('N').Substring(0,8))
@@ -57,6 +63,15 @@ if($forbidden.Count){throw 'Private files detected in distribution staging.'}
 . (Join-Path $root 'FileStorage.ps1')
 $product=Read-JsonFile (Join-Path $stage 'product.json')
 $product | Add-Member -NotePropertyName distribution -NotePropertyValue @{schema=1;selfContained=(-not $FrameworkDependent);desktopRuntimeMajor=10;desktopRuntimeMinimum='10.0.13';agentSha256=(Get-FileHash -LiteralPath (Join-Path $stage 'runtime\agent-build\RoutePilot.Agent.exe')).Hash} -Force
+if($NativePreview){
+    $bundle=Join-Path $root 'runtime\native-components.zip'
+    Copy-Item -LiteralPath $bundle -Destination (Join-Path $stage 'runtime\native-components.zip')
+    Copy-Item -LiteralPath (Join-Path $root 'docs\NATIVE-PREVIEW.md') -Destination (Join-Path $stage 'NATIVE-PREVIEW.md')
+    $source=Get-Content (Join-Path $root $NativeSourceReceipt) -Raw|ConvertFrom-Json
+    $product.distribution.nativeComponentSha256=(Get-FileHash -LiteralPath $bundle).Hash
+    $product.distribution.nativeComponentSourceSha256=$source.sha256
+    $product.distribution.nativeExperimental=$true
+}
 Write-JsonFile (Join-Path $stage 'product.json') $product
 $files=@(Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {@{path=$_.FullName.Substring($stage.Length+1);bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash}})
 Write-JsonFile (Join-Path $stage 'manifest.json') @{version=$version;architecture='win-x64';selfContained=(-not $FrameworkDependent);desktopRuntimeMajor=10;desktopRuntimeMinimum='10.0.13';files=$files;createdUtc=[DateTime]::UtcNow.ToString('o')}

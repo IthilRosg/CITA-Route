@@ -195,7 +195,8 @@ public static partial class SessionEvidence
         Entry("report.json",JsonSerializer.Serialize(new{schema=1,version=typeof(SessionEvidence).Assembly.GetName().Version?.ToString(3),createdUtc=now,
             installedAgentVersion=AgentVersion(),
             retention="Latest 2048 session observations per source within 48 hours; 4 MiB session journals. Up to 1536 minute resource samples / 8 MiB. Eight incidents per source / 1 MiB. Log tails: 128 KiB per file.",
-            ordinary=Snapshot(root,"ordinary",now),startup=Snapshot(Cita.Startup.StartupPaths.Client,"startup",now),resources=ResourceSummary(Read(Path.Combine(directory,"resource-state.json"))),network=NetworkSummary()},new JsonSerializerOptions{WriteIndented=true}));
+            ordinary=Snapshot(root,"ordinary",now),startup=Snapshot(Cita.Startup.StartupPaths.Client,"startup",now),resources=ResourceSummary(Read(Path.Combine(directory,"resource-state.json"))),network=NetworkSummary(),
+            dependencies=DependencySummary(root)},new JsonSerializerOptions{WriteIndented=true}));
         ExportJournals(Entry,root,directory,now);
         ExportWebChecks(Entry,root);
         foreach(string source in new[]{"ordinary","startup"})
@@ -219,6 +220,11 @@ public static partial class SessionEvidence
             try{string path=Path.Combine(directory,name);if(File.Exists(path))Entry("service/"+name,Tail(path,root));}
             catch(Exception ex)when(ex is IOException or UnauthorizedAccessException){}
         Entry("README.txt","CITA Route diagnostic snapshot. No VPN configuration, private keys or controller files are collected. Log tails may contain site and application names. Times in state/history are UTC. A listener alone is not proof of VPN access; compare session/generation and HTTPS freshness. Missing history can mean the service predates this release. Collection does not connect, disconnect or repair the network.");
+    }
+    static object DependencySummary(string root)
+    {
+        var state=Read(Path.Combine(root,"data","wiresock-maintenance.json"),8192);
+        return new{wireSockMaintenance=new{schema=Number(state,"schema"),phase=Code(state,"phase"),updatedUtc=At(state,"updatedUtc")}};
     }
     static object SafeObservation(JsonElement item)
     {

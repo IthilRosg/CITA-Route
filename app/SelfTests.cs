@@ -10,10 +10,29 @@ public static class SelfTests
 {
     public static void Run(string root)
     {
+        var preferenceFixture=Path.Combine(root,"runtime","preferences-encoding-"+Guid.NewGuid().ToString("N")+".json");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(preferenceFixture)!);
+            foreach(bool bom in new[]{false,true})
+            {
+                File.WriteAllText(preferenceFixture,"{\"ConnectOnLaunch\":true,\"StartupBehaviorVersion\":1}",new System.Text.UTF8Encoding(bom));
+                var encodedPreferences=AppPaths.Read(preferenceFixture,()=>new Preferences());
+                if(!encodedPreferences.ConnectOnLaunch||encodedPreferences.StartupBehaviorVersion!=1)throw new Exception("UTF-8 saved auto-connect preferences must survive both Windows PowerShell and application encoding.");
+            }
+        }
+        finally{File.Delete(preferenceFixture);}
+        WireSockCompatibilityTests.Run();
+        RouteDecisionPresentationTests.Run();
+        RouteDiagnosticPresentationTests.Run();
+        WireSockMaintenanceTests.Run(root);
+        Task.Run(MachineOperationLeaseTests.Run).GetAwaiter().GetResult();
+        Task.Run(()=>WireSockDependencyTests.Run(root)).GetAwaiter().GetResult();
         ReleaseUpdateTests.Run(root);
         Task.Run(()=>RuntimePrerequisiteTests.Run(root)).GetAwaiter().GetResult();
         UdpQualityTests.Run();
         NativeStatisticsPresentationTests.Run();
+        NativeComponentBundleTests.Run(root);
         var presentationNow=DateTime.UtcNow;
         var presentationSession=new EngineSession{Running=true,Id="presentation",BridgeReady=true,BridgeGeneration=2};
         var presentationHealth=new SessionHealthState{SessionId="presentation",BridgeGeneration=2,Healthy=false,UpdatedUtc=presentationNow};

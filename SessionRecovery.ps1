@@ -37,6 +37,13 @@ function Set-SessionRecovering([string]$ExpectedId,[string]$Reason) {
     return $true
 }
 function Get-RecoveryDelay([int]$Attempts) { return [int](@(2,5,15,30,60)[[Math]::Min([Math]::Max(0,$Attempts),4)]) }
+function Get-WatchDelayMilliseconds([int]$DisconnectedSamples,[long]$ElapsedMilliseconds) {
+    # Healthy polling retains its existing idle cost. During confirmed loss,
+    # schedule the next sample relative to the previous sample's start rather
+    # than adding another full two seconds after all the checks have finished.
+    if($DisconnectedSamples -le 0){return 2000}
+    return [int][Math]::Max(200,2000-[Math]::Max(0,$ElapsedMilliseconds))
+}
 function Test-WatchObservationGap([datetime]$Previous,[datetime]$Now) {return $Now -lt $Previous -or ($Now-$Previous).TotalSeconds -gt 20}
 function Get-SessionHealthEpoch($Session) {return [string]$Session.id+':'+[int]$Session.bridgeGeneration}
 function Reset-SessionHealthContext($Context,$Session,[datetime]$Now) {
@@ -101,7 +108,7 @@ function Get-WatchRecoveryAction([bool]$RouterAlive,[int]$NetworkMismatch,[strin
 }
 
 function Write-RecoveryStageTiming([string]$ExpectedId,[string]$Stage,[long]$Milliseconds) {
-    if($Stage -notin @('PauseBridge','ConnectWireSock','ResumeBridge') -or $Milliseconds -lt 0){return}
+    if($Stage -notin @('FaultObserved','RepairScheduled','RepairEntered','ValidateNetwork','PauseBridge','ConnectWireSock','ResumeBridge') -or $Milliseconds -lt 0){return}
     try {
         $current=Read-JsonFile (Join-Path $runtime 'session.json')
         if($current.id -ne $ExpectedId -or -not $current.running){return}
@@ -115,6 +122,7 @@ function Write-RecoveryStageTiming([string]$ExpectedId,[string]$Stage,[long]$Mil
 function Repair-SessionVpn([string]$ExpectedId) {
     # Caller owns the rescue lease AND network-control.lock. No router/policy restart.
     if(-not(Test-RecoverySession $ExpectedId)){return}
+    Write-RecoveryStageTiming $ExpectedId 'RepairEntered' 0
     $session=Read-JsonFile (Join-Path $runtime 'session.json')
     if(Test-SessionVpnHold $session){return}
     if(-not @(Get-SessionRouter $session).Count){return}
@@ -132,7 +140,9 @@ function Repair-SessionVpn([string]$ExpectedId) {
         return
     }
     if($observation.state -notin @('Connected','Disconnected')){return}
+    $networkClock=[Diagnostics.Stopwatch]::StartNew()
     $signature=Get-SessionNetworkSignature
+    Write-RecoveryStageTiming $ExpectedId 'ValidateNetwork' $networkClock.ElapsedMilliseconds
     if($signature -ne $session.networkSignature){throw 'Network changed; component repair deferred.'}
     if($observation.state -eq 'Disconnected'){
         $stageClock=[Diagnostics.Stopwatch]::StartNew();Invoke-BridgeUpdate $false
@@ -232,21 +242,23 @@ function Watch-Session([string]$WatchScript) {
     }catch{}
     $nextAttempt=[DateTime]::UtcNow;$nextBridge=[DateTime]::UtcNow;$nextPolicy=[DateTime]::UtcNow
     $healthySince=$null;$repair=$null;$repairTimer=$null;$repairAction='';$probe=$null;$healthFailures=0;$policyStaleSamples=0
-    $disconnected=0;$networkMismatch=0;$nextHealth=[DateTime]::UtcNow.AddSeconds(10)
+    $disconnected=0;$networkMismatch=0;$nextHealth=[DateTime]::UtcNow.AddSeconds(10);$faultClock=$null
     $healthEpoch=Get-SessionHealthEpoch $watchedSession
     $nextBridgeCheck=[DateTime]::MinValue;$listenerFailures=0;$listenerEpoch='';$listenerState='Unknown'
     $lastFeedAttempt=[DateTime]::UtcNow;$feedUpdater=$null;$transition=$null
     $lastObservation=[DateTime]::UtcNow;$nextNetworkCheck=[DateTime]::MinValue;$networkAvailable=$false
+    $sampleClock=[Diagnostics.Stopwatch]::StartNew()
     try {
         while($true){
-            Start-Sleep -Seconds 2
+            Start-Sleep -Milliseconds (Get-WatchDelayMilliseconds $disconnected $sampleClock.ElapsedMilliseconds)
+            $sampleClock.Restart()
             if(Test-Path -LiteralPath (Join-Path $runtime 'stop.request')){break}
             try{$session=Read-JsonFile (Join-Path $runtime 'session.json')}catch{continue}
             if(-not $session.running){break}
             $observedNow=[DateTime]::UtcNow
             if(Test-WatchObservationGap $lastObservation $observedNow){
                 Stop-SessionHealthProbe $probe;$probe=$null;$nextHealth=$observedNow
-                $networkMismatch=0;$disconnected=0;$listenerFailures=0;$policyStaleSamples=0;$healthySince=$null;$transition=$null
+                $networkMismatch=0;$disconnected=0;$listenerFailures=0;$policyStaleSamples=0;$healthySince=$null;$transition=$null;$faultClock=$null
                 $nextBridgeCheck=[DateTime]::MinValue;$nextNetworkCheck=[DateTime]::MinValue
                 Write-ConnectionEvidence $root 'WatchObservationReset' $session
             }
@@ -255,7 +267,7 @@ function Watch-Session([string]$WatchScript) {
                 if($session.recoveryParentId -ne $watchedSession.id){break}
                 $watchedSession=$session;$budget=@{sessionId=$session.id;Reconnect=0;RepairVpn=0;Bridge=0;Policy=0}
                 Write-WatchProcessIdentity $watchedSession
-                $healthFailures=0;$disconnected=0;$networkMismatch=0;$healthySince=$null;$policyStaleSamples=0
+                $healthFailures=0;$disconnected=0;$networkMismatch=0;$healthySince=$null;$policyStaleSamples=0;$faultClock=$null
                 Stop-SessionHealthProbe $probe;$probe=$null
                 $nextHealth=[DateTime]::UtcNow.AddSeconds(10)
             }
@@ -278,6 +290,9 @@ function Watch-Session([string]$WatchScript) {
             if($transition){Write-JsonFile $transitionPath $transition}else{Remove-Item -LiteralPath $transitionPath -Force -ErrorAction SilentlyContinue}
             $transitionSeconds=if(Test-ManagedTransitionTimeout $transition $session.id $observation $now){[int][Math]::Min(300,$transition.elapsedSeconds)}else{0}
             $connected=$observation.state -eq 'Connected'
+            if($observation.state -eq 'Disconnected'){
+                if(-not $faultClock){$faultClock=[Diagnostics.Stopwatch]::StartNew();Write-RecoveryStageTiming $session.id 'FaultObserved' 0}
+            }else{$faultClock=$null}
             $routerAlive=@(Get-SessionRouter $session).Count -gt 0
             $signature='unavailable'
             try{$signature=Get-SessionNetworkSignature}catch{}
@@ -309,6 +324,7 @@ function Watch-Session([string]$WatchScript) {
                     $budget[$action]++;Write-JsonFile $budgetPath $budget
                     $nextAttempt=[DateTime]::UtcNow.AddSeconds((Get-RecoveryDelay $budget[$action]))
                     $repairAction=$action
+                    if($action -eq 'RepairVpn' -and $faultClock){Write-RecoveryStageTiming $session.id 'RepairScheduled' $faultClock.ElapsedMilliseconds}
                     $repair=Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru -WorkingDirectory $root `
                         -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$WatchScript+'"'),'-Action',$action,'-ExpectedSessionId',$session.id) `
                         -RedirectStandardOutput (Join-Path $root 'logs\auto-reconnect.log') -RedirectStandardError (Join-Path $root 'logs\auto-reconnect-error.log')

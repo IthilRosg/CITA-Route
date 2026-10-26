@@ -9,6 +9,11 @@ internal static class PolicyHttpTests
     internal static async Task Run(string temporary)
     {
         var ports=new PolicyPorts();var calls=new List<int>();
+        var rootUri=new Uri("https://example.com/");
+        Assert(PolicyTransport.Redirect(rootUri,302,new Uri("/en/",UriKind.Relative),0)?.AbsoluteUri=="https://example.com/en/","A same-host HTTPS redirect can complete a bounded independent body probe.");
+        foreach(var target in new[]{"http://example.com/","https://other.example.com/","https://example.com:8443/","https://user:secret@example.com/","https://127.0.0.1/"})
+            Assert(PolicyTransport.Redirect(rootUri,302,new Uri(target),0)==null,"Redirect must preserve pinned TLS hostname and public destination boundary.");
+        Assert(PolicyTransport.Redirect(rootUri,302,new Uri("/loop",UriKind.Relative),2)==null&&PolicyTransport.Redirect(rootUri,200,new Uri("/x",UriKind.Relative),0)==null,"Redirect count and response status are bounded.");
         var chosen=await PolicyTransport.Select((port,_)=>
         {calls.Add(port);return Task.FromResult(PolicyTransport.HttpResponse(port==ports.Vpn?200:451,1));},ports,CancellationToken.None);
         Assert(chosen.Route=="vpn"&&chosen.Candidates.Take(2).All(c=>c.Outcome==ProbeOutcome.HttpRestricted)&&calls.Count(p=>p==ports.Vpn)==2,
@@ -17,6 +22,22 @@ internal static class PolicyHttpTests
         Assert(chosen.Route==null&&chosen.Outcome==ProbeOutcome.HttpRestricted,"A 451 on every path cannot produce a usable route.");
         chosen=await PolicyTransport.Select((port,_)=>Task.FromResult(PolicyTransport.HttpResponse(port==ports.Direct?403:200,1)),ports,CancellationToken.None);
         Assert(chosen.Route=="direct","A generic 403/browser challenge is not sufficient evidence to route around a site's authentication policy.");
+        foreach(int status in new[]{204,301,401,403,404,429,500,503})
+        {
+            var response=PolicyTransport.HttpResponse(status,1,verifyBody:true);
+            Assert(!response.Reachable&&!response.Definitive&&response.ConnectionEstablished&&response.Evidence=="BodyUnknown",
+                "An application response must not certify completed body delivery or claim a network block.");
+        }
+        chosen=await PolicyTransport.Select((_,_)=>Task.FromResult(PolicyTransport.HttpResponse(403,1,verifyBody:true)),ports,CancellationToken.None);
+        Assert(chosen.Route==null&&chosen.Outcome==ProbeOutcome.Indeterminate,"A challenge on all paths cannot create a usable-content route.");
+        Task<CandidateResult> BodyCandidate(int port,CancellationToken _) => Task.FromResult(port==ports.Vpn?
+            new CandidateResult(true,false,"bounded body",1){Evidence="BodySample",BodyBytes=65536}:
+            PolicyTransport.HttpResponse(403,1,verifyBody:true));
+        chosen=await PolicyTransport.Select(BodyCandidate,ports,CancellationToken.None);
+        Assert(chosen.Route==null&&chosen.Outcome==ProbeOutcome.Indeterminate,"An isolated root challenge cannot trigger automatic VPN selection without a real failure hint.");
+        chosen=await PolicyTransport.Select(BodyCandidate,ports,CancellationToken.None,allowUnstableFallback:true);
+        Assert(chosen.Route=="vpn"&&chosen.Candidates[2].Evidence=="BodySample"&&PolicyTransport.UnstablePreferred(chosen),
+            "A real failure hint may select a twice-proved body path temporarily; the challenge itself remains uncertain.");
         chosen=await PolicyTransport.Select((port,_)=>Task.FromResult(port==ports.Direct?new CandidateResult(false,true,"untrusted certificate",1):PolicyTransport.HttpResponse(200,1)),ports,CancellationToken.None);
         Assert(chosen.Route==null&&chosen.Outcome==ProbeOutcome.TlsAuthenticationError,"HTTP classification must not bypass TLS authentication failures.");
         int directCalls=0;

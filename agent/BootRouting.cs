@@ -77,7 +77,7 @@ internal sealed class BootRouting
         catch(Exception ex)when(ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException){return false;}
     }
     static void State(BootSettings settings,string phase,string message,DateTime? boot=null)=>Storage.Write(StartupPaths.StateFile,new StartupState{
-        SourceRoot=settings.SourceRoot,Enabled=settings.Enabled,Phase=phase,Message=message,UpdatedUtc=DateTime.UtcNow,BootUtc=boot??BootUtc});
+        SourceRoot=settings.SourceRoot,Enabled=settings.Enabled,Phase=phase,Message=message,UpdatedUtc=DateTime.UtcNow,BootUtc=boot??BootUtc,ActivationId=WindowsActivation.Current});
     // Keep the caller's exclusive setup reservation alive across the native
     // process boundary. A Boolean 'skip locks' would race other setup operations.
     static FileStream BorrowSetup(string root,int owner,long handle)
@@ -167,7 +167,7 @@ internal sealed class BootRouting
             }
             if(Directory.Exists(backup)){NoLinks(backup);Directory.Delete(backup,true);}
             // Enabling changes the next boot only, never the current connection.
-            bool stopped=refresh&&prior.Owns(root)&&prior.Phase=="StoppedForBoot"&&StartupPaths.SameBoot(prior.BootUtc,BootUtc);
+            bool stopped=refresh&&prior.Owns(root)&&prior.Phase=="StoppedForBoot"&&StartupPaths.SameActivation(prior,BootUtc,WindowsActivation.Current);
             State(settings,stopped?"StoppedForBoot":"ReadyForBoot",stopped?
                 "Профиль автоподключения обновлён. Ручное отключение сохранено до следующего запуска Windows.":
                 "Готово к следующему запуску Windows. Профиль и правила сохранены защищённой копией.");
@@ -192,7 +192,7 @@ internal sealed class BootRouting
     {
         var settings=Settings();if(settings is not {Schema:1,Enabled:true}||!Same(settings.SourceRoot,_config.AppRoot))return;
         var prior=StartupPaths.Read();
-        if(StartupPaths.SameBoot(prior.BootUtc,BootUtc))return;
+        if(StartupPaths.SameActivation(prior,BootUtc,WindowsActivation.Current))return;
         using var linked=CancellationTokenSource.CreateLinkedTokenSource(serviceStop,_cancel.Token);
         await _serial.WaitAsync(linked.Token);
         try
@@ -218,6 +218,12 @@ internal sealed class BootRouting
                 if(ordinary.Running&&((ordinary.RouterPid>0&&new ProcessIdentity(ordinary.RouterPid,ordinary.RouterStartedUtc,Path.Combine(_config.AppRoot,"runtime","smart-router.exe")).Matches())||
                     (ordinary.BridgePid>0&&new ProcessIdentity(ordinary.BridgePid,ordinary.BridgeStartedUtc,Path.Combine(StartupPaths.AgentDirectory,"vpn-bridge.exe")).Matches())))throw new IOException("An existing ordinary session requires attention.");
             }
+            }
+            while(!Directory.Exists(_config.AppRoot))
+            {
+                linked.Token.ThrowIfCancellationRequested();
+                State(settings,"WaitingForStorage","Ожидание диска с установленной CITA Route… Можно отменить подключение.");
+                await Task.Delay(2000,linked.Token);
             }
             ValidateSnapshot();
             State(settings,"WaitingForNetwork","Ожидание сети и службы WireSock…");
@@ -318,7 +324,7 @@ internal sealed class BootRouting
             {
                 // Hybrid shutdown can retain kernel uptime. A Windows shutdown,
                 // unlike an ordinary service restart, explicitly rearms next start.
-                state.BootUtc=default;Storage.Write(StartupPaths.StateFile,state);
+                state.BootUtc=default;state.ActivationId="";Storage.Write(StartupPaths.StateFile,state);
             }
         }
         catch(Exception ex)when(ex is IOException or UnauthorizedAccessException){}

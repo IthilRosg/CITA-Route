@@ -17,7 +17,8 @@ $boot=(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
 $directory=Join-Path $ClientRoot 'logs';New-Item -ItemType Directory -Path $directory -Force|Out-Null
 $baseline=Join-Path $directory 'startup-boot-baseline.json'
 if($Action -eq 'Arm'){
-    @{schema=1;armedUtc=[datetime]::UtcNow.ToString('o');osBootUtc=$boot.ToString('o');version=$settings.Version;sourceRoot=$ClientRoot}|ConvertTo-Json|Set-Content -LiteralPath $baseline -Encoding UTF8
+    $priorState=ReadSmall (Join-Path $shared 'startup-state.json')
+    @{schema=1;armedUtc=[datetime]::UtcNow.ToString('o');osBootUtc=$boot.ToString('o');activationId=[string]$priorState.ActivationId;version=$settings.Version;sourceRoot=$ClientRoot}|ConvertTo-Json|Set-Content -LiteralPath $baseline -Encoding UTF8
     Write-Output 'Baseline recorded. Reboot the separate test Windows manually and leave it signed out until the connection is ready. No network or startup settings changed.'
     exit 0
 }
@@ -30,8 +31,11 @@ $health=ReadSmall (Join-Path $protected 'startup-client\runtime\session-health.j
 $age=([datetime]::UtcNow-(Utc $health.updatedUtc)).TotalSeconds
 $current=($state.Phase -eq 'Connected' -and (Owns $state.SourceRoot) -and $session.running -and $session.bridgeReady -and $session.id -and $proof.SessionId -eq $session.id -and $health.sessionId -eq $session.id -and $proof.BridgeGeneration -eq $session.bridgeGeneration -and $health.bridgeGeneration -eq $session.bridgeGeneration -and $health.healthy -and $age -ge 0 -and $age -le 90 -and (SameBoot $proof.BootUtc $state.BootUtc) -and (SameBoot $proof.BootUtc $boot) -and $proof.ConnectedUtc -and (Utc $proof.ConnectedUtc) -gt (Utc $before.armedUtc) -and (Utc $proof.StartedUtc) -gt (Utc $before.armedUtc) -and $proof.Version -eq $settings.Version)
 $rebooted=-not(SameBoot $before.osBootUtc $boot)
+$activationChanged=[string]$before.activationId -match '^[A-F0-9]{64}$' -and [string]$proof.ActivationId -match '^[A-F0-9]{64}$' -and $proof.ActivationId -eq $state.ActivationId -and $proof.ActivationId -ne $before.activationId
 $report=@{schema=1;checkedUtc=[datetime]::UtcNow.ToString('o');version=$proof.Version;kernelBootChanged=$rebooted;currentHealthyGeneration=[bool]$current;serviceSessionId=$proof.ServiceSessionId;interactiveUsersAtStart=$proof.InteractiveUsersAtStart;interactiveUsersAtConnection=$proof.InteractiveUsersAtConnection;connectedUtc=$proof.ConnectedUtc;
     rebootBeforeSignInObserved=[bool]($current -and $rebooted -and $proof.ServiceSessionId -eq 0 -and $null -ne $proof.InteractiveUsersAtStart -and $proof.InteractiveUsersAtStart -eq 0 -and $null -ne $proof.InteractiveUsersAtConnection -and $proof.InteractiveUsersAtConnection -eq 0);
-    limitation='WTS point-in-time observations. Hybrid shutdown and uninterrupted absence of interactive logons require separate evidence. Synthetic service CI is not real WireSock transport proof.'}
+    windowsActivationChanged=[bool]$activationChanged;
+    activationBeforeSignInObserved=[bool]($current -and ($rebooted -or $activationChanged) -and $proof.ServiceSessionId -eq 0 -and $null -ne $proof.InteractiveUsersAtStart -and $proof.InteractiveUsersAtStart -eq 0 -and $null -ne $proof.InteractiveUsersAtConnection -and $proof.InteractiveUsersAtConnection -eq 0);
+    limitation='WTS point-in-time observations. A new activation is separate from kernel restart. Uninterrupted absence of interactive logons requires separate evidence. Synthetic service CI is not real WireSock transport proof.'}
 $report|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $directory 'startup-boot-report.json') -Encoding UTF8
 $report|ConvertTo-Json

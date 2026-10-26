@@ -14,7 +14,7 @@
     return $result
 }
 
-function Read-HelperOutput([string]$Image,[string]$Arguments) {
+function Read-HelperOutput([string]$Image,[string]$Arguments,[switch]$Usage) {
     # Status must not hold the watchdog indefinitely. Do not log raw CLI output.
     $info=New-Object Diagnostics.ProcessStartInfo
     $info.FileName=$Image;$info.Arguments=$Arguments;$info.UseShellExecute=$false;$info.CreateNoWindow=$true
@@ -31,7 +31,7 @@ function Read-HelperOutput([string]$Image,[string]$Arguments) {
             $stderr=$process.StandardError.BaseStream.CopyToAsync($errorOutput)
             if(-not $process.WaitForExit(4000)){throw 'WireSock status timed out.'}
             if(-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdout,$stderr),1000)){throw 'WireSock status output timed out.'}
-            if($process.ExitCode -ne 0 -or $output.Length -gt 65536){throw 'WireSock status is unavailable.'}
+            if(($process.ExitCode -ne 0 -and -not($Usage -and $Arguments -eq '' -and $process.ExitCode -eq 1)) -or $output.Length -gt 65536){throw 'WireSock status is unavailable.'}
             try{return (New-Object Text.UTF8Encoding($false,$true)).GetString($output.ToArray())}
             catch [Text.DecoderFallbackException]{return [Text.Encoding]::GetEncoding(866).GetString($output.ToArray())}
         } finally {$output.Dispose();$errorOutput.Dispose()}
@@ -39,6 +39,21 @@ function Read-HelperOutput([string]$Image,[string]$Arguments) {
         if($started -and -not $process.HasExited){try{$process.Kill();[void]$process.WaitForExit(1000)}catch{}}
         $process.Dispose()
     }
+}
+
+function Test-WireSockManagementUsage([string]$Text) {
+    if($Text.Length -gt 65536){return $false}
+    foreach($command in @('list','connect','disconnect','status','import','export','delete')){
+        if($Text -notmatch ('(?im)^\s*'+$command+'(?:\s|$)')){return $false}
+    }
+    foreach($option in @('-network-lock','-exit','-log-level')){if($Text -notmatch ([regex]::Escape($option)+'\b')){return $false}}
+    return $true
+}
+
+function Test-WireSockManagementCapabilities {
+    # The documented help command is an invocation without arguments. WireSock
+    # 3.6.1.1 uses exit 1 for help; status/list retain strict exit-code handling.
+    return Test-WireSockManagementUsage (Read-HelperOutput $cli '' -Usage)
 }
 
 function Read-WireSockStatus { return Read-HelperOutput $cli 'status' }
