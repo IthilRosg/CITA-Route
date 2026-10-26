@@ -15,7 +15,8 @@ receipt for its actual implementation; a lab receipt does not certify packaging.
    Observations now rotate through a fixed 128-entry LRU window instead of
    stopping at the first 128 destinations. Retry history follows that window;
    the oldest new-flow decision is retired when the rule budget is full.
-   Remaining production gates: obsolete-scope flow-aware collection and DPI/UDP decisions.
+   Scope retirement now has an explicit admission barrier and TCP acceptance;
+   see `NATIVE-SCOPE-RETIREMENT-20261026.md`. DPI/UDP decisions remain gated.
    Budget exhaustion falls back to VPN; no general physical-core bypass exists.
 2. **Accepted in W11 — first use.** A hash-checked, framework-only native bundle,
    protected unconfigured template, private import and remembered selection work

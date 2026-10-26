@@ -38,12 +38,14 @@ internal sealed class NativeCalibrationBudget
 
 // Make-before-break applies to rules, not application payloads: acknowledge new
 // routing before announcing it. Already admitted flows keep their chosen route.
-// Old exact permissions remain until explicit retirement; the core enforces TTL
-// for new flows. The guard budget prevents unbounded retained permissions.
+// Exact permissions retire only after the core atomically disables new admission
+// and confirms no policy, pending dial, probe or live socket still uses them.
 internal sealed class NativeRoutePolicyPublisher(NativeWfpGuard guard,NativeCoreRecovery core,string coreImage,uint physicalIndex)
 {
     readonly SemaphoreSlim gate=new(1);
     readonly HashSet<NativeDirectPermission> scopes=new();
+    readonly HashSet<NativeDirectPermission> admissions=new();
+    readonly Dictionary<NativeDirectPermission,long> requiredUntil=new();
     ulong revision;
     int scopedPid;
     internal ulong Revision=>revision;
@@ -52,6 +54,34 @@ internal sealed class NativeRoutePolicyPublisher(NativeWfpGuard guard,NativeCore
     string automaticEpoch=Guid.NewGuid().ToString("N");
     int automaticCount;
     internal int AutomaticRuleCount=>Volatile.Read(ref automaticCount);
+    int retiredScopes;
+    internal int RetiredScopes=>Volatile.Read(ref retiredScopes);
+    internal async Task MaintainAsync(CancellationToken stop)
+    {
+        await gate.WaitAsync(stop);
+        try{if(scopedPid>0&&core.ProcessId==scopedPid)await CollectScopes(stop);}
+        finally{gate.Release();}
+    }
+    async Task CollectScopes(CancellationToken stop,HashSet<NativeDirectPermission>? preserve=null)
+    {
+        if(!core.SupportsDirectScopes)throw new IOException("Native scope collection unavailable.");
+        foreach(var scope in scopes.ToArray())
+        {
+            if(preserve?.Contains(scope)==true)continue;
+            if(requiredUntil.TryGetValue(scope,out long until)&&until>Environment.TickCount64)continue;
+            if(!await core.DirectScopeAsync(scope,false,revision,scopedPid,stop))continue;
+            admissions.Remove(scope);
+            await guard.SetDirectAsync(scope,false,stop);scopes.Remove(scope);requiredUntil.Remove(scope);Interlocked.Increment(ref retiredScopes);
+        }
+    }
+    async Task EnableScope(NativeDirectPermission scope,int pid,CancellationToken stop)
+    {
+        if(scopes.Contains(scope)&&admissions.Contains(scope))return;
+        if(!scopes.Contains(scope)){await guard.SetDirectAsync(scope,true,stop);scopes.Add(scope);}
+        if(!await guard.VerifyAsync(stop))throw new IOException("Direct scope not independently confirmed.");
+        await core.DirectScopeAsync(scope,true,revision,pid,stop);
+        admissions.Add(scope);
+    }
     internal async Task ResetForNetworkAsync(CancellationToken stop)
     {
         await gate.WaitAsync(stop);
@@ -66,7 +96,7 @@ internal sealed class NativeRoutePolicyPublisher(NativeWfpGuard guard,NativeCore
             // The previous process has been retired by NativeCoreRecovery, so
             // none of its admitted Direct flows can still need these scopes.
             foreach(var scope in scopes.ToArray()){await guard.SetDirectAsync(scope,false,stop);scopes.Remove(scope);}
-            automaticRules.Clear();Volatile.Write(ref automaticCount,0);revision=0;scopedPid=expectedPid;
+            automaticRules.Clear();admissions.Clear();requiredUntil.Clear();Volatile.Write(ref automaticCount,0);revision=0;scopedPid=expectedPid;
         }finally{gate.Release();}
     }
     internal static void Validate(IReadOnlyCollection<NativeDomainRule> rules)
@@ -101,19 +131,22 @@ internal sealed class NativeRoutePolicyPublisher(NativeWfpGuard guard,NativeCore
     }
     async Task ApplyConfirmed(string epoch,IReadOnlyCollection<NativeDomainRule> rules,CancellationToken stop)
     {
-            if(!core.SupportsPolicy)throw new IOException("Native core does not support acknowledged policies.");
+            if(!core.SupportsPolicy||!core.SupportsDirectScopes)throw new IOException("Native core does not support acknowledged scope retirement.");
             string document=JsonSerializer.Serialize(new{Epoch=epoch,Rules=rules});if(System.Text.Encoding.UTF8.GetByteCount(document)>65536)throw new InvalidDataException("Native policy document budget exceeded.");
             Phase="GrantingScopes";int pid=core.ProcessId;
-            if(pid!=scopedPid){if(guard.DirectPermits!=0)throw new IOException("Native core changed without scope retirement.");scopes.Clear();scopedPid=pid;}
-            foreach(var rule in rules.Where(r=>r.Route is "direct" or "dpi"))foreach(string ip in rule.Addresses)
+            if(pid!=scopedPid){if(guard.DirectPermits!=0)throw new IOException("Native core changed without scope retirement.");scopes.Clear();admissions.Clear();requiredUntil.Clear();scopedPid=pid;}
+            var needed=rules.Where(r=>r.Route is "direct" or "dpi").SelectMany(r=>r.Addresses.Select(ip=>new NativeDirectPermission(coreImage,ip,r.Port,r.Network,physicalIndex))).ToHashSet();
+            await CollectScopes(stop,needed);
+            foreach(var scope in needed)
             {
-                var scope=new NativeDirectPermission(coreImage,ip,rule.Port,rule.Network,physicalIndex);
-                if(scopes.Contains(scope))continue;
-                await guard.SetDirectAsync(scope,true,stop);scopes.Add(scope);
+                await EnableScope(scope,pid,stop);
             }
             if(!await guard.VerifyAsync(stop))throw new IOException("Direct scopes not independently confirmed.");
             Phase="Publishing";ulong next=checked(revision+1);
             await core.PublishPolicyAsync(next,document,guard.DirectDigest,pid,stop);revision=next;Phase="Applied";
+            requiredUntil.Clear();long wall=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),tick=Environment.TickCount64;
+            foreach(var rule in rules.Where(r=>r.Route is "direct" or "dpi"))foreach(string ip in rule.Addresses){var scope=new NativeDirectPermission(coreImage,ip,rule.Port,rule.Network,physicalIndex);long due=tick+Math.Clamp(rule.ExpiresUnixMilliseconds-wall,0,600000);requiredUntil[scope]=Math.Max(requiredUntil.GetValueOrDefault(scope),due);}
+            await CollectScopes(stop);
     }
     internal async Task<bool> CalibrateAsync(NativeObservedDestination observed,CancellationToken stop)
     {
@@ -122,11 +155,14 @@ internal sealed class NativeRoutePolicyPublisher(NativeWfpGuard guard,NativeCore
         try
         {
             int pid=core.ProcessId;if(pid!=scopedPid&&scopes.Count>0)throw new IOException("Native calibration generation changed.");
-            var scope=new NativeDirectPermission(coreImage,observed.Address,observed.Port,"tcp",physicalIndex);bool added=!scopes.Contains(scope);
-            if(added){await guard.SetDirectAsync(scope,true,stop);scopes.Add(scope);scopedPid=pid;}
+            if(!core.SupportsDirectScopes)throw new IOException("Native calibration requires safe scope retirement.");
+            if(scopedPid==0)scopedPid=pid;
+            await CollectScopes(stop);
+            var scope=new NativeDirectPermission(coreImage,observed.Address,observed.Port,"tcp",physicalIndex);
+            await EnableScope(scope,pid,stop);
             bool usable=false;
             try{if(await guard.VerifyAsync(stop))usable=await core.ProbeDirectAsync(observed,pid,stop);}
-            finally{if(!usable&&added){using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(5));await guard.SetDirectAsync(scope,false,cleanup.Token);scopes.Remove(scope);}}
+            finally{if(!usable){using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(5));await CollectScopes(cleanup.Token);}}
             if(!usable){if(automaticRules.Remove(observed)){await ApplyConfirmed(automaticEpoch,automaticRules.Values.Where(r=>r.ExpiresUnixMilliseconds>DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()).ToArray(),stop);Volatile.Write(ref automaticCount,automaticRules.Count);}return false;}
             long now=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();foreach(var key in automaticRules.Where(x=>x.Value.ExpiresUnixMilliseconds<=now).Select(x=>x.Key).ToArray())automaticRules.Remove(key);
             // One exact domain/app tuple may have several CDN addresses. Keep

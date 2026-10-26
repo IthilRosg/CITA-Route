@@ -24,6 +24,13 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
     internal int ProcessId=>binding?.ProcessId??0;
     internal int Repairs=>Volatile.Read(ref repairs);
     internal bool SupportsPolicy=>binding?.SupportsPolicy==true;
+    internal bool SupportsDirectScopes=>binding?.SupportsDirectScopes==true;
+    internal async Task<bool> DirectScopeAsync(NativeDirectPermission permission,bool enable,ulong revision,int expectedPid,CancellationToken stop)
+    {
+        await gate.WaitAsync(stop);
+        try{if(binding==null||binding.ProcessId!=expectedPid||State is not ("Active" or "TransportDegraded"))throw new IOException("Native scope generation changed.");return await binding.DirectScopeAsync(permission,enable,revision,stop);}
+        finally{gate.Release();}
+    }
     internal long PolicyDirectDials=>binding?.PolicyDirectDials??0;
     internal long PolicyBlockedDials=>binding?.PolicyBlockedDials??0;
     internal string? StartupIssue{get;private set;}

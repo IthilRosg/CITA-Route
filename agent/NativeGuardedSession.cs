@@ -19,6 +19,7 @@ internal sealed class NativeGuardedSession:IAsyncDisposable
     readonly CancellationTokenSource automaticStop=new();
     readonly bool adaptive;
     Task? automaticTask;
+    Task? scopeMaintenance;
     string automaticState="Disabled";
     int calibrated;
     NativeRoutePolicyPublisher? publisher;
@@ -33,7 +34,7 @@ internal sealed class NativeGuardedSession:IAsyncDisposable
     }
     internal NativeWfpGuard Guard=>guard;
     internal NativeCoreRecovery Core=>core;
-    internal object Snapshot=>new{phase=Phase,coreState=core.State,coreStartupIssue=core.StartupIssue,corePid=core.ProcessId,repairs=core.Repairs,bindings=guard.Bindings,policyDigest=guard.Digest,guardFailure=guard.LastFailureStage,ipv6Mode="BlockProtected",profile=profiles.Snapshot(),domainPolicyRevision=publisher?.Revision??0,domainPolicyPhase=publisher?.Phase??"Unavailable",policyDirectDials=core.PolicyDirectDials,policyBlockedDials=core.PolicyBlockedDials,automaticRouting=automaticState,calibratedDomains=publisher?.AutomaticRuleCount??0,calibrationChecks=calibrated};
+    internal object Snapshot=>new{phase=Phase,coreState=core.State,coreStartupIssue=core.StartupIssue,corePid=core.ProcessId,repairs=core.Repairs,bindings=guard.Bindings,policyDigest=guard.Digest,guardFailure=guard.LastFailureStage,ipv6Mode="BlockProtected",profile=profiles.Snapshot(),domainPolicyRevision=publisher?.Revision??0,domainPolicyPhase=publisher?.Phase??"Unavailable",policyDirectDials=core.PolicyDirectDials,policyBlockedDials=core.PolicyBlockedDials,retiredDirectScopes=publisher?.RetiredScopes??0,automaticRouting=automaticState,calibratedDomains=publisher?.AutomaticRuleCount??0,calibrationChecks=calibrated};
     internal async Task PublishPolicyAsync(NativePolicyRequest request,CancellationToken stop)
     {
         automaticStop.Cancel();if(automaticTask!=null)await automaticTask.WaitAsync(stop);
@@ -69,7 +70,13 @@ internal sealed class NativeGuardedSession:IAsyncDisposable
         Phase="StartingCore";await core.StartControllerAsync(stop);Phase="Ready";
     }
     internal async Task<JsonElement> ConnectAsync(JsonElement spec,CancellationToken stop)
-    {if(released)throw new InvalidOperationException("Native session was retired.");Phase="Connecting";if(guard.Luid==0)await guard.BindAsync(stop);var result=await profiles.SwitchAsync(spec,stop);Phase="Connected";if(adaptive&&automaticTask==null)automaticTask=Calibrate();return result;}
+    {if(released)throw new InvalidOperationException("Native session was retired.");Phase="Connecting";if(guard.Luid==0)await guard.BindAsync(stop);var result=await profiles.SwitchAsync(spec,stop);Phase="Connected";scopeMaintenance??=MaintainScopes();if(adaptive&&automaticTask==null)automaticTask=Calibrate();return result;}
+    internal async Task SweepScopesAsync(CancellationToken stop){if(publisher!=null)await publisher.MaintainAsync(stop);}
+    async Task MaintainScopes()
+    {
+        try{while(!policyStop.IsCancellationRequested){await Task.Delay(5000,policyStop.Token);if(core.State is not ("Active" or "TransportDegraded"))continue;try{await SweepScopesAsync(policyStop.Token);}catch(OperationCanceledException)when(policyStop.IsCancellationRequested){throw;}catch{/* Retry without revoking unconfirmed permissions. */}}}
+        catch(OperationCanceledException)when(policyStop.IsCancellationRequested){}
+    }
     async Task Calibrate()
     {
         using var linked=CancellationTokenSource.CreateLinkedTokenSource(policyStop.Token,automaticStop.Token);var stop=linked.Token;
@@ -107,7 +114,7 @@ internal sealed class NativeGuardedSession:IAsyncDisposable
     {await RetireAsync(stop);await guard.RemoveAsync(stop);}
     async Task RetireAsync(CancellationToken stop)
     {
-        if(retired)return;released=true;policyStop.Cancel();if(automaticTask!=null)await automaticTask.WaitAsync(stop);await policyGate.WaitAsync(stop);policyGate.Release();
+        if(retired)return;released=true;policyStop.Cancel();if(automaticTask!=null)await automaticTask.WaitAsync(stop);if(scopeMaintenance!=null)await scopeMaintenance.WaitAsync(stop);await policyGate.WaitAsync(stop);policyGate.Release();
         try{await guard.CloseAsync(stop);}catch{}
         try{await profiles.DisposeAsync();}catch{}
         try{await core.DisposeAsync();}catch{}

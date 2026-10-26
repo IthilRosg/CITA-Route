@@ -36,8 +36,8 @@ func (h *CitaNativeBinding) observe(o nativeObservation){
 }
 func(h *CitaNativeBinding) probeDirect(c bindingCommand)(r bindingReply){
  h.mu.Lock();r=bindingReply{Stage:c.Action,Owner:h.owner,Session:c.Session,Generation:c.Generation,State:h.state,CurrentGeneration:h.generation}
- if c.Owner!=h.owner||c.Session!=h.session||c.Generation!=h.generation||h.state!="Active"||c.Observation==nil||c.Port!=0||c.Token!=""||c.Policy!=nil {h.mu.Unlock();return}
- o,ok:=normalizeObservation(*c.Observation);if !ok{h.mu.Unlock();return};_,seen:=h.observations[observationKey(o)];h.mu.Unlock();if !seen||h.outbounds==nil{return}
+ if c.Owner!=h.owner||c.Session!=h.session||c.Generation!=h.generation||h.state!="Active"||c.Observation==nil||c.Port!=0||c.Token!=""||c.Policy!=nil||c.Scope!=nil||c.Revision!=0 {h.mu.Unlock();return}
+ o,ok:=normalizeObservation(*c.Observation);if !ok{h.mu.Unlock();return};_,seen:=h.observations[observationKey(o)];var lease *nativeDirectLease;if seen{lease=h.acquireDirectLocked(nativeDirectScope{Address:o.Address,Network:"tcp",Port:o.Port})};h.mu.Unlock();if lease==nil{return};defer lease.release();if h.outbounds==nil{return}
  outbound,ok:=h.outbounds.Outbound("native-direct");if !ok||outbound.Type()!="direct"{return};r.Success=true
  ctx,cancel:=context.WithTimeout(h.ctx,2500*time.Millisecond);defer cancel()
  conn,e:=outbound.DialContext(ctx,"tcp",M.ParseSocksaddr(fmt.Sprintf("%s:443",o.Address)));if e!=nil{return};defer conn.Close();_ = conn.SetDeadline(time.Now().Add(2300*time.Millisecond))

@@ -29,6 +29,7 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
     internal JsonElement LastState{get;private set;}
     internal NativeValidationEvidence? LastValidation{get;private set;}
     internal bool SupportsPolicy{get;private set;}
+    internal bool SupportsDirectScopes{get;private set;}
     internal long PolicyDirectDials{get;private set;}
     internal long PolicyBlockedDials{get;private set;}
     internal string? StartupIssue{get;private set;}
@@ -46,12 +47,13 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
         JsonElement ready;try{ready=await NativeAwgBackend.ReadReply(process.StandardOutput,deadline.Token);}catch{try{string text=await errors.WaitAsync(TimeSpan.FromSeconds(1));var field=Regex.Match(text,@"unknown field\s+""([a-zA-Z0-9_]{1,64})""");StartupIssue=field.Success?"UnsupportedField:"+field.Groups[1].Value:text.Contains("interface",StringComparison.OrdinalIgnoreCase)?"InterfaceInitializationFailed":text.Contains("wintun",StringComparison.OrdinalIgnoreCase)?"TunDriverUnavailable":text.Contains("address already in use",StringComparison.OrdinalIgnoreCase)?"AddressInUse":"CoreStartupRejected";}catch{StartupIssue="CoreStartupUnconfirmed";}throw;}
         if(ready.GetProperty("stage").GetString()!="BindingControlReady"||ready.GetProperty("owner").GetString()!=owner||!ready.GetProperty("success").GetBoolean())throw new IOException("Core control readiness mismatch.");
         SupportsPolicy=ready.TryGetProperty("policyProtocol",out var protocol)&&protocol.GetInt32()==1;
+        SupportsDirectScopes=ready.TryGetProperty("directScopeProtocol",out var scopeProtocol)&&scopeProtocol.GetInt32()==1;
     }
     static async Task<string> ReadStartupErrors(Stream input)
     {
         byte[] bytes=new byte[1024];using var captured=new MemoryStream();int count;while((count=await input.ReadAsync(bytes))>0){if(captured.Length<16384)captured.Write(bytes,0,(int)Math.Min(count,16384-captured.Length));}return System.Text.Encoding.UTF8.GetString(captured.ToArray());
     }
-    internal async Task<JsonElement> CommandAsync(string action,string id,ulong gen,int port=0,string token="",bool requireSuccess=true,CancellationToken stop=default,object? policy=null,object? observation=null)
+    internal async Task<JsonElement> CommandAsync(string action,string id,ulong gen,int port=0,string token="",bool requireSuccess=true,CancellationToken stop=default,object? policy=null,object? observation=null,object? scope=null,ulong revision=0)
     {
         await gate.WaitAsync(stop);
         try
@@ -60,7 +62,7 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
             // Once written, consume the acknowledgement even if the initiating
             // user operation is cancelled. This keeps the private stream aligned.
             using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(4));
-            var command=observation!=null?JsonSerializer.Serialize(new{Owner=owner,Action=action,Session=id,Generation=gen,Port=port,Token=token,Observation=observation}):policy==null?JsonSerializer.Serialize(new{Owner=owner,Action=action,Session=id,Generation=gen,Port=port,Token=token}):JsonSerializer.Serialize(new{Owner=owner,Action=action,Session=id,Generation=gen,Port=port,Token=token,Policy=policy});
+            var command=scope!=null?JsonSerializer.Serialize(new{Owner=owner,Action=action,Session=id,Generation=gen,Port=port,Token=token,Scope=scope,Revision=revision}):observation!=null?JsonSerializer.Serialize(new{Owner=owner,Action=action,Session=id,Generation=gen,Port=port,Token=token,Observation=observation}):policy==null?JsonSerializer.Serialize(new{Owner=owner,Action=action,Session=id,Generation=gen,Port=port,Token=token}):JsonSerializer.Serialize(new{Owner=owner,Action=action,Session=id,Generation=gen,Port=port,Token=token,Policy=policy});
             bool refused=false;
             try
             {
@@ -137,6 +139,14 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
     }
     internal async Task<bool> ProbeDirectAsync(NativeObservedDestination observed,CancellationToken stop)
     {var reply=await CommandAsync("ProbeDirect",session,generation,stop:stop,observation:observed);return reply.TryGetProperty("probeReachable",out var reachable)&&reachable.GetBoolean();}
+    internal async Task<bool> DirectScopeAsync(NativeDirectPermission permission,bool enable,ulong revision,CancellationToken stop)
+    {
+        if(!SupportsDirectScopes)throw new IOException("Native scope retirement protocol unavailable.");
+        var scope=new{Address=permission.Server,Network=permission.Protocol,Port=permission.Port};
+        var reply=await CommandAsync(enable?"EnableDirect":"RetireDirect",session,generation,stop:stop,scope:scope,revision:revision);
+        if(reply.GetProperty("policyRevision").GetUInt64()!=revision||!reply.TryGetProperty("scope",out var seen)||seen.GetProperty("Address").GetString()!=permission.Server||seen.GetProperty("Network").GetString()!=permission.Protocol||seen.GetProperty("Port").GetUInt16()!=permission.Port)throw new IOException("Native scope acknowledgement mismatch.");
+        return enable||reply.TryGetProperty("scopeRetired",out var retired)&&retired.GetBoolean();
+    }
     public async ValueTask DisposeAsync()
     {
         await gate.WaitAsync();

@@ -40,6 +40,23 @@ internal static class NativePolicySessionLab
             Check(held.GetProperty("success").GetBoolean()&&held.GetProperty("reusedTcp").GetBoolean()&&held.GetProperty("egressHash").GetString()==expected);report["publicationRetainsExistingVpnTcp"]=true;
             stage="fresh-direct-flow";var direct=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true);Check(direct.GetProperty("success").GetBoolean());
             for(int i=0;i<40&&runtime.Core.PolicyDirectDials==0;i++)await Task.Delay(100,stop);Check(runtime.Core.PolicyDirectDials>0);report["freshDomainUsesDirect"]=true;
+            stage="held-direct-scope";
+            var heldDirect=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,async()=>{
+                await runtime.PublishPolicyAsync(new(epoch,[]),stop);await runtime.SweepScopesAsync(stop);
+                Check(runtime.Guard.DirectPermits==1);report["liveDirectScopeRetained"]=true;
+            },domain:true);
+            Check(heldDirect.GetProperty("success").GetBoolean()&&heldDirect.GetProperty("reusedTcp").GetBoolean());report["withdrawalRetainsExistingDirectTcp"]=true;
+            stage="closed-direct-scope";
+            for(int i=0;i<30&&runtime.Guard.DirectPermits!=0;i++){await runtime.SweepScopesAsync(stop);await Task.Delay(100,stop);}
+            Check(runtime.Guard.DirectPermits==0&&await runtime.Guard.VerifyAsync(stop));report["closedDirectScopeRevoked"]=true;
+            stage="direct-reenable";await runtime.PublishPolicyAsync(Rules("direct"),stop);
+            Check((await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true)).GetProperty("success").GetBoolean());report["retiredScopeReenabled"]=true;
+            stage="idle-scope-churn";
+            for(int i=0;i<6;i++){
+                await runtime.PublishPolicyAsync(new(epoch,[new("idle.example.com","","tcp","direct",checked((ushort)(10443+i)),["1.1.1.1"],DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeMilliseconds())]),stop);
+                Check(runtime.Guard.DirectPermits<=2);
+            }
+            await runtime.PublishPolicyAsync(new(epoch,[]),stop);await runtime.SweepScopesAsync(stop);Check(runtime.Guard.DirectPermits==0);report["idleScopeRotationBounded"]=true;
             stage="blocked-fresh-flow";await runtime.PublishPolicyAsync(Rules("blocked"),stop);var blocked=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true);Check(!blocked.GetProperty("success").GetBoolean());for(int i=0;i<40&&runtime.Core.PolicyBlockedDials==0;i++)await Task.Delay(100,stop);Check(runtime.Core.PolicyBlockedDials>0);report["blockedDomainRefused"]=true;
             stage="restore-vpn-default";await runtime.PublishPolicyAsync(new(epoch,[]),stop);var restored=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true);Check(restored.GetProperty("success").GetBoolean()&&restored.GetProperty("egressHash").GetString()==expected);Check(runtime.Core.State=="Active");report["defaultVpnRestored"]=true;
             await runtime.DisconnectAsync(stop);report["success"]=true;
