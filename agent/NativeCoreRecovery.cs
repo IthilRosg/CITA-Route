@@ -12,6 +12,8 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
     readonly Func<CancellationToken,Task>? beforeRepair;
     readonly bool persistentControl;
     readonly NativeRepairBudget repairBudget=new();
+    readonly NativeObservationWakeup observationWakeup=new();
+    internal Task<bool> WaitForObservationsAsync(CancellationToken stop)=>observationWakeup.WaitAsync(stop);
     readonly SemaphoreSlim gate=new(1);
     readonly CancellationTokenSource lifetime=new();
     NativeCoreBinding? binding;
@@ -60,7 +62,7 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
         {
             if(binding!=null||monitor!=null||lifetime.IsCancellationRequested)throw new InvalidOperationException("Core controller already used.");
             if(!await guard(stop))throw new InvalidOperationException("Independent native guard unavailable.");
-            binding=factory();await binding.StartAsync(stop);leaseChecks=0;
+            binding=factory();observationWakeup.Reset();await binding.StartAsync(stop);leaseChecks=0;
             if(afterStart!=null)await afterStart(binding,stop);State="Closed";monitor=Monitor();
         }
         catch{if(binding!=null){StartupIssue=binding.StartupIssue;await binding.DisposeAsync();binding=null;}throw;}
@@ -75,7 +77,7 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
             if(binding==null)
             {
                 if(!await guard(stop))throw new InvalidOperationException("Independent native guard unavailable.");
-                binding=factory();await binding.StartAsync(stop);leaseChecks=0;
+                binding=factory();observationWakeup.Reset();await binding.StartAsync(stop);leaseChecks=0;
                 if(afterStart!=null)await afterStart(binding,stop);
             }
             await binding.QuarantineAsync(next,stop);spec=next.Clone();ready=default;backend=null;State="Quarantined";
@@ -103,7 +105,7 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
     async Task Create(CancellationToken stop)
     {
         if(!await guard(stop))throw new InvalidOperationException("Independent native guard unavailable.");
-        binding=factory();await binding.StartAsync(stop);
+        binding=factory();observationWakeup.Reset();await binding.StartAsync(stop);
         leaseChecks=0;
         if(afterStart!=null)await afterStart(binding,stop);
         await binding.QuarantineAsync(spec,stop);await binding.ActivateAsync(backend!,spec,ready,stop);
@@ -170,6 +172,7 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
                         await binding!.CommandAsync("Snapshot",spec.GetProperty("Session").GetString()!,spec.GetProperty("Generation").GetUInt64(),stop:lifetime.Token);
                         leaseChecks++;
                         State=transportDegraded?"TransportDegraded":"Active";
+                        observationWakeup.Observe(binding.Observations);
                         continue;
                     }
                     catch(OperationCanceledException)when(lifetime.IsCancellationRequested){break;}

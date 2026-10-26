@@ -1,4 +1,4 @@
-param([string]$AgentFolder='runtime/native-agent-backend-compile',[switch]$Bootstrap,[switch]$Network)
+param([string]$AgentFolder='runtime/native-agent-backend-compile',[switch]$Bootstrap,[switch]$Network,[switch]$Performance,[ValidateRange(12,90)][int]$PerformanceSeconds=12)
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'));$run=[guid]::NewGuid().ToString('N')
 $agentRoot=[IO.Path]::GetFullPath((Join-Path $root $AgentFolder));$runtimeRoot=[IO.Path]::GetFullPath((Join-Path $root 'runtime'))+[IO.Path]::DirectorySeparatorChar
@@ -16,6 +16,7 @@ try{
  if($Bootstrap){foreach($pair in @(@('runtime/native-components.zip','native-components.zip'),@('Install-NativeComponents.ps1','Install-NativeComponents.ps1'),@('AgentLease.ps1','AgentLease.ps1'))){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root $pair[0]),('C:\CitaLab\NativeAwg\'+$pair[1]))|Out-Null}}
  if($Network){foreach($name in @('Guest-LinkInterruption.ps1','Guest-IPv4Migration.ps1')){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $PSScriptRoot $name),('C:\CitaLab\NativeAwg\'+$name))|Out-Null}}
  $mode=if($Bootstrap){' -Bootstrap'}else{''};if($Network){$mode+=' -Network'}
+ if($Performance){$mode+=' -Performance -PerformanceSeconds '+$PerformanceSeconds}
  W11-Code ('if(Test-Path C:\CitaLab\NativeAwg\native-service-result.json){Remove-Item -LiteralPath C:\CitaLab\NativeAwg\native-service-result.json -Force};Start-Process powershell.exe -WindowStyle Hidden -ArgumentList ''-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\CitaLab\NativeAwg\Run-GuestNativeService.ps1'+$mode+''' -RedirectStandardOutput C:\CitaLab\NativeAwg\service-suite.out -RedirectStandardError C:\CitaLab\NativeAwg\service-suite.err|Out-Null')|Out-Null
  $file=Join-Path $root ('runtime/native-scm-'+$run+'.json');$deadline=[DateTime]::UtcNow.AddMinutes(7);$done=$false
  do{try{W11-Call @('copyFileFromGuestToHost',$labVmx,'C:\CitaLab\NativeAwg\native-service-result.json',$file)|Out-Null;$null=Get-Content $file -Raw|ConvertFrom-Json;$done=$true;break}catch{};Start-Sleep -Seconds 2}while([DateTime]::UtcNow -lt $deadline)

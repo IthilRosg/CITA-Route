@@ -31,6 +31,15 @@ if(args.Length==1 && args[0]=="--self-test")
     RepairBudgetTests.Run();
     var schedule=new NativeCalibrationSchedule();
     NativeObservedDestination Seen(int i)=>new("h"+i+".example.com","","1.1.1.1",443);
+    var wakeup=new NativeObservationWakeup();
+    if(!wakeup.Observe([Seen(0),Seen(1)])||wakeup.Pending!=1||wakeup.Observe([Seen(1),Seen(0)]))throw new Exception("Observation signal must ignore snapshot reordering.");
+    for(int i=2;i<128;i++)wakeup.Observe([Seen(i)]);
+    if(wakeup.Pending!=1||!await wakeup.WaitAsync(CancellationToken.None,TimeSpan.Zero)||await wakeup.WaitAsync(CancellationToken.None,TimeSpan.Zero))throw new Exception("Observation burst must coalesce without a busy loop.");
+    wakeup.Reset();var waiting=wakeup.WaitAsync(CancellationToken.None,TimeSpan.FromSeconds(10));wakeup.Observe([Seen(0)]);if(!await waiting)throw new Exception("A waiting calibration missed its observation.");
+    if(wakeup.Observe([Seen(0)]))throw new Exception("Unchanged observations must not retrigger calibration.");
+    wakeup.Reset();if(!wakeup.Observe([Seen(0)]))throw new Exception("Core replacement retained stale observation identity.");
+    bool signalBounded=false;try{wakeup.Observe(Enumerable.Range(0,129).Select(Seen).ToArray());}catch(InvalidDataException){signalBounded=true;}if(!signalBounded)throw new Exception("Observation wakeup exceeded its input budget.");
+    wakeup.Reset();using(var cancelled=new CancellationTokenSource()){var wait=wakeup.WaitAsync(cancelled.Token);cancelled.Cancel();bool stopped=false;try{await wait;}catch(OperationCanceledException){stopped=true;}if(!stopped)throw new Exception("Observation wait ignored Stop.");}
     var window=Enumerable.Range(0,128).Select(Seen).ToArray();
     foreach(var item in window)schedule.Mark(item,1000);
     if(schedule.Select(window,1001)!=null||schedule.Count!=128)throw new Exception("Retry schedule ignored cooldown.");

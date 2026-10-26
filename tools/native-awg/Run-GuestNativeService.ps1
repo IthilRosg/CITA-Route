@@ -1,4 +1,4 @@
-param([switch]$Bootstrap,[switch]$Reboot,[switch]$Network)
+param([switch]$Bootstrap,[switch]$Reboot,[switch]$Network,[switch]$Performance,[ValidateRange(12,90)][int]$PerformanceSeconds=12)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$run=[guid]::NewGuid().ToString('N');$folder=Join-Path ([Environment]::GetFolderPath('ProgramFiles')) ('CitaNativeService-'+$run);$native=Join-Path $folder 'native';$restore=Join-Path $root ('private\restore-service-'+$run+'.ps1');$report=@{schema=1;success=$false;startedUtc=[datetime]::UtcNow.ToString('o');scope='Actual RoutePilotRescue SCM service with protected native snapshot; isolated W11'};$rescue=$null;$changed=$false;$created=$false;$old=$null;$phase='prepare'
@@ -82,6 +82,19 @@ if($service.PathName.Contains($folder)){
   $restored=Wait-Native 'Disconnected';if($restored.profileId -ne $selected.profileId){throw 'Component rollback lost profile'};$report.componentRollbackVerified=$true
  }
  $phase='connect';$null=Rpc 'native-start';$active=Wait-Native 'Connected';$report.firstTraffic=Probe-Tun
+ if($Performance){
+  $phase='service-resources';$selected=(Rpc 'native-status').Native;$bad=(Rpc 'native-resources' ('0'*32)).Native;if($bad.available){throw 'Stale native metrics identity accepted'}
+  for($warm=0;$warm -lt 10;$warm++){Start-Sleep -Seconds 1;$warmState=(Rpc 'native-resources' $selected.operation).Native;if(-not $warmState.available){throw 'Service resource warmup lost its epoch'}}
+  $first=(Rpc 'native-resources' $selected.operation).Native;$previous=$first;$samples=@()
+  for($sample=0;$sample -lt $PerformanceSeconds;$sample++){
+   Start-Sleep -Seconds 1;$now=(Rpc 'native-resources' $selected.operation).Native
+   if(-not $now.available -or $now.operation -ne $selected.operation -or $now.generation -ne $selected.generation -or $now.service.pid -ne $first.service.pid -or $now.service.startedTicks -ne $first.service.startedTicks -or $now.coreState -ne 'Active'){throw 'Service resource epoch changed'}
+   $elapsed=$now.tickMs-$previous.tickMs;if($elapsed -le 0 -or $now.job.CpuTicks -lt $previous.job.CpuTicks){throw 'Invalid job accounting interval'}
+   $samples+=@{elapsedMs=$elapsed;nativeMachineCpuPercent=100*($now.job.CpuTicks-$previous.job.CpuTicks)/10000.0/$elapsed/$now.logicalProcessors;serviceMachineCpuPercent=100*($now.service.cpuTicks-$previous.service.cpuTicks)/10000.0/$elapsed/$now.logicalProcessors;servicePrivateBytes=$now.service.privateBytes;serviceHandles=$now.service.handles;serviceThreads=$now.service.threads;managedBytes=$now.service.managedBytes;gc0=$now.service.gc0;gc1=$now.service.gc1;gc2=$now.service.gc2;peakJobCommittedBytes=$now.job.PeakCommittedBytes;processesStarted=$now.job.ProcessesStarted};$previous=$now
+  }
+  $span=$previous.tickMs-$first.tickMs
+  $report.serviceResources=@{scope='Actual LocalSystem RoutePilotRescue; native job separately from service host; no GUI';warmupSeconds=10;logicalProcessors=$previous.logicalProcessors;durationMs=$span;sampleCount=$samples.Count;staleOperationRefused=$true;nativeMachineCpuPercent=100*($previous.job.CpuTicks-$first.job.CpuTicks)/10000.0/$span/$previous.logicalProcessors;serviceMachineCpuPercent=100*($previous.service.cpuTicks-$first.service.cpuTicks)/10000.0/$span/$previous.logicalProcessors;servicePrivateStartBytes=$first.service.privateBytes;servicePrivateEndBytes=$previous.service.privateBytes;serviceHandleDelta=$previous.service.handles-$first.service.handles;peakJobCommittedBytes=$previous.job.PeakCommittedBytes;samples=$samples}
+ }
  $phase='ui-ipc';$uiInfo=[Diagnostics.ProcessStartInfo]::new((Join-Path $root 'NativeUiLab\Cita.NativeUiLab.exe'),'--service-status C:\CitaLab\NativeAwg');$uiInfo.UseShellExecute=$false;$uiInfo.CreateNoWindow=$true;$uiInfo.RedirectStandardOutput=$true;$uiInfo.RedirectStandardError=$true;$ui=[Diagnostics.Process]::Start($uiInfo)
  try{$uiOut=$ui.StandardOutput.ReadToEndAsync();$uiErr=$ui.StandardError.ReadToEndAsync();if(-not $ui.WaitForExit(15000)){$ui.Kill();$ui.WaitForExit();throw 'Desktop IPC probe timeout'};if($ui.ExitCode -ne 0 -or -not ($uiOut.GetAwaiter().GetResult()|ConvertFrom-Json).success){throw 'Desktop IPC metadata probe failed'};$report.desktopIpcVerified=$true;$report.desktopClientSha256=(Get-FileHash (Join-Path $root 'NativeUiLab\RoutePilot.dll')).Hash}finally{$ui.Dispose()}
  $phase='core-recovery';$pid1=$active.runtime.corePid;$process=Get-Process -Id $pid1;if($process.Path -ne (Join-Path $native 'native-core.exe')){throw 'Unexpected core identity'};Stop-Process -Id $pid1 -Force

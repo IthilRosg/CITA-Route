@@ -94,7 +94,7 @@ internal sealed class NativeGuardedSession:IAsyncDisposable
             var attempted=new NativeCalibrationSchedule();var budget=new NativeCalibrationBudget();int pid=core.ProcessId;automaticState="Observing";
             while(!stop.IsCancellationRequested)
             {
-                await Task.Delay(1000,stop);if(core.State!="Active")continue;
+                await core.WaitForObservationsAsync(stop);if(core.State!="Active")continue;
                 if(core.ProcessId!=pid){int nextPid=core.ProcessId;await publisher.ResetForCoreAsync(nextPid,stop);pid=nextPid;attempted.Clear();automaticState="Observing";continue;}
                 string currentStamp=NetworkStamp();if(currentStamp!=networkStamp){await publisher.ResetForNetworkAsync(stop);networkStamp=currentStamp;attempted.Clear();automaticState="Observing";}
                 long now=Environment.TickCount64;var selected=attempted.Select(core.Observations,now);if(selected==null)continue;

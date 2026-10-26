@@ -9,20 +9,28 @@ namespace RoutePilot;
 
 public partial class MainWindow
 {
-    public async Task BenchmarkPresentation()
+    public async Task BenchmarkPresentation(int rows=200,int seconds=30)
     {
         if(!_render)throw new InvalidOperationException("Resource fixture requires preview mode.");
+        if(Environment.GetEnvironmentVariable("CITA_PRESENTATION_ROWS") is { } rowSetting)rows=int.Parse(rowSetting,System.Globalization.CultureInfo.InvariantCulture);
+        if(Environment.GetEnvironmentVariable("CITA_PRESENTATION_SECONDS") is { } secondSetting)seconds=int.Parse(secondSetting,System.Globalization.CultureInfo.InvariantCulture);
+        if(rows is not (200 or 1000))throw new ArgumentOutOfRangeException(nameof(rows));
+        if(seconds is <1 or >30)throw new ArgumentOutOfRangeException(nameof(seconds));
         var samples=new List<object>();
         using var process=Process.GetCurrentProcess();
-        _connections=Enumerable.Range(0,200).Select(i=>new ConnectionRow{Id=i.ToString(),Host="sample-"+i+".example",Process="fixture.exe",Network="TCP",IsVpn=i%3==0,Upload=i*1024,Download=i*32768}).ToList();
+        _connections=Enumerable.Range(0,rows).Select(i=>new ConnectionRow{Id=i.ToString(),Host="sample-"+i+".example",Process="fixture.exe",Network="TCP",IsVpn=i%3==0,Upload=i*1024,Download=i*32768}).ToList();
+        UpdateConnectionGrids();var original=ConnectionsGrid.ItemsSource;var recent=RecentGrid.ItemsSource;ConnectionsGrid.SelectedItem=_connections[0];UpdateConnectionGrids();
+        if(!ReferenceEquals(original,ConnectionsGrid.ItemsSource)||!ReferenceEquals(recent,RecentGrid.ItemsSource))throw new InvalidOperationException("Unchanged presentation rebuilt its grids.");
+        _connections[0].Upload++;UpdateConnectionGrids();if(ReferenceEquals(original,ConnectionsGrid.ItemsSource)||(ConnectionsGrid.SelectedItem as ConnectionRow)?.Id!=_connections[0].Id)throw new InvalidOperationException("Changed counter or selected row was lost.");
+        _connections[0].Upload--;ConnectionSearch.Text="sample-0.example";UpdateConnectionGrids();if(ConnectionsGrid.Items.Count!=1)throw new InvalidOperationException("Presentation filter did not refresh.");ConnectionSearch.Text="";UpdateConnectionGrids();
         foreach(bool compact in new[]{true,false})
         {
-            ApplyView(compact,false);PreviewPage(0);_engineRunning=true;SetStatus("Демонстрация статистики",true);
+            ApplyView(compact,false);PreviewPage(compact?0:1);_engineRunning=true;SetStatus("Демонстрация статистики",true);
             // Warm up WPF resources before each measured interval.
             UpdateConnectionGrids();TrafficChart.SetPoints(_points);await Task.Delay(2000);
             process.Refresh();var cpu=process.TotalProcessorTime;var clock=Stopwatch.StartNew();
             long initialPrivate=process.PrivateMemorySize64,maxPrivate=initialPrivate,maxWorking=process.WorkingSet64;int initialHandles=process.HandleCount;
-            for(int tick=0;tick<30;tick++)
+            for(int tick=0;tick<seconds;tick++)
             {
                 var now=DateTime.UtcNow;_points.Add(new(now,64000,1500000));_points.RemoveAll(p=>(now-p.Time).TotalSeconds>60);
                 DownloadRateLabel.Text=Format.Rate(1500000+tick*1024);UploadRateLabel.Text=Format.Rate(64000+tick*256);
@@ -38,7 +46,7 @@ public partial class MainWindow
                 maxPrivateMiB=maxPrivate/1048576.0,maxWorkingSetMiB=maxWorking/1048576.0,handleDelta=process.HandleCount-initialHandles});
         }
         AppPaths.Write(Path.Combine(_root,"logs","ui-resource-fixture.json"),new{kind="synthetic-presentation-only",updatedUtc=DateTime.UtcNow,
-            rows=200,refreshSeconds=1,logicalProcessors=Environment.ProcessorCount,samples,
+            rows,gridReuseVerified=true,refreshSeconds=1,logicalProcessors=Environment.ProcessorCount,samples,
             notes="WPF rendering only; no live VPN, backend polling, external probes or network changes. Short samples cannot establish absence of leaks."});
         _engineRunning=false;
     }

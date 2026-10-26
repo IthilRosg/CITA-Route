@@ -281,14 +281,21 @@ public partial class MainWindow : Window
         try{using var state=JsonDocument.Parse(File.ReadAllText(path));var utc=DateTime.Parse(state.RootElement.GetProperty("updatedUtc").GetString()!).ToUniversalTime();var date=TimeZoneInfo.ConvertTimeFromUtc(utc,TimeZoneInfo.FindSystemTimeZoneById("Russian Standard Time"));FeedStateLabel.Text=domains+"Обновлено "+date.ToString("dd.MM HH:mm");}
         catch{FeedStateLabel.Text=domains+"Начальные списки загружены";}
     }
+    ConnectionGridRow[] _displayedConnections=Array.Empty<ConnectionGridRow>(),_displayedRecent=Array.Empty<ConnectionGridRow>();
     private void UpdateConnectionGrids()
     {
         string? selected=(ConnectionsGrid.SelectedItem as ConnectionRow)?.Id;
         string query=ConnectionSearch.Text.Trim();
         var filtered=_connections.Where(c=>query.Length==0 || (c.Host+" "+c.Process+" "+c.Route).Contains(query,StringComparison.OrdinalIgnoreCase)).ToList();
-        ConnectionsGrid.ItemsSource=filtered;
-        if(selected!=null)ConnectionsGrid.SelectedItem=filtered.FirstOrDefault(c=>c.Id==selected);
-        RecentGrid.ItemsSource=_connections.Take(4).ToList();EmptyConnectionsLabel.Visibility=_connections.Count==0?Visibility.Visible:Visibility.Collapsed;
+        var snapshot=ConnectionGridSnapshot.Capture(filtered);
+        if(ConnectionsGrid.ItemsSource==null||!_displayedConnections.SequenceEqual(snapshot))
+        {
+            _displayedConnections=snapshot;ConnectionsGrid.ItemsSource=filtered;
+            if(selected!=null)ConnectionsGrid.SelectedItem=filtered.FirstOrDefault(c=>c.Id==selected);
+        }
+        var recent=_connections.Take(4).ToList();var recentSnapshot=ConnectionGridSnapshot.Capture(recent);
+        if(RecentGrid.ItemsSource==null||!_displayedRecent.SequenceEqual(recentSnapshot)){_displayedRecent=recentSnapshot;RecentGrid.ItemsSource=recent;}
+        EmptyConnectionsLabel.Visibility=_connections.Count==0?Visibility.Visible:Visibility.Collapsed;
     }
     private void UpdateRulesGrid()=>RulesGrid.ItemsSource=_rules.OrderBy(r=>r.Domain).ToList();
     private void Notice(string text,bool error=false)

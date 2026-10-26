@@ -139,6 +139,7 @@ public sealed class AgentHost
     {
         if(request.Command=="native-capabilities")return new(true,"Native service capabilities.",Native:JsonSerializer.SerializeToElement(new{setupProtocol=1,importProtocol=1,policyProtocol=1}));
         if(request.Command=="native-status")return Reply(_native!=null,"Native backend status.");
+        if(request.Command=="native-resources")return new(_native!=null,"Read-only native resource snapshot.",Native:_native?.ReadResources(request.RunId));
         if(request.Command=="native-rules")
         {
             if(_native==null||request.Policy==null||_store.State.Active||_operation?.Matches()==true)return Reply(false,"Native policy is unavailable.");

@@ -9,6 +9,18 @@ namespace RoutePilot.Agent;
 public sealed record NativeDomainRule(string Domain,string Application,string Network,string Route,ushort Port,string[] Addresses,long ExpiresUnixMilliseconds);
 public sealed record NativePolicyRequest(string Epoch,NativeDomainRule[] Rules);
 internal sealed record NativeObservedDestination(string Domain,string Application,string Address,ushort Port);
+internal sealed class NativeObservationWakeup
+{
+    readonly object sync=new();readonly HashSet<NativeObservedDestination> known=new();readonly SemaphoreSlim signal=new(0,1);
+    internal int Pending=>signal.CurrentCount;
+    internal bool Observe(IReadOnlyCollection<NativeObservedDestination> observations)
+    {
+        if(observations.Count>128)throw new InvalidDataException("Native observation signal budget exceeded.");
+        lock(sync){bool changed=observations.Any(o=>!known.Contains(o));known.Clear();known.UnionWith(observations);if(changed){try{signal.Release();}catch(SemaphoreFullException){}}return changed;}
+    }
+    internal void Reset(){lock(sync){known.Clear();while(signal.Wait(0)){}}}
+    internal Task<bool> WaitAsync(CancellationToken stop,TimeSpan? fallback=null)=>signal.WaitAsync(fallback??TimeSpan.FromSeconds(1),stop);
+}
 internal sealed class NativeCalibrationSchedule
 {
     readonly Dictionary<NativeObservedDestination,long> attempted=new();

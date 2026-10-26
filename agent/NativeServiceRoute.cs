@@ -64,6 +64,20 @@ internal sealed class NativeServiceRoute
     }
     internal JsonElement Snapshot
     {get{lock(sync)return JsonSerializer.SerializeToElement(new{phase=phase=="Connected"&&runtime?.Core.State is {} state&&state!="Active"?state:phase,desired=intent.Desired,operation=intent.Operation,generation=intent.Generation,profileName=bundle.ProfileName,profileId=bundle.ProfileId,policyMode=policy.GetProperty("Vpn").EnumerateArray().Any(x=>x.GetString()=="0.0.0.0/0")?"FullVpn":"SelectedRoutes",errorCode=failure,importStage,policyRequestState,runtime=runtime?.Snapshot});}}
+    internal JsonElement ReadResources(string? expectedOperation)
+    {
+        lock(sync)
+        {
+            if(expectedOperation!=intent.Operation||!intent.Desired||phase!="Connected"||runtime==null)return JsonSerializer.SerializeToElement(new{available=false,phase,operation=intent.Operation});
+            try
+            {
+                var usage=runtime.ResourceUsage;using var service=System.Diagnostics.Process.GetCurrentProcess();service.Refresh();
+                return JsonSerializer.SerializeToElement(new{available=true,phase,operation=intent.Operation,generation=intent.Generation,coreState=runtime.Core.State,tickMs=Environment.TickCount64,logicalProcessors=Environment.ProcessorCount,job=usage,
+                    service=new{pid=service.Id,startedTicks=service.StartTime.ToUniversalTime().Ticks,cpuTicks=service.TotalProcessorTime.Ticks,privateBytes=service.PrivateMemorySize64,workingSetBytes=service.WorkingSet64,handles=service.HandleCount,threads=service.Threads.Count,managedBytes=GC.GetTotalMemory(false),gc0=GC.CollectionCount(0),gc1=GC.CollectionCount(1),gc2=GC.CollectionCount(2)}});
+            }
+            catch(Exception error)when(error is ObjectDisposedException or InvalidOperationException or System.ComponentModel.Win32Exception){return JsonSerializer.SerializeToElement(new{available=false,phase,operation=intent.Operation,errorCode="ResourceSnapshotUnavailable"});}
+        }
+    }
     internal void RequestPolicy(NativePolicyRequest request,string? expectedOperation)
     {
         NativeRoutePolicyPublisher.Validate(request.Rules);
