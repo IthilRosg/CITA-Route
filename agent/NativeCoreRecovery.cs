@@ -2,6 +2,21 @@ using System.Text.Json;
 
 namespace RoutePilot.Agent;
 
+internal sealed record NativeTransportHealth(string State,int Epoch,bool? Https,bool? Udp,long CompletedUnixMilliseconds,long ObservedTickMilliseconds,int SocketRepairs,int Restarts)
+{
+    internal bool HasWorkingProtocol=>State is "Reachable" or "HttpsDegraded" or "UdpDegraded";
+    internal static NativeTransportHealth Read(JsonElement snapshot)
+    {
+        bool details=snapshot.TryGetProperty("healthProbe",out var probe)&&probe.ValueKind==JsonValueKind.Object;
+        return new(snapshot.TryGetProperty("health",out var state)?state.GetString()??"Unknown":"Unknown",
+            snapshot.TryGetProperty("epoch",out var epoch)?epoch.GetInt32():0,
+            details&&probe.TryGetProperty("https",out var https)?https.GetBoolean():null,
+            details&&probe.TryGetProperty("udp",out var udp)?udp.GetBoolean():null,
+            details&&probe.TryGetProperty("completedUnixMilliseconds",out var completed)?completed.GetInt64():0,Environment.TickCount64,
+            snapshot.TryGetProperty("socketRepairs",out var repairs)?repairs.GetInt32():0,snapshot.TryGetProperty("restarts",out var restarts)?restarts.GetInt32():0);
+    }
+}
+
 // Experimental controller only: callers must supply an independently enforced
 // OS guard. Never remove that guard on failure, or reconstruct an AWG backend.
 internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
@@ -13,6 +28,8 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
     readonly bool persistentControl;
     readonly NativeRepairBudget repairBudget=new();
     readonly NativeObservationWakeup observationWakeup=new();
+    NativeTransportHealth? transportHealth;
+    internal NativeTransportHealth? TransportHealth=>Volatile.Read(ref transportHealth);
     // Optional in-process lab instrumentation; never exported in service snapshots.
     internal Action<string,NativeObservedDestination,int,long>? CalibrationObserver{get;set;}
     internal void TraceCalibration(string phase,NativeObservedDestination observation)
@@ -69,7 +86,7 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
         {
             if(binding!=null||monitor!=null||lifetime.IsCancellationRequested)throw new InvalidOperationException("Core controller already used.");
             if(!await guard(stop))throw new InvalidOperationException("Independent native guard unavailable.");
-            binding=factory();observationWakeup.Reset();await binding.StartAsync(stop);leaseChecks=0;
+            binding=factory();observationWakeup.Reset();Volatile.Write(ref transportHealth,null);await binding.StartAsync(stop);leaseChecks=0;
             if(afterStart!=null)await afterStart(binding,stop);State="Closed";monitor=Monitor();
         }
         catch{if(binding!=null){StartupIssue=binding.StartupIssue;await binding.DisposeAsync();binding=null;}throw;}
@@ -84,10 +101,10 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
             if(binding==null)
             {
                 if(!await guard(stop))throw new InvalidOperationException("Independent native guard unavailable.");
-                binding=factory();observationWakeup.Reset();await binding.StartAsync(stop);leaseChecks=0;
+                binding=factory();observationWakeup.Reset();Volatile.Write(ref transportHealth,null);await binding.StartAsync(stop);leaseChecks=0;
                 if(afterStart!=null)await afterStart(binding,stop);
             }
-            await binding.QuarantineAsync(next,stop);spec=next.Clone();ready=default;backend=null;State="Quarantined";
+            await binding.QuarantineAsync(next,stop);Volatile.Write(ref transportHealth,null);spec=next.Clone();ready=default;backend=null;State="Quarantined";
         }
         finally{gate.Release();}
     }
@@ -106,13 +123,13 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
     public async Task CloseAsync(CancellationToken stop)
     {
         Volatile.Write(ref desired,0);CancelRepair();await gate.WaitAsync(stop);
-        try{if(binding!=null)await binding.CloseAsync(stop);backend=null;spec=default;ready=default;State="Closed";}
+        try{if(binding!=null)await binding.CloseAsync(stop);backend=null;spec=default;ready=default;State="Closed";Volatile.Write(ref transportHealth,null);}
         finally{gate.Release();}
     }
     async Task Create(CancellationToken stop)
     {
         if(!await guard(stop))throw new InvalidOperationException("Independent native guard unavailable.");
-        binding=factory();observationWakeup.Reset();await binding.StartAsync(stop);
+        binding=factory();observationWakeup.Reset();Volatile.Write(ref transportHealth,null);await binding.StartAsync(stop);
         leaseChecks=0;
         if(afterStart!=null)await afterStart(binding,stop);
         await binding.QuarantineAsync(spec,stop);await binding.ActivateAsync(backend!,spec,ready,stop);
@@ -167,10 +184,17 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
                     try
                     {
                         var transport=await backend!.SendAsync(System.Text.Json.JsonSerializer.SerializeToElement(new{Action="Snapshot",Session=spec.GetProperty("Session").GetString(),Generation=spec.GetProperty("Generation").GetUInt64()}),lifetime.Token);
+                        var evidence=NativeTransportHealth.Read(transport);Volatile.Write(ref transportHealth,evidence);
                         string? ownerState=transport.GetProperty("state").GetString();
                         if(ownerState is "Exhausted" or "Stopped")
                         {State="TransportExhausted";try{if(binding!=null)await binding.CloseAsync(lifetime.Token);}catch{State="TransportCloseUnconfirmed";}break;}
-                        transportDegraded=transport.TryGetProperty("health",out var health)&&health.GetString()!="Reachable";
+                        // Partial probe loss is diagnostic evidence, not a
+                        // total transport outage. Preserve the previous OR
+                        // availability rule and keep safe per-flow calibration.
+                        // Older internal owners omit health entirely. Keep
+                        // their existing validated lifecycle behavior, while
+                        // reporting absent probe outcomes as unknown.
+                        transportDegraded=transport.TryGetProperty("health",out _)&&!evidence.HasWorkingProtocol;
                     }
                     catch(OperationCanceledException)when(lifetime.IsCancellationRequested){break;}
                     catch{State="TransportUnavailable";try{if(binding!=null)await binding.CloseAsync(lifetime.Token);}catch{State="TransportCloseUnconfirmed";}break;}

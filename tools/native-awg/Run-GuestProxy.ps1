@@ -18,7 +18,7 @@ function ProcessInfo([string]$file,[string]$arguments){
 }
 function Client([int]$port,[string]$token){
  $p=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-client'));$output=$p.StandardOutput.ReadToEndAsync();$errors=$p.StandardError.ReadToEndAsync()
- try{$p.StandardInput.WriteLine((@{Port=$port;Token=$token}|ConvertTo-Json -Compress));$p.StandardInput.Close();if(-not $p.WaitForExit(18000)){$p.Kill();$p.WaitForExit();throw 'Client deadline'};$result=$output.GetAwaiter().GetResult()|ConvertFrom-Json;$null=$errors.GetAwaiter().GetResult();return @{exitCode=$p.ExitCode;result=$result}}finally{if(-not $p.HasExited){$p.Kill();$p.WaitForExit()};$p.Dispose()}
+ try{$p.StandardInput.WriteLine((@{Port=$port;Token=$token;LiteralIPv4=[bool]$Tun}|ConvertTo-Json -Compress));$p.StandardInput.Close();if(-not $p.WaitForExit(18000)){$p.Kill();$p.WaitForExit();throw 'Client deadline'};$result=$output.GetAwaiter().GetResult()|ConvertFrom-Json;$null=$errors.GetAwaiter().GetResult();return @{exitCode=$p.ExitCode;result=$result}}finally{if(-not $p.HasExited){$p.Kill();$p.WaitForExit()};$p.Dispose()}
 }
 function UdpClient([int]$port,[string]$token){
  $p=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-udp-client'));$output=$p.StandardOutput.ReadToEndAsync();$errors=$p.StandardError.ReadToEndAsync()
@@ -129,7 +129,7 @@ try{
   $report.tunRoutePrefixes=@(Get-NetRoute -InterfaceAlias 'Cita-NativeLab' -AddressFamily IPv4|ForEach-Object {$_.DestinationPrefix}|Sort-Object -Unique)
   if($report.tunRoutePrefixes|Where-Object {$_ -in @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1')}){throw 'TUN route scope wider than approved'}
  }
- Start-Sleep -Milliseconds 700;$chain=Client $port ''; $report.routerChainHttps=[bool]($chain.exitCode -eq 0 -and $chain.result.success -and $chain.result.egressHash -eq $reference.serverEgressHash)
+ Start-Sleep -Milliseconds 700;$chain=Client $port '';$report.chainBaseline=$chain;$report.chainBaselineTarget=if($Tun){'LiteralIPv4'}else{'Hostname'}; $report.routerChainHttps=[bool]($chain.exitCode -eq 0 -and $chain.result.success -and $chain.result.egressHash -eq $reference.serverEgressHash)
  $owner.Refresh();$router.Refresh();$report.resourceSample=@{nativePrivateBytes=$owner.PrivateMemorySize64;nativeWorkingSetBytes=$owner.WorkingSet64;routerPrivateBytes=$router.PrivateMemorySize64;routerWorkingSetBytes=$router.WorkingSet64;scope='Single post-HTTPS process sample, not steady-state or a comparison with WireSock'}
  if($Udp){
   $stage='UdpAuthentication';$badUdp=UdpClient $ready.port ('0'*64);$noneUdp=UdpClient $ready.port ''

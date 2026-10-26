@@ -82,6 +82,10 @@ if($service.PathName.Contains($folder)){
   $restored=Wait-Native 'Disconnected';if($restored.profileId -ne $selected.profileId){throw 'Component rollback lost profile'};$report.componentRollbackVerified=$true
  }
  $phase='connect';$null=Rpc 'native-start';$active=Wait-Native 'Connected';$report.firstTraffic=Probe-Tun
+ $phase='transport-health-evidence'
+ for($proof=0;$proof -lt 20;$proof++){$current=(Rpc 'native-status').Native;$health=$current.runtime.transportHealth;if($health.Epoch -gt 0 -and $health.Https -is [bool] -and $health.Udp -is [bool] -and $health.CompletedUnixMilliseconds -gt 0){break};Start-Sleep -Milliseconds 200}
+ if($current.operation -ne $active.operation -or $current.generation -ne $active.generation -or $health.Epoch -le 0 -or $health.Https -isnot [bool] -or $health.Udp -isnot [bool] -or $health.CompletedUnixMilliseconds -le 0){throw 'Service transport health evidence unavailable or stale operation'}
+ $report.transportHealthProof=@{state=$health.State;epoch=$health.Epoch;https=$health.Https;udp=$health.Udp;socketRepairs=$health.SocketRepairs;restarts=$health.Restarts}
  $dnsProof={
   $phase='service-native-dns';$before=(Rpc 'native-status').Native.runtime.fakeIpVpnDials
   $info=[Diagnostics.ProcessStartInfo]::new((Join-Path $root 'AgentBackend\Cita.NativeAgentLab.exe'),'--native-dns-client');$info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true;$client=[Diagnostics.Process]::Start($info)

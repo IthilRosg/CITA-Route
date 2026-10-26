@@ -10,6 +10,21 @@ import (
 	"time"
 )
 
+func TestOwnerProtocolDegradationDoesNotRepairHealthySocket(t *testing.T){
+ for _,test:=range []struct{https,udp bool;state string}{{true,true,"Reachable"},{true,false,"UdpDegraded"},{false,true,"HttpsDegraded"}}{
+  child:=&ownedProxy{};o:=&proxyOwner{coordinated:true,child:child}
+  evidence:=ownerProbeResult{HTTPS:test.https,UDP:test.udp,CompletedUnixMilliseconds:123}
+  for i:=0;i<10;i++{if o.decideProbe(context.Background(),child,evidence){t.Fatal("partial protocol failure rebound working transport")}}
+  state:=o.snapshot("Snapshot");if state.Health!=test.state||state.SocketRepairs!=0||state.BudgetUsed!=0||state.HealthProbe==nil||state.HealthProbe.HTTPS!=test.https||state.HealthProbe.UDP!=test.udp{t.Fatal("partial protocol health hidden or spent budget")}
+ }
+ child:=&ownedProxy{};o:=&proxyOwner{coordinated:true,child:child};ctx:=context.Background()
+ o.decideProbe(ctx,child,ownerProbeResult{HTTPS:true,UDP:true})
+ if o.decideProbe(ctx,child,ownerProbeResult{})||!o.decideProbe(ctx,child,ownerProbeResult{}){t.Fatal("two-total-failure repair gate changed")}
+ old:=o.snapshot("Snapshot");o.decideProbe(ctx,child,ownerProbeResult{HTTPS:true});if old.HealthProbe.HTTPS{t.Fatal("old snapshot mutated by next probe")}
+ before:=o.snapshot("Snapshot");if o.decideProbe(ctx,&ownedProxy{},ownerProbeResult{})||o.snapshot("Snapshot").BudgetUsed!=before.BudgetUsed{t.Fatal("stale child changed repair state")}
+ canceled,cancel:=context.WithCancel(ctx);cancel();if o.decideProbe(canceled,child,ownerProbeResult{}){t.Fatal("Stop repaired transport")};o.state("Stopped");if o.snapshot("Snapshot").HealthProbe!=nil{t.Fatal("stopped owner retained live probe")}
+}
+
 func TestPersistentOwnerUsesRollingSharedBudget(t *testing.T) {
 	t.Setenv("CITA_NATIVE_PERSISTENT_CONTROL", "1")
 	ctx := context.Background()

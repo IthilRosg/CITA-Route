@@ -33,6 +33,9 @@ if(args.Length==2 && args[0]=="--profiles-races-lab")return await ProfilesLab.Ru
 
 if(args.Length==1 && args[0]=="--self-test")
 {
+    var partial=NativeTransportHealth.Read(JsonSerializer.SerializeToElement(new{health="HttpsDegraded",epoch=2,healthProbe=new{https=false,udp=true,completedUnixMilliseconds=123L},socketRepairs=1,restarts=0}));
+    if(!partial.HasWorkingProtocol||partial.Https!=false||partial.Udp!=true||partial.Epoch!=2||partial.SocketRepairs!=1||partial.CompletedUnixMilliseconds!=123||partial.ObservedTickMilliseconds<=0)throw new Exception("Partial transport evidence lost identity or protocol outcome.");
+    var unknown=NativeTransportHealth.Read(JsonSerializer.SerializeToElement(new{health="Starting",epoch=1}));if(unknown.HasWorkingProtocol||unknown.Https!=null||unknown.Udp!=null||unknown.CompletedUnixMilliseconds!=0)throw new Exception("Missing transport probe inferred as a success or failure.");
     if(!NativeBootIdentity.MayResume(true,"boot-a","boot-a")||NativeBootIdentity.MayResume(true,"boot-a","boot-b")||NativeBootIdentity.MayResume(true,"","")||NativeBootIdentity.MayResume(false,"boot-a","boot-a"))throw new Exception("Native boot ownership failed.");
     RepairBudgetTests.Run();
     var schedule=new NativeCalibrationSchedule();

@@ -33,6 +33,7 @@ type ownerStatus struct {
 	Restarts      int           `json:"restarts"`
 	ChildPID      int           `json:"childPid"`
 	Health        string        `json:"health,omitempty"`
+ HealthProbe *ownerProbeResult `json:"healthProbe,omitempty"`
 	SocketRepairs int           `json:"socketRepairs"`
 	BudgetUsed    int           `json:"budgetUsed"`
 	Transport     *lossSnapshot `json:"transport,omitempty"`
@@ -65,6 +66,7 @@ func (o *proxyOwner) clear() {
 		o.verified = false
 		o.failures = 0
 		o.status.Transport = nil
+  o.status.HealthProbe=nil
 	}
 	for c := range o.relays {
 		c.Close()
@@ -102,6 +104,7 @@ func (o *proxyOwner) publish(ctx context.Context, child *ownedProxy) bool {
 	o.status.State = "RunningUnverified"
 	if o.coordinated {
 		o.status.Health = "Starting"
+  o.status.HealthProbe=nil
 		o.verified = false
 		o.failures = 0
 		o.status.Transport = nil
@@ -114,6 +117,7 @@ func (o *proxyOwner) state(state string) {
 	o.status.State = state
 	if o.coordinated && (state == "Stopped" || state == "Exhausted") {
 		o.status.Health = state
+  o.status.HealthProbe=nil
 	}
 }
 func startOwnedProxy(ctx context.Context, spec proxyStart) (*ownedProxy, error) {

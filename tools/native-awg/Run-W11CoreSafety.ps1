@@ -1,12 +1,14 @@
+param([string]$AgentFolder='runtime/native-agent-backend-lab')
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'));$run=[guid]::NewGuid().ToString('N')
+$agentRoot=[IO.Path]::GetFullPath((Join-Path $root $AgentFolder));if(-not $agentRoot.StartsWith((Join-Path $root 'runtime')+'\',[StringComparison]::OrdinalIgnoreCase)-or -not(Test-Path -LiteralPath $agentRoot -PathType Container)){throw 'Unexpected controller artifact directory'}
 $report=@{schema=1;success=$false;startedUtc=[datetime]::UtcNow.ToString('o');scope='Independent VM guard and shared automatic core recovery'}
-$nativeHash=(Get-FileHash (Join-Path $root 'runtime/native-awg-lab.exe')).Hash;$coreHash=(Get-FileHash (Join-Path $root 'runtime/native-core-lab.exe')).Hash;$agentHash=(Get-FileHash (Join-Path $root 'runtime/native-agent-backend-lab/Cita.NativeAgentLab.dll')).Hash
+$nativeHash=(Get-FileHash (Join-Path $root 'runtime/native-awg-lab.exe')).Hash;$coreHash=(Get-FileHash (Join-Path $root 'runtime/native-core-lab.exe')).Hash;$agentHash=(Get-FileHash (Join-Path $agentRoot 'Cita.NativeAgentLab.dll')).Hash
 . (Join-Path $root 'runtime/vm-lab/W11-Calls.ps1')
 try{
  W11-Call @('start',$labVmx,'nogui')|Out-Null
  foreach($pair in @(@('runtime/native-awg-lab.exe','native-awg-lab.exe'),@('runtime/native-core-lab.exe','native-core-lab.exe'),@('tools/native-awg/Run-GuestCoreSafety.ps1','Run-GuestCoreSafety.ps1'))){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root $pair[0]),('C:\CitaLab\NativeAwg\'+$pair[1]))|Out-Null}
- foreach($name in @('Cita.NativeAgentLab.exe','Cita.NativeAgentLab.dll','Cita.NativeAgentLab.deps.json','Cita.NativeAgentLab.runtimeconfig.json')){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $root ('runtime/native-agent-backend-lab/'+$name)),('C:\CitaLab\NativeAwg\AgentBackend\'+$name))|Out-Null}
+ foreach($name in @('Cita.NativeAgentLab.exe','Cita.NativeAgentLab.dll','Cita.NativeAgentLab.deps.json','Cita.NativeAgentLab.runtimeconfig.json')){W11-Call @('copyFileFromHostToGuest',$labVmx,(Join-Path $agentRoot $name),('C:\CitaLab\NativeAwg\AgentBackend\'+$name))|Out-Null}
  W11-Code 'if(Test-Path -LiteralPath C:\CitaLab\NativeAwg\core-safety-result.json){Remove-Item -LiteralPath C:\CitaLab\NativeAwg\core-safety-result.json -Force -ErrorAction Stop};$p=Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\CitaLab\NativeAwg\Run-GuestCoreSafety.ps1" -RedirectStandardOutput C:\CitaLab\NativeAwg\binding.out -RedirectStandardError C:\CitaLab\NativeAwg\binding.err -PassThru;$null=$p.Handle;$p.WaitForExit()'|Out-Null
  $file=Join-Path $root ('runtime/vm-lab/w11/native-core-safety-'+$run+'.json');W11-Call @('copyFileFromGuestToHost',$labVmx,'C:\CitaLab\NativeAwg\core-safety-result.json',$file)|Out-Null
  $r=Get-Content -LiteralPath $file -Raw|ConvertFrom-Json;$report.file=[IO.Path]::GetFileName($file);$report.probes=$r.probes;$report.errorType=$r.errorType
