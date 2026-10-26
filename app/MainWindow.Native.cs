@@ -34,13 +34,14 @@ public partial class MainWindow
             _nativeChoice.Selected=_nativeMode.SelectedIndex==1;AppPaths.Write(NativeChoicePath,_nativeChoice);_nativeReadUtc=DateTime.MinValue;await DiscoverConnectionsAsync();await RefreshAsync();
         };
         if(!ClientEdition.NativeOnly)content.Children.Add(_nativeMode);_nativeHint.TextWrapping=TextWrapping.Wrap;_nativeHint.FontSize=12;_nativeHint.Foreground=ConsoleTheme.Dim;_nativeHint.Margin=new Thickness(0,10,0,0);content.Children.Add(_nativeHint);
-        _nativeImportButton.Content="Импорт .conf во встроенный режим";_nativeImportButton.Margin=new Thickness(0,12,0,0);_nativeImportButton.HorizontalAlignment=HorizontalAlignment.Left;_nativeImportButton.IsEnabled=false;_nativeImportButton.Click+=async(_,_)=>await ImportNativeProfileAsync();content.Children.Add(_nativeImportButton);
+        _nativeImportButton.Content="Импорт .conf во встроенный режим";_nativeImportButton.Margin=new Thickness(0,12,0,0);_nativeImportButton.HorizontalAlignment=HorizontalAlignment.Left;_nativeImportButton.IsEnabled=ClientEdition.NativeOnly;_nativeImportButton.Click+=async(_,_)=>await ImportNativeProfileAsync();content.Children.Add(_nativeImportButton);
         _nativeSetupButton.Content="Подготовить встроенный модуль";_nativeSetupButton.Margin=new Thickness(0,10,0,0);_nativeSetupButton.HorizontalAlignment=HorizontalAlignment.Left;_nativeSetupButton.Click+=async(_,_)=>await PrepareNativeComponentsAsync();content.Children.Add(_nativeSetupButton);
         settings.Children.Insert(0,new Border{Style=(Style)FindResource("Card"),Margin=new Thickness(0,0,0,16),Child=content});
     }
     async Task<bool> RefreshNativeAsync(bool force=false)
     {
         if(_render)return false;
+        UpdateNativeImportAvailability();
         if(!_rescue.Installed&&!UseNativeBackend)return false;
         if(force||DateTime.UtcNow>=_nativeRetryUtc&&(DateTime.UtcNow-_nativeReadUtc).TotalSeconds>=1)
         {
@@ -51,7 +52,7 @@ public partial class MainWindow
         if(DateTime.UtcNow<_nativeRetryUtc){if(!UseNativeBackend)return false;ApplyNativeView(null);return true;}
         _nativeItem.IsEnabled=_nativeView?.Available==true;
         _nativeSetupButton.IsEnabled=!_busy&&!_discovering&&!_engineRunning;_nativeSetupButton.Visibility=Visibility.Visible;_nativeSetupButton.Content=_nativeView?.Available==true?"Обновить встроенный модуль":"Подготовить встроенный модуль";
-        _nativeImportButton.IsEnabled=(_nativeView?.Phase is "Disconnected" or "Unconfigured")&&!_busy&&!_discovering&&!_engineRunning;
+        UpdateNativeImportAvailability();
         SetNativeQualityCaption(UseNativeBackend);
         if(_nativeWireSockCard!=null)_nativeWireSockCard.Visibility=UseNativeBackend?Visibility.Collapsed:Visibility.Visible;
         _nativeMode.IsEnabled=!ClientEdition.NativeOnly&&!_busy&&!_discovering&&!_engineRunning&&_nativeView?.Desired!=true;

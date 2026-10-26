@@ -5,6 +5,11 @@ using System.Windows.Controls;
 namespace RoutePilot;
 public partial class MainWindow
 {
+    void UpdateNativeImportAvailability()
+    {
+        _nativeImportButton.IsEnabled=!_busy&&!_discovering&&!_engineRunning&&!_rescueState.BlocksRouting&&!_pendingConnectionOperation&&
+            (ClientEdition.NativeOnly||(_nativeView?.Phase is "Disconnected" or "Unconfigured"));
+    }
     bool StandaloneAgentMatchesPackage()
     {
         try{
@@ -31,6 +36,19 @@ public partial class MainWindow
     {
         if(!_render||!UseNativeBackend||!_nativeChoice.Selected)throw new Exception("Standalone must select its native backend regardless of saved legacy preferences.");
         if(_nativeWireSockCard?.Parent!=null||_nativeMode.Parent!=null)throw new Exception("Standalone must not expose a legacy settings card or backend switch.");
+        int picks=0;string confirmed=_nativeChoice.ConfirmedProfile;
+        NativeFilePickerFixture=()=>{picks++;return null;};
+        foreach(var state in new NativeRouteView?[]{null,new(){Phase="Unconfigured"},new(){Phase="Disconnected",ProfileId="fixture",ProfileName="fixture"}})
+        {
+            _nativeView=state;SyncConnectionButtons();
+            if(!_nativeImportButton.IsEnabled||!CompactProfileButton.IsEnabled)throw new Exception("Profile picker must be available before setup and after disconnect.");
+            int before=picks;CompactProfileButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));_nativeImportButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if(picks!=before+2||_nativeChoice.ConfirmedProfile!=confirmed)throw new Exception("Both profile buttons must open the picker and cancellation must preserve the selection.");
+        }
+        _busy=true;SyncConnectionButtons();if(_nativeImportButton.IsEnabled||CompactProfileButton.IsEnabled)throw new Exception("Profile selection must be disabled during operations.");
+        int blocked=picks;CompactProfileButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));_nativeImportButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));if(picks!=blocked)throw new Exception("Profile picker opened during an operation.");
+        _busy=false;_engineRunning=true;SyncConnectionButtons();if(_nativeImportButton.IsEnabled||CompactProfileButton.IsEnabled)throw new Exception("Profile selection must be disabled while connected.");
+        _engineRunning=false;_nativeView=null;NativeFilePickerFixture=null;SyncConnectionButtons();
         ShowActivated=false;ShowInTaskbar=false;Opacity=0;ApplyView(true,false);Show();UpdateLayout();
         if(Width>460||Height>520)throw new Exception("Standalone compact window exceeded its bounds.");
         ApplyView(false);PreviewPage(4);UpdateLayout();

@@ -90,12 +90,13 @@ public partial class MainWindow
     }
     void SyncConnectionButtons()
     {
-        var state=Cita.Startup.StartupPaths.Read();bool startup=state.Active&&state.Owns(_root);
+        var state=Cita.Startup.StartupPaths.Read();bool startup=!ClientEdition.NativeOnly&&state.Active&&state.Owns(_root);
         string label=_busy?(_connectionCancellation!=null?(_connectionCancellation.IsCancellationRequested?"Отменяем…":"Отменить"):"Подожди…"):_engineRunning||startup?"Отключить":"Подключить";
         bool enabled=(!_busy||(_connectionCancellation is {IsCancellationRequested:false}))&&!_rescueState.BlocksRouting&&!_pendingConnectionOperation;
         CompactConnectButton.Content=label;CompactConnectButton.IsEnabled=enabled;
         ConnectButton.Content=label;ConnectButton.IsEnabled=enabled;
         CompactProfileButton.IsEnabled=!_busy&&!_engineRunning&&!startup&&!_rescueState.BlocksRouting&&!_pendingConnectionOperation;
+        UpdateNativeImportAvailability();
         bool active=_busy||_updateDownloading||_updateInstalling||(startup&&state.Phase is "WaitingForStorage" or "WaitingForNetwork" or "Starting" or "Stopping");
         CompactActivity.Visibility=active?Visibility.Visible:Visibility.Collapsed;
         CompactActivity.IsIndeterminate=active&&IsVisible&&WindowState!=WindowState.Minimized;
@@ -198,7 +199,7 @@ public partial class MainWindow
         string.Equals(Path.TrimEndingDirectorySeparator(agent.AppRoot),Path.TrimEndingDirectorySeparator(root),StringComparison.OrdinalIgnoreCase);
     private async void ChooseCompactProfile_Click(object sender,RoutedEventArgs e)
     {
-        if(UseNativeBackend){if(!_busy&&!_engineRunning)ConfirmNativeProfile(true);return;}
+        if(UseNativeBackend){await ImportNativeProfileAsync();return;}
         if(_render||_busy||_engineRunning||_rescueState.BlocksRouting)return;
         _busy=true;_connectionCancellation=new();
         try
@@ -215,7 +216,8 @@ public partial class MainWindow
         if(UseNativeBackend){
             if(ClientEdition.NativeOnly&&!_render&&!_busy&&_nativeView?.Desired!=true&&(_nativeView?.Available!=true||!StandaloneAgentMatchesPackage())){
                 if(startOnly){Notice("Для автоподключения сначала нажми «Подключить» и импортируй .conf.");return;}
-                await PrepareNativeComponentsAsync();await RefreshNativeAsync(true);
+                if(string.IsNullOrEmpty(_nativeView?.ProfileId)&&string.IsNullOrEmpty(_nativeChoice.ConfirmedProfile))await ImportNativeProfileAsync();
+                else{await PrepareNativeComponentsAsync();await RefreshNativeAsync(true);}
                 if(_nativeView?.Available!=true)return;
             }
             await NativeActionAsync(_nativeView?.Desired!=true,startOnly);return;

@@ -9,27 +9,39 @@ namespace RoutePilot;
 
 public partial class MainWindow
 {
+    // Used only by the in-process WPF fixture; normal execution opens Windows' file picker.
+    internal Func<string?>? NativeFilePickerFixture { get; set; }
     async Task ImportNativeProfileAsync()
     {
-        if(_render||_busy||_engineRunning||_rescueState.BlocksRouting)return;
-        var dialog=new OpenFileDialog{Title="Профиль WireGuard / AmneziaWG",Filter="Конфигурация (*.conf)|*.conf",CheckFileExists=true,Multiselect=false};if(dialog.ShowDialog(this)!=true)return;
+        if((_render&&NativeFilePickerFixture==null)||_busy||_engineRunning||_rescueState.BlocksRouting)return;
+        string? selectedFile;
+        if(NativeFilePickerFixture!=null)selectedFile=NativeFilePickerFixture();
+        else{var dialog=new OpenFileDialog{Title="Профиль WireGuard / AmneziaWG",Filter="Конфигурация (*.conf)|*.conf",CheckFileExists=true,Multiselect=false};selectedFile=dialog.ShowDialog(this)==true?dialog.FileName:null;}
+        // Rendering fixtures may exercise the click path, but never import a real file.
+        if(selectedFile==null||_render)return;
+        if(ClientEdition.NativeOnly&&(_nativeView?.Available!=true||!StandaloneAgentMatchesPackage()))
+        {
+            await PrepareNativeComponentsAsync();await RefreshNativeAsync(true);
+            if(_nativeView?.Available!=true)return;
+        }
+        if(_busy||_engineRunning||_rescueState.BlocksRouting)return;
         _busy=true;_connectionCancellation=new();SyncConnectionButtons();string? operation=null;
         try
         {
             string encoded;
-            using(var input=new FileStream(dialog.FileName,FileMode.Open,FileAccess.Read,FileShare.Read))
+            using(var input=new FileStream(selectedFile,FileMode.Open,FileAccess.Read,FileShare.Read))
             {
                 if(input.Length is <1 or >12288)throw new IOException("Для встроенного режима нужен .conf размером до 12 КБ.");byte[] bytes=new byte[checked((int)input.Length)];
                 try{await input.ReadExactlyAsync(bytes,_connectionCancellation.Token);encoded=Convert.ToBase64String(bytes);}finally{CryptographicOperations.ZeroMemory(bytes);}
             }
             var before=(await _nativeClient.Command("status",cancellation:_connectionCancellation.Token)).Native;
             if(before?.Phase is not ("Disconnected" or "Unconfigured")||before.Desired)throw new IOException("Сначала отключи подключение и дождись завершения операции.");
-            operation=Guid.NewGuid().ToString("N");var reply=await _nativeClient.Import(encoded,Path.GetFileNameWithoutExtension(dialog.FileName),before.Operation,_connectionCancellation.Token,operation);
+            operation=Guid.NewGuid().ToString("N");var reply=await _nativeClient.Import(encoded,Path.GetFileNameWithoutExtension(selectedFile),before.Operation,_connectionCancellation.Token,operation);
             if(!reply.Success||reply.Native==null)throw new IOException("Служба не приняла импорт. Проверь выбранный профиль.");
             _nativeChoice.Selected=true;AppPaths.Write(NativeChoicePath,_nativeChoice);
             _nativeModeChanging=true;try{_nativeMode.SelectedIndex=1;}finally{_nativeModeChanging=false;}
             using var deadline=CancellationTokenSource.CreateLinkedTokenSource(_connectionCancellation.Token);deadline.CancelAfter(TimeSpan.FromSeconds(60));
-            var selected=await _nativeClient.WaitImport(operation,new Progress<NativeRouteView>(ApplyNativeView),deadline.Token);_nativeChoice.ConfirmedProfile=selected.ProfileId;AppPaths.Write(NativeChoicePath,_nativeChoice);
+            var selected=await _nativeClient.WaitImport(operation,new Progress<NativeRouteView>(ApplyNativeView),deadline.Token);ApplyNativeView(selected);_nativeChoice.ConfirmedProfile=selected.ProfileId;AppPaths.Write(NativeChoicePath,_nativeChoice);
             Notice("Профиль проверен и выбран. Можно подключаться.");
         }
         catch(Exception ex)
