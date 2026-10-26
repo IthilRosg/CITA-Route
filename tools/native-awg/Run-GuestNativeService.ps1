@@ -82,7 +82,7 @@ if($service.PathName.Contains($folder)){
   $restored=Wait-Native 'Disconnected';if($restored.profileId -ne $selected.profileId){throw 'Component rollback lost profile'};$report.componentRollbackVerified=$true
  }
  $phase='connect';$null=Rpc 'native-start';$active=Wait-Native 'Connected';$report.firstTraffic=Probe-Tun
- if($Dns){
+ $dnsProof={
   $phase='service-native-dns';$before=(Rpc 'native-status').Native.runtime.fakeIpVpnDials
   $info=[Diagnostics.ProcessStartInfo]::new((Join-Path $root 'AgentBackend\Cita.NativeAgentLab.exe'),'--native-dns-client');$info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true;$client=[Diagnostics.Process]::Start($info)
   try{$output=$client.StandardOutput.ReadToEndAsync();$errorOutput=$client.StandardError.ReadToEndAsync();if(-not $client.WaitForExit(15000)){$client.Kill();$client.WaitForExit();throw 'Service DNS client timeout'};if($client.ExitCode -ne 0 -or -not ($output.GetAwaiter().GetResult()|ConvertFrom-Json).success){throw 'Service DNS client failed'}}finally{$client.Dispose()}
@@ -90,6 +90,7 @@ if($service.PathName.Contains($folder)){
   if($state.operation -ne $active.operation -or $state.generation -ne $active.generation -or $state.runtime.nativeDnsProtocol -ne 1 -or $state.runtime.fakeIpVpnDials -le $before){throw 'Service DNS recovery identity/counter proof failed'}
   $report.serviceNativeDnsTraffic=$true
  }
+ if($Dns){. $dnsProof}
  if($Performance){
   $phase='service-resources';$selected=(Rpc 'native-status').Native;$bad=(Rpc 'native-resources' ('0'*32)).Native;if($bad.available){throw 'Stale native metrics identity accepted'}
   for($warm=0;$warm -lt 10;$warm++){Start-Sleep -Seconds 1;$warmState=(Rpc 'native-resources' $selected.operation).Native;if(-not $warmState.available){throw 'Service resource warmup lost its epoch'}}
@@ -119,6 +120,7 @@ if($service.PathName.Contains($folder)){
   try{& (Join-Path $root 'Guest-IPv4Migration.ps1') -Action Begin -StatePath $migration|Out-Null;$report.changedSourceAddressTraffic=Probe-Tun}
   finally{if(Test-Path -LiteralPath $migration){& (Join-Path $root 'Guest-IPv4Migration.ps1') -Action Restore -StatePath $migration|Out-Null}}
   $report.restoredSourceAddressTraffic=Probe-Tun
+  if($Dns){$active=(Rpc 'native-status').Native;. $dnsProof;$report.dnsAfterNetworkChange=$true}
  }
  $phase='maintenance';. (Join-Path $root 'NativeMaintenance.ps1');Stop-NativeForMaintenance -NativeRoot $native
  $null=Wait-Native 'Disconnected';$report.maintenanceDisconnected=$true

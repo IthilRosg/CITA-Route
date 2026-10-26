@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$Run,[switch]$Policy,[switch]$Automatic,[switch]$Performance,[switch]$Coverage)
+param([Parameter(Mandatory)][string]$Run,[switch]$Policy,[switch]$Automatic,[switch]$Performance,[switch]$Pages,[switch]$Coverage)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83' -or $Run -notmatch '^[a-f0-9]{32}$'){throw 'Wrong isolated test identity'}
 $base='C:\CitaLab\NativeAwg';$folder=Join-Path $base ('DirectGuard-'+$Run);$rule='CitaDirectGuard-'+$Run;$rescue=$null;$report=@{success=$false};$created=$false
@@ -21,7 +21,7 @@ Remove-NetFirewallRule -Name ('CitaDirectGuard-'+$run) -ErrorAction SilentlyCont
 '@
  $code=$code.Replace('__FOLDER__',$folder).Replace('__RUN__',$Run);[IO.File]::WriteAllText($rescuePath,$code,[Text.UTF8Encoding]::new($false))
  $rescue=Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$rescuePath,'-Delayed')
- $mode=if($Coverage){'--native-policy-coverage-lab'}elseif($Performance){'--native-policy-performance-lab'}elseif($Automatic){'--native-policy-auto-lab'}elseif($Policy){'--native-policy-session-lab'}else{'--direct-guard-lab'}
+ $mode=if($Pages){'--native-policy-pages-lab'}elseif($Coverage){'--native-policy-coverage-lab'}elseif($Performance){'--native-policy-performance-lab'}elseif($Automatic){'--native-policy-auto-lab'}elseif($Policy){'--native-policy-session-lab'}else{'--direct-guard-lab'}
  $info=[Diagnostics.ProcessStartInfo]::new((Join-Path $base 'AgentBackend\Cita.NativeAgentLab.exe'),($mode+' '+$folder+' '+$Run));$info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true;$process=[Diagnostics.Process]::Start($info)
  try{$output=$process.StandardOutput.ReadToEndAsync();$errorOutput=$process.StandardError.ReadToEndAsync();if(-not $process.WaitForExit(115000)){$process.Kill();throw 'Direct guard controller deadline'}}finally{$process.Dispose()}
  $loaded=Get-Content (Join-Path $folder 'result.json') -Raw|ConvertFrom-Json;$report=@{};foreach($property in $loaded.PSObject.Properties){$report[$property.Name]=$property.Value}
