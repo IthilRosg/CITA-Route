@@ -30,9 +30,18 @@ internal static class NativePolicySessionLab
             var spec=JsonSerializer.SerializeToElement(new{Session=Guid.NewGuid().ToString("N"),Generation=1UL,Token=Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),Config=text});timer.Restart();stage="connect";await runtime.ConnectAsync(spec,stop);report["connectMs"]=timer.ElapsedMilliseconds;text="";
             if(automatic)
             {
+                var traceLock=new object();var trace=new Dictionary<string,long>();NativeObservedDestination? target=null;int tracePid=runtime.Core.ProcessId;
+                var applied=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                runtime.Core.CalibrationObserver=(phase,observed,pid,at)=>{
+                    if(pid!=tracePid||observed.Domain!="cloudflare-dns.com"||observed.Address!="1.1.1.1"||observed.Port!=443)return;
+                    lock(traceLock){if(phase=="observed"&&target==null)target=observed;if(target!=observed)return;trace.TryAdd(phase,at);if(phase=="applied")applied.TrySetResult();}
+                };
+                long probeStarted=Environment.TickCount64;
                 timer.Restart();stage="automatic-observation";var first=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true);Check(first.GetProperty("success").GetBoolean());report["firstUnknownDomainWorks"]=true;report["firstControlProbeMs"]=timer.ElapsedMilliseconds;timer.Restart();
-                for(int i=0;i<100;i++){using var snapshot=JsonDocument.Parse(JsonSerializer.Serialize(runtime.Snapshot));if(snapshot.RootElement.GetProperty("calibratedDomains").GetInt32()>0)break;await Task.Delay(200,stop);}
-                using(var snapshot=JsonDocument.Parse(JsonSerializer.Serialize(runtime.Snapshot)))Check(snapshot.RootElement.GetProperty("calibratedDomains").GetInt32()>0);report["firstAutomaticDecisionWaitMs"]=timer.ElapsedMilliseconds;
+                await applied.Task.WaitAsync(TimeSpan.FromSeconds(25),stop);report["firstAutomaticDecisionWaitMs"]=timer.ElapsedMilliseconds;
+                lock(traceLock){long seen=trace["observed"],started=trace["started"],probed=trace["probe-passed"],confirmed=trace["applied"];Check(probeStarted<=seen&&seen<=started&&started<=probed&&probed<=confirmed&&runtime.Core.ProcessId==tracePid);
+                    report["targetCalibrationTiming"]=new{matchedTarget=true,sameCore=true,probeStartToObservedMs=seen-probeStarted,queueMs=started-seen,scopeAndDirectProbeMs=probed-started,publicationMs=confirmed-probed,observedToAppliedMs=confirmed-seen};}
+                runtime.Core.CalibrationObserver=null;
                 stage="automatic-direct";var next=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true);Check(next.GetProperty("success").GetBoolean());for(int i=0;i<30&&runtime.Core.PolicyDirectDials==0;i++)await Task.Delay(100,stop);Check(runtime.Core.PolicyDirectDials>0);report["automaticDomainSelectionVerified"]=true;
                 if(performance){stage="performance-baseline";report["performance"]=await NativePerformanceLab.Measure(runtime,root,stop);}
                 timer.Restart();await runtime.DisconnectAsync(stop);report["disconnectMs"]=timer.ElapsedMilliseconds;report["success"]=true;return 0;

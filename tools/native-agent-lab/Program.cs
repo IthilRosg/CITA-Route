@@ -32,6 +32,8 @@ if(args.Length==1 && args[0]=="--self-test")
     var schedule=new NativeCalibrationSchedule();
     NativeObservedDestination Seen(int i)=>new("h"+i+".example.com","","1.1.1.1",443);
     var wakeup=new NativeObservationWakeup();
+    var observedEvents=new List<NativeObservedDestination>();wakeup.Observe([Seen(0)],observedEvents.Add);wakeup.Observe([Seen(0)],observedEvents.Add);
+    if(observedEvents.Count!=1||observedEvents[0]!=Seen(0))throw new Exception("Observation trace must identify new tuples exactly once.");wakeup.Reset();
     if(!wakeup.Observe([Seen(0),Seen(1)])||wakeup.Pending!=1||wakeup.Observe([Seen(1),Seen(0)]))throw new Exception("Observation signal must ignore snapshot reordering.");
     for(int i=2;i<128;i++)wakeup.Observe([Seen(i)]);
     if(wakeup.Pending!=1||!await wakeup.WaitAsync(CancellationToken.None,TimeSpan.Zero)||await wakeup.WaitAsync(CancellationToken.None,TimeSpan.Zero))throw new Exception("Observation burst must coalesce without a busy loop.");

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -290,11 +290,11 @@ public partial class MainWindow : Window
         var snapshot=ConnectionGridSnapshot.Capture(filtered);
         if(ConnectionsGrid.ItemsSource==null||!_displayedConnections.SequenceEqual(snapshot))
         {
-            _displayedConnections=snapshot;ConnectionsGrid.ItemsSource=filtered;
-            if(selected!=null)ConnectionsGrid.SelectedItem=filtered.FirstOrDefault(c=>c.Id==selected);
+            _displayedConnections=snapshot;if(!ConnectionGridSnapshot.RefreshInPlace(ConnectionsGrid.ItemsSource,filtered))ConnectionsGrid.ItemsSource=filtered;
+            if(selected!=null)ConnectionsGrid.SelectedItem=ConnectionsGrid.Items.Cast<ConnectionRow>().FirstOrDefault(c=>c.Id==selected);
         }
         var recent=_connections.Take(4).ToList();var recentSnapshot=ConnectionGridSnapshot.Capture(recent);
-        if(RecentGrid.ItemsSource==null||!_displayedRecent.SequenceEqual(recentSnapshot)){_displayedRecent=recentSnapshot;RecentGrid.ItemsSource=recent;}
+        if(RecentGrid.ItemsSource==null||!_displayedRecent.SequenceEqual(recentSnapshot)){_displayedRecent=recentSnapshot;if(!ConnectionGridSnapshot.RefreshInPlace(RecentGrid.ItemsSource,recent))RecentGrid.ItemsSource=recent;}
         EmptyConnectionsLabel.Visibility=_connections.Count==0?Visibility.Visible:Visibility.Collapsed;
     }
     private void UpdateRulesGrid()=>RulesGrid.ItemsSource=_rules.OrderBy(r=>r.Domain).ToList();

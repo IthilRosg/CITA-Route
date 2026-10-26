@@ -125,24 +125,7 @@ public sealed class EngineSession
     public string NetworkSignature{get;set;}="";
     public DateTime StartedUtc{get;set;}
 }
-public sealed class ConnectionRow
-{
-    public string Id{get;set;}="";
-    public string Host{get;set;}="";
-    public string Process{get;set;}="—";
-    public string Network{get;set;}="";
-    public bool IsVpn{get;set;}
-    public bool IsDpi{get;set;}
-    public string Route=>IsVpn?"VPN":IsDpi?"DPI":"Напрямую";
-    public string RouteColor=>IsVpn?"#E8443F":IsDpi?"#D7AD67":"#86A9C8";
-    public string Rule{get;set;}="";
-    public long Upload{get;set;}
-    public long Download{get;set;}
-    public string Uploaded=>Format.Bytes(Upload);
-    public string Downloaded=>Format.Bytes(Download);
-    public string Address{get;set;}="";
-    public string Started{get;set;}="";
-}
+
 public sealed class Snapshot
 {
     public long Upload{get;set;}

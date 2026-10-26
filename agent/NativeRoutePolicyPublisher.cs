@@ -13,10 +13,10 @@ internal sealed class NativeObservationWakeup
 {
     readonly object sync=new();readonly HashSet<NativeObservedDestination> known=new();readonly SemaphoreSlim signal=new(0,1);
     internal int Pending=>signal.CurrentCount;
-    internal bool Observe(IReadOnlyCollection<NativeObservedDestination> observations)
+    internal bool Observe(IReadOnlyCollection<NativeObservedDestination> observations,Action<NativeObservedDestination>? onNew=null)
     {
         if(observations.Count>128)throw new InvalidDataException("Native observation signal budget exceeded.");
-        lock(sync){bool changed=observations.Any(o=>!known.Contains(o));known.Clear();known.UnionWith(observations);if(changed){try{signal.Release();}catch(SemaphoreFullException){}}return changed;}
+        lock(sync){bool changed=false;foreach(var observation in observations)if(!known.Contains(observation)){changed=true;onNew?.Invoke(observation);}known.Clear();known.UnionWith(observations);if(changed){try{signal.Release();}catch(SemaphoreFullException){}}return changed;}
     }
     internal void Reset(){lock(sync){known.Clear();while(signal.Wait(0)){}}}
     internal Task<bool> WaitAsync(CancellationToken stop,TimeSpan? fallback=null)=>signal.WaitAsync(fallback??TimeSpan.FromSeconds(1),stop);
@@ -169,11 +169,12 @@ internal sealed class NativeRoutePolicyPublisher(NativeWfpGuard guard,NativeCore
             int pid=core.ProcessId;if(pid!=scopedPid&&scopes.Count>0)throw new IOException("Native calibration generation changed.");
             if(!core.SupportsDirectScopes)throw new IOException("Native calibration requires safe scope retirement.");
             if(scopedPid==0)scopedPid=pid;
+            core.TraceCalibration("started",observed);
             await CollectScopes(stop);
             var scope=new NativeDirectPermission(coreImage,observed.Address,observed.Port,"tcp",physicalIndex);
             await EnableScope(scope,pid,stop);
             bool usable=false;
-            try{if(await guard.VerifyAsync(stop))usable=await core.ProbeDirectAsync(observed,pid,stop);}
+            try{if(await guard.VerifyAsync(stop))usable=await core.ProbeDirectAsync(observed,pid,stop);core.TraceCalibration(usable?"probe-passed":"probe-failed",observed);}
             finally{if(!usable){using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(5));await CollectScopes(cleanup.Token);}}
             if(!usable){if(automaticRules.Remove(observed)){await ApplyConfirmed(automaticEpoch,automaticRules.Values.Where(r=>r.ExpiresUnixMilliseconds>DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()).ToArray(),stop);Volatile.Write(ref automaticCount,automaticRules.Count);}return false;}
             long now=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();foreach(var key in automaticRules.Where(x=>x.Value.ExpiresUnixMilliseconds<=now).Select(x=>x.Key).ToArray())automaticRules.Remove(key);
@@ -184,7 +185,7 @@ internal sealed class NativeRoutePolicyPublisher(NativeWfpGuard guard,NativeCore
             // Retire only the oldest rule for NEW flows; keep its exact guard
             // permission for already admitted connections until safe retirement.
             if(automaticRules.Count>=128){var oldest=automaticRules.OrderBy(x=>x.Value.ExpiresUnixMilliseconds).ThenBy(x=>x.Key.Domain,StringComparer.Ordinal).First().Key;automaticRules.Remove(oldest);}
-            automaticRules[observed]=rule;await ApplyConfirmed(automaticEpoch,automaticRules.Values.ToArray(),stop);Volatile.Write(ref automaticCount,automaticRules.Count);return true;
+            automaticRules[observed]=rule;await ApplyConfirmed(automaticEpoch,automaticRules.Values.ToArray(),stop);Volatile.Write(ref automaticCount,automaticRules.Count);core.TraceCalibration("applied",observed);return true;
         }
         finally{gate.Release();}
     }

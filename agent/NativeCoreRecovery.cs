@@ -13,6 +13,10 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
     readonly bool persistentControl;
     readonly NativeRepairBudget repairBudget=new();
     readonly NativeObservationWakeup observationWakeup=new();
+    // Optional in-process lab instrumentation; never exported in service snapshots.
+    internal Action<string,NativeObservedDestination,int,long>? CalibrationObserver{get;set;}
+    internal void TraceCalibration(string phase,NativeObservedDestination observation)
+    {try{CalibrationObserver?.Invoke(phase,observation,ProcessId,Environment.TickCount64);}catch{/* Diagnostics must not affect routing. */}}
     internal Task<bool> WaitForObservationsAsync(CancellationToken stop)=>observationWakeup.WaitAsync(stop);
     readonly SemaphoreSlim gate=new(1);
     readonly CancellationTokenSource lifetime=new();
@@ -172,7 +176,7 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
                         await binding!.CommandAsync("Snapshot",spec.GetProperty("Session").GetString()!,spec.GetProperty("Generation").GetUInt64(),stop:lifetime.Token);
                         leaseChecks++;
                         State=transportDegraded?"TransportDegraded":"Active";
-                        observationWakeup.Observe(binding.Observations);
+                        observationWakeup.Observe(binding.Observations,CalibrationObserver==null?null:o=>TraceCalibration("observed",o));
                         continue;
                     }
                     catch(OperationCanceledException)when(lifetime.IsCancellationRequested){break;}
