@@ -1,4 +1,4 @@
-param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention,[switch]$CandidateCore,[switch]$ActiveOwnerStop,[switch]$DisableRetentionLease,[switch]$Udp,[ValidateSet('None','Rebind','GuestIPv4')][string]$Migration='None',[switch]$Tun,[switch]$TunOwnerCrash,[switch]$AutoRecovery,[switch]$Supervised,[switch]$OwnerStopRace,[switch]$UDPLifetime,[switch]$Coordinated,[switch]$AgentBackend)
+﻿param([switch]$CrashOwner,[switch]$Retention,[switch]$InboundLoss,[ValidateSet(500,2000,3000,10000)][int]$FaultMilliseconds=3000,[switch]$LinkInterruption,[switch]$DirectRetention,[switch]$CandidateCore,[switch]$ActiveOwnerStop,[switch]$DisableRetentionLease,[switch]$Udp,[ValidateSet('None','Rebind','GuestIPv4')][string]$Migration='None',[switch]$Tun,[switch]$TunOwnerCrash,[switch]$AutoRecovery,[switch]$Supervised,[switch]$OwnerStopRace,[switch]$UDPLifetime,[switch]$Coordinated,[switch]$AgentBackend,[switch]$LiteralControl)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$exe=Join-Path $root 'native-awg-lab.exe'
@@ -18,7 +18,7 @@ function ProcessInfo([string]$file,[string]$arguments){
 }
 function Client([int]$port,[string]$token){
  $p=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-client'));$output=$p.StandardOutput.ReadToEndAsync();$errors=$p.StandardError.ReadToEndAsync()
- try{$p.StandardInput.WriteLine((@{Port=$port;Token=$token;LiteralIPv4=[bool]$Tun}|ConvertTo-Json -Compress));$p.StandardInput.Close();if(-not $p.WaitForExit(18000)){$p.Kill();$p.WaitForExit();throw 'Client deadline'};$result=$output.GetAwaiter().GetResult()|ConvertFrom-Json;$null=$errors.GetAwaiter().GetResult();return @{exitCode=$p.ExitCode;result=$result}}finally{if(-not $p.HasExited){$p.Kill();$p.WaitForExit()};$p.Dispose()}
+ try{$p.StandardInput.WriteLine((@{Port=$port;Token=$token;LiteralIPv4=[bool]($Tun -or $LiteralControl)}|ConvertTo-Json -Compress));$p.StandardInput.Close();if(-not $p.WaitForExit(18000)){$p.Kill();$p.WaitForExit();throw 'Client deadline'};$result=$output.GetAwaiter().GetResult()|ConvertFrom-Json;$null=$errors.GetAwaiter().GetResult();return @{exitCode=$p.ExitCode;result=$result}}finally{if(-not $p.HasExited){$p.Kill();$p.WaitForExit()};$p.Dispose()}
 }
 function UdpClient([int]$port,[string]$token){
  $p=[Diagnostics.Process]::Start((ProcessInfo $exe '--proxy-udp-client'));$output=$p.StandardOutput.ReadToEndAsync();$errors=$p.StandardError.ReadToEndAsync()
@@ -129,7 +129,7 @@ try{
   $report.tunRoutePrefixes=@(Get-NetRoute -InterfaceAlias 'Cita-NativeLab' -AddressFamily IPv4|ForEach-Object {$_.DestinationPrefix}|Sort-Object -Unique)
   if($report.tunRoutePrefixes|Where-Object {$_ -in @('0.0.0.0/0','0.0.0.0/1','128.0.0.0/1')}){throw 'TUN route scope wider than approved'}
  }
- Start-Sleep -Milliseconds 700;$chain=Client $port '';$report.chainBaseline=$chain;$report.chainBaselineTarget=if($Tun){'LiteralIPv4'}else{'Hostname'}; $report.routerChainHttps=[bool]($chain.exitCode -eq 0 -and $chain.result.success -and $chain.result.egressHash -eq $reference.serverEgressHash)
+ Start-Sleep -Milliseconds 700;$chain=Client $port '';$report.chainBaseline=$chain;$report.chainBaselineTarget=if($Tun -or $LiteralControl){'LiteralIPv4'}else{'Hostname'}; $report.routerChainHttps=[bool]($chain.exitCode -eq 0 -and $chain.result.success -and $chain.result.egressHash -eq $reference.serverEgressHash)
  $owner.Refresh();$router.Refresh();$report.resourceSample=@{nativePrivateBytes=$owner.PrivateMemorySize64;nativeWorkingSetBytes=$owner.WorkingSet64;routerPrivateBytes=$router.PrivateMemorySize64;routerWorkingSetBytes=$router.WorkingSet64;scope='Single post-HTTPS process sample, not steady-state or a comparison with WireSock'}
  if($Udp){
   $stage='UdpAuthentication';$badUdp=UdpClient $ready.port ('0'*64);$noneUdp=UdpClient $ready.port ''
@@ -150,7 +150,7 @@ try{
  if($Retention){
   $clientMode=if($Tun){'--tun-client'}else{'--proxy-retention-client'}
   $stage='ChainRetention';$retaining=[Diagnostics.Process]::Start((ProcessInfo $exe $clientMode));$clientErrors=$retaining.StandardError.ReadToEndAsync();$clientReady=$retaining.StandardOutput.ReadLineAsync()
-  $retentionSpec=@{Port=$port;FaultMilliseconds=$FaultMilliseconds;HoldForFinal=[bool]($CandidateCore -and $LinkInterruption)};if($DirectRetention){$retentionSpec.Port=[int]$ready.port;$retentionSpec.Token=$token}
+  $retentionSpec=@{Port=$port;FaultMilliseconds=$FaultMilliseconds;HoldForFinal=[bool]($CandidateCore -and $LinkInterruption);LiteralIPv4=[bool]$LiteralControl};if($DirectRetention){$retentionSpec.Port=[int]$ready.port;$retentionSpec.Token=$token}
   if($Tun){$retentionSpec=@{DnsServer=$script:udpServer;HoldForFinal=[bool]$TunOwnerCrash}}
   $retaining.StandardInput.WriteLine(($retentionSpec|ConvertTo-Json -Compress));$retentionSpec=$null;$warmupBudget=if($Tun){30000}else{18000};if(-not $clientReady.Wait($warmupBudget)){throw 'Retention warmup deadline'}
   $warmupResult=$clientReady.Result|ConvertFrom-Json
@@ -258,7 +258,7 @@ try{
   }
   $dropped=if($LinkInterruption){$report.linkDisabled}else{if($InboundLoss){$afterLoss.droppedIncoming -gt $baseline.droppedIncoming}else{$afterLoss.droppedOutgoing -gt $baseline.droppedOutgoing}}
   $report.retention=@{client=$client;before=$baseline;after=$afterLoss;faultMilliseconds=$FaultMilliseconds;incomingOnly=[bool]$InboundLoss;linkInterruption=[bool]$LinkInterruption;coreBypassed=[bool]$DirectRetention}
-  $report.retention.success=[bool]($retaining.ExitCode -eq 0 -and $client.success -and $client.egressHash -eq $reference.serverEgressHash -and $baseline.dials -eq $afterLoss.dials -and $baseline.bindOpens -eq 1 -and $afterLoss.bindOpens -eq 1 -and $dropped -and $client.requestMilliseconds -ge ($FaultMilliseconds-500))
+  $report.retention.success=[bool]($retaining.ExitCode -eq 0 -and $client.success -and $client.egressHash -eq $reference.serverEgressHash -and $baseline.dials -eq $afterLoss.dials -and $baseline.bindOpens -eq 1 -and $afterLoss.bindOpens -eq 1 -and $dropped -and $client.requestMilliseconds -ge ($FaultMilliseconds-$(if($LiteralControl){100}else{500})))
   if($Migration -ne 'None'){$report.retention.Remove('faultMilliseconds');$report.migrationElapsedMilliseconds=$migrationTimer.ElapsedMilliseconds;$report.migrationMode=$Migration;$report.retention.success=[bool]($client.success -and $client.egressHash -eq $reference.serverEgressHash -and $baseline.dials -eq $afterLoss.dials -and $baseline.bindOpens -eq 1 -and $afterLoss.bindOpens -eq 2 -and $baseline.outerPort -ne $afterLoss.outerPort -and $baseline.udpDials -eq 1 -and $afterLoss.udpDials -eq 1 -and $report.migrationUdp.success -and $report.migrationUdp.resumedAssociation)}
   if($Tun){$report.tun=$true;$udpBound=$baseline.udpDials+$(if($Migration -eq 'GuestIPv4'){1}else{0});$report.retention.success=[bool]($client.success -and $client.tcpFromTun -and $client.udpFromTun -and $client.egressHash -eq $reference.serverEgressHash -and $baseline.dials -eq $afterLoss.dials -and $baseline.bindOpens -eq 1 -and $afterLoss.bindOpens -eq 2 -and $baseline.outerPort -ne $afterLoss.outerPort -and $baseline.udpDials -ge 1 -and $baseline.udpDials -le 2 -and $afterLoss.udpDials -ge $baseline.udpDials -and $afterLoss.udpDials -le $udpBound -and $client.udpBefore -eq 3 -and $client.udpAfter -eq 3);$report.udpContinuity=if($afterLoss.udpDials -eq $baseline.udpDials){'Retained'}else{'RecoveredWithNewCoreAssociation'}}
   if($Migration -eq 'GuestIPv4' -and (-not $report.guestIpChanged -or $report.interfaceReset.retained -lt 1)){$report.retention.success=$false}

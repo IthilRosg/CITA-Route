@@ -102,3 +102,17 @@ func TestMigrationRefusesMissingOrFailedRebind(t *testing.T) {
 		}
 	}
 }
+
+func TestShortLossDurationAllowlist(t *testing.T) {
+	for _, ms := range []int{500, 2000, 3000, 10000} {
+		c := lossCommand{Session: "fixture", Generation: 1, Action: "Pause", Milliseconds: ms}
+		if !validLossDuration(ms) || !validLossCommand(c, "fixture", 1, false) || validLossCommand(c, "fixture", 1, true) {
+			t.Fatalf("duration ownership boundary: %d", ms)
+		}
+	}
+	for _, ms := range []int{-1, 0, 499, 501, 1999, 2001, 9999, 10001} {
+		if validLossDuration(ms) {
+			t.Fatalf("unapproved duration: %d", ms)
+		}
+	}
+}

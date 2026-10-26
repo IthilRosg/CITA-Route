@@ -48,7 +48,11 @@ func validLossCommand(c lossCommand, session string, generation uint64, used boo
 	if c.Action == "Blackhole" {
 		return !used && c.Milliseconds == 0 && !c.IncomingOnly
 	}
-	return c.Action == "Pause" && !used && (c.Milliseconds == 3000 || c.Milliseconds == 10000)
+	return c.Action == "Pause" && !used && validLossDuration(c.Milliseconds)
+}
+
+func validLossDuration(milliseconds int) bool {
+	return milliseconds == 500 || milliseconds == 2000 || milliseconds == 3000 || milliseconds == 10000
 }
 
 // This control channel exists ONLY in the explicit VM loss-lab launch mode.
@@ -141,7 +145,7 @@ func proxyRetentionClient(input io.Reader, output io.Writer) int {
 		HoldForFinal      bool
 		LiteralIPv4       bool
 	}
-	if decoder.Decode(&spec) != nil || spec.Port < 1 || spec.Port > 65535 || (spec.FaultMilliseconds != 3000 && spec.FaultMilliseconds != 10000) {
+	if decoder.Decode(&spec) != nil || spec.Port < 1 || spec.Port > 65535 || !validLossDuration(spec.FaultMilliseconds) {
 		return 1
 	}
 	var auth *proxy.Auth
