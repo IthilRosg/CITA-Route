@@ -35,7 +35,15 @@ __CITA_RESCUE_END__
  if(Test-Path -LiteralPath $agent){if((Get-Item -LiteralPath $agent -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Linked VM fixture path'};Remove-Item -LiteralPath $agent -Recurse -Force}
  Phase 'InstallService'; & (Join-Path $root 'Install-NativeAgent.ps1') -UserSid ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) -UserProfile $env:USERPROFILE
  if((Rpc 'native-capabilities').Native.setupProtocol -ne 1){throw 'Fresh service capabilities missing'};$report.freshServiceCreated=$true
- Phase 'InstallComponents';$zip='C:\CitaLab\NativeFresh\native-components.zip';& (Join-Path $root 'Install-NativeComponents.ps1') -Package $zip -Sha256 (Get-FileHash $zip).Hash
+ Phase 'InstallComponents';$zip='C:\CitaLab\NativeFresh\native-components.zip'
+ Add-Type -AssemblyName System.IO.Compression.FileSystem
+ Add-Type -AssemblyName System.IO.Compression
+ $legacy='C:\CitaLab\NativeFresh\legacy-components.zip';Copy-Item -LiteralPath $zip -Destination $legacy -Force
+ $archive=[IO.Compression.ZipFile]::Open($legacy,[IO.Compression.ZipArchiveMode]::Update)
+ try{$entry=$archive.GetEntry('manifest.json');$reader=[IO.StreamReader]::new($entry.Open());try{$manifest=$reader.ReadToEnd()|ConvertFrom-Json}finally{$reader.Dispose()};$entry.Delete();$manifest.directScopeProtocol=0;$writer=[IO.StreamWriter]::new($archive.CreateEntry('manifest.json').Open(),[Text.UTF8Encoding]::new($false));try{$writer.Write(($manifest|ConvertTo-Json -Depth 8))}finally{$writer.Dispose()}}finally{$archive.Dispose()}
+ $rejected=$false;try{& (Join-Path $root 'Install-NativeComponents.ps1') -Package $legacy -Sha256 (Get-FileHash $legacy).Hash}catch{if($_.Exception.Message -eq 'Native component protocol mismatch'){$rejected=$true}else{throw}}
+ if(-not $rejected -or (Test-Path (Join-Path $agent 'native')) -or (Get-Service RoutePilotRescue).Status -ne 'Running'){throw 'Legacy component rejection changed the fresh service'};$report.legacyScopeProtocolRefused=$true
+ & (Join-Path $root 'Install-NativeComponents.ps1') -Package $zip -Sha256 (Get-FileHash $zip).Hash
  $template=Wait-Native 'Unconfigured';$report.templateInstalled=$true
  $bytes=[IO.File]::ReadAllBytes('C:\CitaLab\NativeAwg\private\peer.conf');try{$profile=@{Base64=[Convert]::ToBase64String($bytes);Name='Fresh install profile';RequestId=[guid]::NewGuid().ToString('N')}}finally{[Array]::Clear($bytes,0,$bytes.Length)}
  Phase 'ImportAndConnect';if(-not(Rpc 'native-import' $template.operation $profile).Success){throw 'Fresh profile import refused'};$profile=$null;$null=Wait-Native 'Disconnected';if(-not(Rpc 'native-start').Success){throw 'Fresh connect refused'};$active=Wait-Native 'Connected';$report.freshProfileConnected=$true
