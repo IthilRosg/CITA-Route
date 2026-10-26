@@ -5,6 +5,15 @@ using RoutePilot.Agent;
 
 internal static class NativeCoverageLab
 {
+    internal static async Task<object> MeasureDnsOutage(NativeGuardedSession runtime,string root,CancellationToken stop)
+    {
+        int pid=runtime.Core.ProcessId,repairs=runtime.Core.Repairs;long fake=runtime.Core.FakeIpVpnDials;
+        var request=await Fetch("cloudflare-dns.com",1,stop);using var result=JsonDocument.Parse(JsonSerializer.Serialize(request));
+        if(result.RootElement.GetProperty("headersReceived").GetBoolean())throw new IOException("DNS outage unexpectedly connected.");
+        var control=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop);
+        if(!control.GetProperty("success").GetBoolean()||runtime.Core.ProcessId!=pid||runtime.Core.Repairs!=repairs||runtime.Core.State!="Active"||runtime.Core.FakeIpVpnDials!=fake)throw new IOException("DNS outage restarted or bypassed the VPN.");
+        return new{success=true,request,knownAddressHttpsUdpStillWorks=true,sameCore=true,noCoreRepair=true,noFakeIpConnectionAdmitted=true,scope="Test profile DNS replaced by unreachable documentation address; no host DNS changes or application replay"};
+    }
     internal static async Task<int> ServiceClient()
     {
         using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(10));var result=await Fetch("cloudflare-dns.com",1,budget.Token);

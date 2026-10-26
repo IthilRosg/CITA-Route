@@ -78,8 +78,8 @@ func validatedIPv4Answer(ips []string)(string,error){
  for _,text:=range ips{ip,e:=netip.ParseAddr(text);if e!=nil{return "",errProxy};if ip.Is6(){continue};if !publicTarget(ip){return "",errProxy};if first==""{first=ip.String()}}
  if first==""{return "",errProxy};return first,nil
 }
-func restrictedDial(network *netstack.Net,ctx context.Context,server netip.Addr) tunnelDial {
- resolver:=newDnsBroker(ctx,dnsNetworkIdentity,func(query context.Context,name string)(string,time.Duration,error){return queryProfileDNS(query,network.DialContext,server,name)})
+func restrictedDial(network *netstack.Net,ctx context.Context,servers []netip.Addr) tunnelDial {
+ resolver:=newDnsBroker(ctx,dnsNetworkIdentity,func(query context.Context,name string)(string,time.Duration,error){return queryProfileServers(query,network.DialContext,servers,name)})
  go resolver.watch()
 	return func(ctx context.Context, kind, address string) (net.Conn, error) {
 		host, port, e := net.SplitHostPort(address)
@@ -160,7 +160,7 @@ func proxyTransport(input io.Reader, output io.Writer, lossLab, udpLab, recovery
 	if json.NewEncoder(output).Encode(ready) != nil {
 		return 1
 	}
-	dial := restrictedDial(network,ctx,c.dns[0])
+	dial := restrictedDial(network,ctx,c.dns)
 	if recoveryLab {
 		fault.recovery = newTransportRecovery()
 		healthTransport := &http.Transport{DialContext: dial, Proxy: nil, DisableKeepAlives: true, TLSHandshakeTimeout: time.Second, ResponseHeaderTimeout: time.Second}

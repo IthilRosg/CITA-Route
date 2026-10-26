@@ -7,7 +7,7 @@ using RoutePilot.Agent;
 
 internal static class NativePageLab
 {
-    static readonly string[] Pages=["https://kino-atlas-taste.proudtuna11.chatgpt.site/","https://windows64.net/windows-11-x64-skachat-torrent/ne-oficialnye-sborki/","https://www.ryuugames.com/eng-the-blood-of-yidhra-uncensored/","https://srnky.com/"];
+    static readonly string[] Pages=["https://windows64.net/windows-11-x64-skachat-torrent/ne-oficialnye-sborki/","https://www.ryuugames.com/eng-the-blood-of-yidhra-uncensored/","https://srnky.com/"];
     internal static async Task<object> Measure(NativeGuardedSession runtime,string root,CancellationToken stop)
     {
         string image=@"C:\CitaLab\Browser\chrome-win64\chrome.exe";

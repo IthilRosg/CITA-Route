@@ -7,7 +7,7 @@ using RoutePilot.Agent;
 internal static class NativePolicySessionLab
 {
     static void Check(bool value){if(!value)throw new IOException("Native policy route proof failed.");}
-    internal static async Task<int> Run(string root,string run,bool automatic=false,bool performance=false,bool coverage=false,bool pages=false)
+    internal static async Task<int> Run(string root,string run,bool automatic=false,bool performance=false,bool coverage=false,bool pages=false,bool dnsFailover=false,bool dnsOutage=false)
     {
         string stage="prepare";var report=new Dictionary<string,object?>{{"success",false}};NativeGuardedSession? runtime=null;
         try
@@ -17,6 +17,8 @@ internal static class NativePolicySessionLab
             // this helper; the guard also verifies the exact guest on every call.
             if(!root.StartsWith(@"C:\CitaLab\NativeAwg\DirectGuard-",StringComparison.OrdinalIgnoreCase)||Path.GetFileName(root)!="DirectGuard-"+run)throw new IOException("Wrong policy fixture root.");
             string parent=Path.GetDirectoryName(root)!;string text=await File.ReadAllTextAsync(Path.Combine(parent,"private","peer.conf"),stop);
+            if(dnsFailover){var dns=System.Text.RegularExpressions.Regex.Match(text,@"(?mi)^\s*DNS\s*=\s*([^\r\n]+)");if(!dns.Success)throw new IOException("Profile DNS fixture missing.");text=text.Remove(dns.Index,dns.Length).Insert(dns.Index,"DNS = 192.0.2.53, "+dns.Groups[1].Value.Trim());report["unavailableFirstProfileDnsFixture"]=true;}
+            if(dnsOutage){var dns=System.Text.RegularExpressions.Regex.Match(text,@"(?mi)^\s*DNS\s*=\s*([^\r\n]+)");if(!dns.Success)throw new IOException("Profile DNS fixture missing.");text=text.Remove(dns.Index,dns.Length).Insert(dns.Index,"DNS = 192.0.2.53");report["allProfileDnsUnavailableFixture"]=true;}
             var match=System.Text.RegularExpressions.Regex.Match(text,@"(?mi)^\s*Endpoint\s*=\s*([^\r\n]+)");if(!System.Net.IPEndPoint.TryParse(match.Groups[1].Value.Trim(),out var endpoint))throw new IOException("Pinned peer required.");
             using var reference=JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(parent,"..","server-egress-reference.json"),stop));string expected=reference.RootElement.GetProperty("serverEgressHash").GetString()!;
             var nic=NetworkInterface.GetAllNetworkInterfaces().Single(n=>n.OperationalStatus==OperationalStatus.Up&&n.GetIPProperties().GatewayAddresses.Any(g=>g.Address.AddressFamily==System.Net.Sockets.AddressFamily.InterNetwork));
@@ -46,6 +48,7 @@ internal static class NativePolicySessionLab
                 if(performance){stage="performance-baseline";report["performance"]=await NativePerformanceLab.Measure(runtime,root,stop);}
                 if(coverage){stage="domain-coverage";report["coverage"]=await NativeCoverageLab.Measure(runtime,root,stop);}
                 if(pages){stage="page-resources";report["pages"]=await NativePageLab.Measure(runtime,root,stop);}
+                if(dnsOutage){stage="dns-outage";report["dnsOutage"]=await NativeCoverageLab.MeasureDnsOutage(runtime,root,stop);}
                 timer.Restart();await runtime.DisconnectAsync(stop);report["disconnectMs"]=timer.ElapsedMilliseconds;report["success"]=true;return 0;
             }
             string epoch=Guid.NewGuid().ToString("N");NativePolicyRequest Rules(string route)=>new(epoch,[new("cloudflare-dns.com","","tcp",route,443,route=="direct"?["1.1.1.1"]:[],DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeMilliseconds())]);

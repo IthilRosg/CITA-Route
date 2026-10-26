@@ -58,12 +58,12 @@ func(b *dnsBroker)resolve(ctx context.Context,name string)(string,error){
  flight.waiters++;b.mu.Unlock()
  defer func(){b.mu.Lock();defer b.mu.Unlock();flight.waiters--;if flight.waiters==0&&b.pending[name]==flight{delete(b.pending,name);flight.cancel()}}()
  select{case <-ctx.Done():return "",ctx.Err();case <-b.root.Done():return "",b.root.Err();case <-flight.done:
-  b.mu.Lock();b.syncEpoch();stale:=flight.epoch!=b.epoch;b.mu.Unlock();if stale{return "",errProxy};return flight.ip,flight.err}
+  b.mu.Lock();b.syncEpoch();stale:=flight.epoch!=b.epoch||b.root.Err()!=nil;b.mu.Unlock();if stale{return "",errProxy};return flight.ip,flight.err}
 }
 
 // Profile DNS, TCP framing, one question, no host resolver or public fallback.
 // TTL is the minimum across the verified CNAME chain and selected A records.
-func queryProfileDNS(ctx context.Context,dial func(context.Context,string,string)(net.Conn,error),server netip.Addr,name string)(string,time.Duration,error){
+func queryProfileDNSTCP(ctx context.Context,dial func(context.Context,string,string)(net.Conn,error),server netip.Addr,name string)(string,time.Duration,error){
  var random [2]byte;if _,e:=rand.Read(random[:]);e!=nil{return "",0,e};id:=binary.BigEndian.Uint16(random[:]);qname,e:=dnsmessage.NewName(name+".");if e!=nil{return "",0,e}
  question:=dnsmessage.Question{Name:qname,Type:dnsmessage.TypeA,Class:dnsmessage.ClassINET}
  message:=dnsmessage.Message{Header:dnsmessage.Header{ID:id,RecursionDesired:true},Questions:[]dnsmessage.Question{question}};packet,e:=message.Pack();if e!=nil{return "",0,e}
@@ -74,7 +74,8 @@ func queryProfileDNS(ctx context.Context,dial func(context.Context,string,string
  return parseProfileDNS(answer,id,question)
 }
 func parseProfileDNS(packet []byte,id uint16,question dnsmessage.Question)(string,time.Duration,error){
- var response dnsmessage.Message;if response.Unpack(packet)!=nil||response.ID!=id||!response.Response||response.OpCode!=0||response.Truncated||response.RCode!=dnsmessage.RCodeSuccess||len(response.Questions)!=1||response.Questions[0]!=question||len(response.Answers)>64{return "",0,errProxy}
+ var response dnsmessage.Message;if response.Unpack(packet)!=nil||response.ID!=id||!response.Response||response.OpCode!=0||response.Truncated||len(response.Questions)!=1||response.Questions[0]!=question||len(response.Answers)>64{return "",0,errProxy}
+ if response.RCode!=dnsmessage.RCodeSuccess{if response.RCode==dnsmessage.RCodeServerFailure||response.RCode==dnsmessage.RCodeRefused{return "",0,errDNSServerUnavailable};return "",0,errProxy}
  current:=strings.ToLower(question.Name.String());ttl:=uint32(60);seen:=map[string]bool{}
  for depth:=0;depth<9;depth++{
   plain:=strings.TrimSuffix(current,".");if !safeDomain(plain)||localDNSName(plain)||seen[current]{return "",0,errProxy};seen[current]=true;next:="";selected:=""
