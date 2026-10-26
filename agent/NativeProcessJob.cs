@@ -5,6 +5,8 @@ using Microsoft.Win32.SafeHandles;
 
 namespace RoutePilot.Agent;
 
+internal sealed record NativeJobUsage(long CpuTicks,uint ProcessesStarted,uint ActiveProcesses,ulong PeakCommittedBytes);
+
 // A native session's children inherit this job. Unexpected controller exit
 // closes its last handle, so an orphan core cannot keep the previous TUN alive.
 internal sealed class NativeProcessJob:IDisposable
@@ -18,6 +20,7 @@ internal sealed class NativeProcessJob:IDisposable
     [DllImport("kernel32.dll",SetLastError=true)]static extern Handle CreateJobObjectW(IntPtr security,string? name);
     [DllImport("kernel32.dll",SetLastError=true)]static extern bool SetInformationJobObject(Handle job,int kind,ref Limits data,uint length);
     [DllImport("kernel32.dll",SetLastError=true)]static extern bool QueryInformationJobObject(Handle job,int kind,out Accounting data,uint length,IntPtr returned);
+    [DllImport("kernel32.dll",SetLastError=true)]static extern bool QueryInformationJobObject(Handle job,int kind,out Limits data,uint length,IntPtr returned);
     [DllImport("kernel32.dll",SetLastError=true)]static extern bool AssignProcessToJobObject(Handle job,IntPtr process);
     [DllImport("kernel32.dll",SetLastError=true)]static extern bool TerminateJobObject(Handle job,uint code);
     [DllImport("kernel32.dll")]static extern bool CloseHandle(IntPtr handle);
@@ -33,11 +36,16 @@ internal sealed class NativeProcessJob:IDisposable
         if(AssignProcessToJobObject(job,process.Handle))return;
         int code=Marshal.GetLastWin32Error();try{process.Kill(true);}catch{}throw new Win32Exception(code);
     }
+    internal NativeJobUsage ReadUsage()
+    {
+        if(!QueryInformationJobObject(job,1,out Accounting accounting,(uint)Marshal.SizeOf<Accounting>(),IntPtr.Zero)||!QueryInformationJobObject(job,9,out Limits limits,(uint)Marshal.SizeOf<Limits>(),IntPtr.Zero))throw new Win32Exception(Marshal.GetLastWin32Error());
+        return new(checked(accounting.User+accounting.Kernel),accounting.Total,accounting.Active,limits.PeakJobMemory.ToUInt64());
+    }
     internal async Task TerminateAsync(CancellationToken stop)
     {
         if(!TerminateJobObject(job,1))throw new Win32Exception(Marshal.GetLastWin32Error());
         for(int i=0;i<100;i++)
-        {if(!QueryInformationJobObject(job,1,out var state,(uint)Marshal.SizeOf<Accounting>(),IntPtr.Zero))throw new Win32Exception(Marshal.GetLastWin32Error());if(state.Active==0)return;await Task.Delay(100,stop);}
+        {if(!QueryInformationJobObject(job,1,out Accounting state,(uint)Marshal.SizeOf<Accounting>(),IntPtr.Zero))throw new Win32Exception(Marshal.GetLastWin32Error());if(state.Active==0)return;await Task.Delay(100,stop);}
         throw new IOException("Native process retirement unconfirmed.");
     }
     public void Dispose()=>job.Dispose();

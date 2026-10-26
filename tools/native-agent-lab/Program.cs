@@ -2,6 +2,7 @@ using System.Text.Json;
 using RoutePilot.Agent;
 if(args.Length==3&&args[0]=="--native-policy-session-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2]);
 if(args.Length==3&&args[0]=="--native-policy-auto-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],true);
+if(args.Length==3&&args[0]=="--native-policy-performance-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],true,true);
 if(args.Length==3&&args[0]=="--direct-guard-lab")return await DirectGuardLab.Run(Path.GetFullPath(args[1]),args[2]);
 if(args.Length==1&&args[0]=="--profile-import-self-test"){await NativeImportTests.Run();return 0;}
 if(args.Length==2 && args[0]=="--wfp-os-probe"){using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(20));try{var proof=await CoreSafetyLab.Tun(Path.Combine(Path.GetFullPath(args[1]),"native-awg-lab.exe"),"1.1.1.1",deadline.Token);Console.WriteLine(proof.GetRawText());return proof.GetProperty("success").GetBoolean()?0:1;}catch(OperationCanceledException){Console.WriteLine("{\"success\":false,\"timeout\":true}");return 1;}}

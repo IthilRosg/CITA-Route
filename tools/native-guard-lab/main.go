@@ -137,6 +137,7 @@ func guestOnly() error {
 			}
 		}
 	}
+ if id,e:=nativeGuestUUID();e==nil{if strings.EqualFold(id,"E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83"){return nil};return errors.New("wrong isolated guest")}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance Win32_ComputerSystemProduct).UUID")

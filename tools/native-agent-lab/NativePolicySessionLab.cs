@@ -7,7 +7,7 @@ using RoutePilot.Agent;
 internal static class NativePolicySessionLab
 {
     static void Check(bool value){if(!value)throw new IOException("Native policy route proof failed.");}
-    internal static async Task<int> Run(string root,string run,bool automatic=false)
+    internal static async Task<int> Run(string root,string run,bool automatic=false,bool performance=false)
     {
         string stage="prepare";var report=new Dictionary<string,object?>{{"success",false}};NativeGuardedSession? runtime=null;
         try
@@ -26,14 +26,16 @@ internal static class NativePolicySessionLab
             var config=new{log=new{disabled=true},inbounds=new[]{new{type="tun",tag="native-tun",interface_name="Cita-NativeLab",address=new[]{"172.30.127.1/30"},route_address=planner.Prefixes.Where(x=>!x.Contains(':')).ToArray(),route_exclude_address=new[]{endpoint.Address+"/32"},auto_route=true,strict_route=false,dns_mode="disabled",stack="gvisor",mtu=1400}},outbounds=new object[]{new{type="cita_native_lab",tag="native-vpn",owner},new{type="direct",tag="native-direct",bind_interface=nic.Name}},route=new{final="native-vpn",rules=new[]{new{action="sniff",timeout="300ms"}}}};
             await File.WriteAllTextAsync(configPath,JsonSerializer.Serialize(config),stop);
             runtime=new NativeGuardedSession(Path.Combine(root,"native-owner.exe"),Path.Combine(root,"native-core.exe"),Path.Combine(root,"native-guard.exe"),configPath,owner,run,policy,expected,afterStart:async(binding,ct)=>{await File.WriteAllTextAsync(Path.Combine(root,"core-pid.json"),JsonSerializer.Serialize(new{pid=binding.ProcessId}),ct);},endpoint:permission,adaptive:automatic);
-            stage="initialize";await runtime.InitializeAsync(stop);var spec=JsonSerializer.SerializeToElement(new{Session=Guid.NewGuid().ToString("N"),Generation=1UL,Token=Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),Config=text});stage="connect";await runtime.ConnectAsync(spec,stop);text="";
+            var timer=Stopwatch.StartNew();stage="initialize";await runtime.InitializeAsync(stop);report["initializeMs"]=timer.ElapsedMilliseconds;
+            var spec=JsonSerializer.SerializeToElement(new{Session=Guid.NewGuid().ToString("N"),Generation=1UL,Token=Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),Config=text});timer.Restart();stage="connect";await runtime.ConnectAsync(spec,stop);report["connectMs"]=timer.ElapsedMilliseconds;text="";
             if(automatic)
             {
-                stage="automatic-observation";var first=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true);Check(first.GetProperty("success").GetBoolean());report["firstUnknownDomainWorks"]=true;
+                timer.Restart();stage="automatic-observation";var first=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true);Check(first.GetProperty("success").GetBoolean());report["firstUnknownDomainWorks"]=true;report["firstControlProbeMs"]=timer.ElapsedMilliseconds;timer.Restart();
                 for(int i=0;i<100;i++){using var snapshot=JsonDocument.Parse(JsonSerializer.Serialize(runtime.Snapshot));if(snapshot.RootElement.GetProperty("calibratedDomains").GetInt32()>0)break;await Task.Delay(200,stop);}
-                using(var snapshot=JsonDocument.Parse(JsonSerializer.Serialize(runtime.Snapshot)))Check(snapshot.RootElement.GetProperty("calibratedDomains").GetInt32()>0);
+                using(var snapshot=JsonDocument.Parse(JsonSerializer.Serialize(runtime.Snapshot)))Check(snapshot.RootElement.GetProperty("calibratedDomains").GetInt32()>0);report["firstAutomaticDecisionWaitMs"]=timer.ElapsedMilliseconds;
                 stage="automatic-direct";var next=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true);Check(next.GetProperty("success").GetBoolean());for(int i=0;i<30&&runtime.Core.PolicyDirectDials==0;i++)await Task.Delay(100,stop);Check(runtime.Core.PolicyDirectDials>0);report["automaticDomainSelectionVerified"]=true;
-                await runtime.DisconnectAsync(stop);report["success"]=true;return 0;
+                if(performance){stage="performance-baseline";report["performance"]=await NativePerformanceLab.Measure(runtime,root,stop);}
+                timer.Restart();await runtime.DisconnectAsync(stop);report["disconnectMs"]=timer.ElapsedMilliseconds;report["success"]=true;return 0;
             }
             string epoch=Guid.NewGuid().ToString("N");NativePolicyRequest Rules(string route)=>new(epoch,[new("cloudflare-dns.com","","tcp",route,443,route=="direct"?["1.1.1.1"]:[],DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeMilliseconds())]);
             stage="retained-vpn-flow";var held=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,async()=>await runtime.PublishPolicyAsync(Rules("direct"),stop),domain:true);
