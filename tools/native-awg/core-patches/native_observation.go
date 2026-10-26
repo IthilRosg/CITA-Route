@@ -22,7 +22,7 @@ func nativeProbeSetDeadline(ctx context.Context,conn net.Conn) error {
  deadline,ok:=ctx.Deadline();if !ok{return fmt.Errorf("probe requires a bounded context")};return conn.SetDeadline(deadline)
 }
 func nativePublic(ip netip.Addr) bool {
- if !ip.Is4()||!ip.IsGlobalUnicast()||ip.IsPrivate()||ip.IsLoopback()||ip.IsLinkLocalUnicast(){return false}
+ if !ip.Is4()||!ip.IsGlobalUnicast()||ip.IsPrivate()||ip.IsLoopback()||ip.IsLinkLocalUnicast()||nativeFakeIPPrefix.Contains(ip){return false}
  for _,prefix:=range []string{"0.0.0.0/8","100.64.0.0/10","224.0.0.0/4","240.0.0.0/4"}{if netip.MustParsePrefix(prefix).Contains(ip){return false}}
  return true
 }

@@ -31,6 +31,9 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
     internal int Repairs=>Volatile.Read(ref repairs);
     internal bool SupportsPolicy=>binding?.SupportsPolicy==true;
     internal bool SupportsDirectScopes=>binding?.SupportsDirectScopes==true;
+    internal int NativeDnsProtocol=>binding?.NativeDnsProtocol??0;
+    internal long FakeIpVpnDials=>binding?.FakeIpVpnDials??0;
+    internal long FakeIpRefused=>binding?.FakeIpRefused??0;
     internal async Task<bool> DirectScopeAsync(NativeDirectPermission permission,bool enable,ulong revision,int expectedPid,CancellationToken stop)
     {
         await gate.WaitAsync(stop);

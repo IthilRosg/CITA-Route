@@ -31,6 +31,9 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
     internal bool SupportsPolicy{get;private set;}
     internal bool SupportsDirectScopes{get;private set;}
     internal long PolicyDirectDials{get;private set;}
+    internal int NativeDnsProtocol{get;private set;}
+    internal long FakeIpVpnDials{get;private set;}
+    internal long FakeIpRefused{get;private set;}
     internal long PolicyBlockedDials{get;private set;}
     internal string? StartupIssue{get;private set;}
     internal NativeObservedDestination[] Observations{get;private set;}=[];
@@ -74,6 +77,7 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
                 LastState=reply;
                 if(action=="Snapshot")Observations=reply.TryGetProperty("observations",out var observed)?JsonSerializer.Deserialize<NativeObservedDestination[]>(observed.GetRawText())??[]:[];
                 if(reply.TryGetProperty("policyDirectDials",out var direct))PolicyDirectDials=direct.GetInt64();if(reply.TryGetProperty("policyBlockedDials",out var blocked))PolicyBlockedDials=blocked.GetInt64();
+                if(reply.TryGetProperty("nativeDnsProtocol",out var dns)){NativeDnsProtocol=dns.GetInt32();if(NativeDnsProtocol==1){if(reply.TryGetProperty("fakeIpVpnDials",out var recovered))FakeIpVpnDials=recovered.GetInt64();if(reply.TryGetProperty("fakeIpRefused",out var fakeRefused))FakeIpRefused=fakeRefused.GetInt64();}}
                 if(requireSuccess&&!reply.GetProperty("success").GetBoolean()){refused=true;throw new InvalidDataException("Core binding command refused.");}
                 return reply;
             }

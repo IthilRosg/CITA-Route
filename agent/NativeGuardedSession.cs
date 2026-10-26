@@ -35,7 +35,7 @@ internal sealed class NativeGuardedSession:IAsyncDisposable
     internal NativeWfpGuard Guard=>guard;
     internal NativeCoreRecovery Core=>core;
     internal NativeJobUsage ResourceUsage=>job.ReadUsage();
-    internal object Snapshot=>new{phase=Phase,coreState=core.State,coreStartupIssue=core.StartupIssue,corePid=core.ProcessId,repairs=core.Repairs,bindings=guard.Bindings,policyDigest=guard.Digest,guardFailure=guard.LastFailureStage,ipv6Mode="BlockProtected",profile=profiles.Snapshot(),domainPolicyRevision=publisher?.Revision??0,domainPolicyPhase=publisher?.Phase??"Unavailable",policyDirectDials=core.PolicyDirectDials,policyBlockedDials=core.PolicyBlockedDials,retiredDirectScopes=publisher?.RetiredScopes??0,automaticRouting=automaticState,calibratedDomains=publisher?.AutomaticRuleCount??0,calibrationChecks=calibrated};
+    internal object Snapshot=>new{phase=Phase,coreState=core.State,coreStartupIssue=core.StartupIssue,corePid=core.ProcessId,nativeDnsProtocol=core.NativeDnsProtocol,fakeIpVpnDials=core.FakeIpVpnDials,fakeIpRefused=core.FakeIpRefused,repairs=core.Repairs,bindings=guard.Bindings,policyDigest=guard.Digest,guardFailure=guard.LastFailureStage,ipv6Mode="BlockProtected",profile=profiles.Snapshot(),domainPolicyRevision=publisher?.Revision??0,domainPolicyPhase=publisher?.Phase??"Unavailable",policyDirectDials=core.PolicyDirectDials,policyBlockedDials=core.PolicyBlockedDials,retiredDirectScopes=publisher?.RetiredScopes??0,automaticRouting=automaticState,calibratedDomains=publisher?.AutomaticRuleCount??0,calibrationChecks=calibrated};
     internal async Task PublishPolicyAsync(NativePolicyRequest request,CancellationToken stop)
     {
         automaticStop.Cancel();if(automaticTask!=null)await automaticTask.WaitAsync(stop);

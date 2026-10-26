@@ -128,7 +128,7 @@ internal sealed class NativeRoutePolicyPublisher(NativeWfpGuard guard,NativeCore
             else if(rule.Route is not ("vpn" or "blocked")||rule.Addresses.Length!=0)throw new InvalidDataException("Native route kind refused.");
         }
     }
-    static bool Public(IPAddress ip){var b=ip.GetAddressBytes();return b[0]!=0&&b[0]!=10&&b[0]!=127&&b[0]<224&&!(b[0]==169&&b[1]==254)&&!(b[0]==172&&b[1]>=16&&b[1]<=31)&&!(b[0]==192&&b[1]==168)&&!(b[0]==100&&b[1]>=64&&b[1]<=127);}
+    static bool Public(IPAddress ip){var b=ip.GetAddressBytes();return b[0]!=0&&b[0]!=10&&b[0]!=127&&b[0]<224&&!(b[0]==198&&(b[1]==18||b[1]==19))&&!(b[0]==169&&b[1]==254)&&!(b[0]==172&&b[1]>=16&&b[1]<=31)&&!(b[0]==192&&b[1]==168)&&!(b[0]==100&&b[1]>=64&&b[1]<=127);}
     internal async Task ApplyAsync(string epoch,IReadOnlyCollection<NativeDomainRule> rules,CancellationToken stop)
     {
         Validate(rules);if(epoch.Length!=32||!epoch.All(Uri.IsHexDigit))throw new InvalidDataException("Native network epoch missing.");

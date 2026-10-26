@@ -5,6 +5,12 @@ using RoutePilot.Agent;
 
 internal static class NativeCoverageLab
 {
+    internal static async Task<int> ServiceClient()
+    {
+        using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(10));var result=await Fetch("cloudflare-dns.com",1,budget.Token);
+        using var json=JsonDocument.Parse(JsonSerializer.Serialize(result));bool success=json.RootElement.GetProperty("headersReceived").GetBoolean();
+        Console.WriteLine(JsonSerializer.Serialize(new{success,result}));return success?0:1;
+    }
     static async ValueTask<Stream> Connect(System.Net.IPAddress address,int port,CancellationToken stop)
     {
         var socket=new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork,System.Net.Sockets.SocketType.Stream,System.Net.Sockets.ProtocolType.Tcp);
@@ -42,7 +48,7 @@ internal static class NativeCoverageLab
         catch(OperationCanceledException)when(!stop.IsCancellationRequested){outcome=headers?"BodyTimeout":"RequestTimeout";}
         catch(HttpRequestException e){outcome=e.HttpRequestError.ToString();for(Exception? cause=e;cause!=null&&causes.Count<5;cause=cause.InnerException)causes.Add(cause is System.Net.Sockets.SocketException socket?"Socket:"+socket.SocketErrorCode:cause.GetType().Name+":"+cause.HResult);}
         catch(IOException){outcome=headers?"BodyReadFailure":"ConnectionFailure";}
-        return new{domain,round,resolver=round==1?"Windows":"BootstrappedDoH-IPv4",status,headersReceived=headers,bodyBytes=bytes,outcome,causes,elapsedMs=clock.ElapsedMilliseconds};
+        return new{domain,round,resolver=round==0?"LiteralFakeIP":round==1?"Windows":"BootstrappedDoH-IPv4",status,headersReceived=headers,bodyBytes=bytes,outcome,causes,elapsedMs=clock.ElapsedMilliseconds};
     }
     internal static async Task<object> Measure(NativeGuardedSession runtime,string root,CancellationToken stop)
     {
@@ -61,10 +67,42 @@ internal static class NativeCoverageLab
                 if(runtime.Core.ProcessId!=originalPid||runtime.Core.State!="Active"||runtime.Guard.DirectPermits>256)throw new IOException("Coverage core/guard epoch changed.");
             }
         }
+        var retrySamples=new List<object>();using(var observed=JsonDocument.Parse(JsonSerializer.Serialize(results)))
+            foreach(var failed in observed.RootElement.EnumerateArray().Where(r=>r.GetProperty("round").GetInt32()==1&&!r.GetProperty("headersReceived").GetBoolean()).Take(1))retrySamples.Add(await Fetch(failed.GetProperty("domain").GetString()!,1,stop));
+        var missingName=await Fetch("198.18.0.62",0,stop);var missingDns=await Fetch("cita-route-negative.invalid",1,stop);
+        using(var negative=JsonDocument.Parse(JsonSerializer.Serialize(new[]{missingName,missingDns})))if(negative.RootElement.EnumerateArray().Any(r=>r.GetProperty("headersReceived").GetBoolean()))throw new IOException("Unresolved DNS or unknown fake target connected.");
+        var afterFailures=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true);if(!afterFailures.GetProperty("success").GetBoolean()||runtime.Core.ProcessId!=originalPid)throw new IOException("DNS failure disturbed the active core.");
+        for(int i=0;i<20&&(runtime.Core.FakeIpVpnDials==0||runtime.Core.FakeIpRefused==0);i++)await Task.Delay(100,stop);
+        bool retained=await RetainFakeTcp(runtime,stop);
         using var state=JsonDocument.Parse(JsonSerializer.Serialize(runtime.Snapshot));
+        if(runtime.Core.NativeDnsProtocol!=1)throw new IOException("Native DNS capability missing.");
+        if(runtime.Core.FakeIpVpnDials==0||runtime.Core.FakeIpRefused==0)throw new IOException("Fake-IP recovery/refusal not reproduced.");
         return new{completed=true,domainCount=Domains.Length,requestCount=results.Count,concurrentHttpsUdpControls=controls,sameCore=true,
+            negativeCases=new{missingName,missingDns},controlAfterDnsFailure=true,
+            retrySamples,
+            fakeTcpRetainedAcrossPolicy=retained,
+            nativeDnsProtocol=runtime.Core.NativeDnsProtocol,fakeIpVpnDials=runtime.Core.FakeIpVpnDials,fakeIpRefused=runtime.Core.FakeIpRefused,
             maxConcurrentMatrixRequests=4,bodyLimitBytes=65536,requestTimeoutSeconds=8,policyBudgetPerMinute=32,maxObservations,maxDirectPermits,peakJobCommittedBytes=runtime.ResourceUsage.PeakCommittedBytes,
             successfulCalibrationChecks=state.RootElement.GetProperty("calibrationChecks").GetInt32(),calibratedDomains=state.RootElement.GetProperty("calibratedDomains").GetInt32(),
             scope="Anonymous root GETs through active VM TUN: Windows DNS then bootstrapped authenticated DoH IPv4. TLS validation retained, no system DNS changes. HTTP response/capped sample is not full site/app availability; no per-request route attribution or QUIC proof.",results};
+    }
+    static async Task<bool> RetainFakeTcp(NativeGuardedSession runtime,CancellationToken stop)
+    {
+        int pid=runtime.Core.ProcessId;long before=runtime.Core.FakeIpVpnDials;
+        using var budget=CancellationTokenSource.CreateLinkedTokenSource(stop);budget.CancelAfter(TimeSpan.FromSeconds(12));
+        using var handler=new SocketsHttpHandler{UseProxy=false,UseCookies=false,AllowAutoRedirect=false,MaxConnectionsPerServer=1,ConnectCallback=(_,ct)=>Connect(IPAddress.Parse("198.18.0.62"),443,ct)};
+        using var client=new HttpClient(handler){Timeout=Timeout.InfiniteTimeSpan};
+        async Task ReadTrace()
+        {
+            using var request=new HttpRequestMessage(HttpMethod.Get,"https://cloudflare-dns.com/cdn-cgi/trace"){Version=HttpVersion.Version11,VersionPolicy=HttpVersionPolicy.RequestVersionExact};
+            using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,budget.Token);if(response.StatusCode!=HttpStatusCode.OK)throw new IOException("Held fake-IP control HTTP failed.");
+            using var stream=await response.Content.ReadAsStreamAsync(budget.Token);byte[] bytes=new byte[1024];int total=0,read;while((read=await stream.ReadAsync(bytes,budget.Token))>0){total+=read;if(total>8192)throw new IOException("Held control exceeded body limit.");}
+        }
+        await ReadTrace();for(int i=0;i<20&&runtime.Core.FakeIpVpnDials<=before;i++)await Task.Delay(100,budget.Token);
+        long first=runtime.Core.FakeIpVpnDials;if(first!=before+1)throw new IOException("Held control did not use one VPN-resolved fake-IP connection.");
+        await runtime.PublishPolicyAsync(new NativePolicyRequest(Guid.NewGuid().ToString("N"),[]),budget.Token);
+        await ReadTrace();await Task.Delay(700,budget.Token);
+        if(runtime.Core.ProcessId!=pid||runtime.Core.FakeIpVpnDials!=first)throw new IOException("Held fake-IP TCP reconnected across policy publication.");
+        return true;
     }
 }

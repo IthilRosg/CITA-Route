@@ -73,6 +73,11 @@ func safeDomain(name string) bool {
 
 // Addresses are resolved and validated inside the netstack, then pinned for the
 // dial. No host resolver, implicit proxy, private-address access or IPv6 fallback.
+func validatedIPv4Answer(ips []string)(string,error){
+ if len(ips)==0||len(ips)>32{return "",errProxy};first:=""
+ for _,text:=range ips{ip,e:=netip.ParseAddr(text);if e!=nil{return "",errProxy};if ip.Is6(){continue};if !publicTarget(ip){return "",errProxy};if first==""{first=ip.String()}}
+ if first==""{return "",errProxy};return first,nil
+}
 func restrictedDial(network *netstack.Net) tunnelDial {
 	return func(ctx context.Context, kind, address string) (net.Conn, error) {
 		host, port, e := net.SplitHostPort(address)
@@ -89,14 +94,9 @@ func restrictedDial(network *netstack.Net) tunnelDial {
 				return nil, errProxy
 			}
 		}
-		for _, text := range ips {
-			ip, e := netip.ParseAddr(text)
-			if e != nil || !publicTarget(ip) {
-				return nil, errProxy
-			}
-		}
+		selected,e:=validatedIPv4Answer(ips);if e!=nil{return nil,e}
 		// One validated address per CONNECT. Never replay a stream on another route.
-		return network.DialContext(ctx, "tcp", net.JoinHostPort(ips[0], port))
+		return network.DialContext(ctx, "tcp", net.JoinHostPort(selected, port))
 	}
 }
 

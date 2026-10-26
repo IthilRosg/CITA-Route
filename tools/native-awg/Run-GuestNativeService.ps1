@@ -1,4 +1,4 @@
-param([switch]$Bootstrap,[switch]$Reboot,[switch]$Network,[switch]$Performance,[ValidateRange(12,90)][int]$PerformanceSeconds=12)
+param([switch]$Bootstrap,[switch]$Reboot,[switch]$Network,[switch]$Performance,[ValidateRange(12,90)][int]$PerformanceSeconds=12,[switch]$Dns)
 $ErrorActionPreference='Stop'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$run=[guid]::NewGuid().ToString('N');$folder=Join-Path ([Environment]::GetFolderPath('ProgramFiles')) ('CitaNativeService-'+$run);$native=Join-Path $folder 'native';$restore=Join-Path $root ('private\restore-service-'+$run+'.ps1');$report=@{schema=1;success=$false;startedUtc=[datetime]::UtcNow.ToString('o');scope='Actual RoutePilotRescue SCM service with protected native snapshot; isolated W11'};$rescue=$null;$changed=$false;$created=$false;$old=$null;$phase='prepare'
@@ -82,6 +82,14 @@ if($service.PathName.Contains($folder)){
   $restored=Wait-Native 'Disconnected';if($restored.profileId -ne $selected.profileId){throw 'Component rollback lost profile'};$report.componentRollbackVerified=$true
  }
  $phase='connect';$null=Rpc 'native-start';$active=Wait-Native 'Connected';$report.firstTraffic=Probe-Tun
+ if($Dns){
+  $phase='service-native-dns';$before=(Rpc 'native-status').Native.runtime.fakeIpVpnDials
+  $info=[Diagnostics.ProcessStartInfo]::new((Join-Path $root 'AgentBackend\Cita.NativeAgentLab.exe'),'--native-dns-client');$info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true;$client=[Diagnostics.Process]::Start($info)
+  try{$output=$client.StandardOutput.ReadToEndAsync();$errorOutput=$client.StandardError.ReadToEndAsync();if(-not $client.WaitForExit(15000)){$client.Kill();$client.WaitForExit();throw 'Service DNS client timeout'};if($client.ExitCode -ne 0 -or -not ($output.GetAwaiter().GetResult()|ConvertFrom-Json).success){throw 'Service DNS client failed'}}finally{$client.Dispose()}
+  for($attempt=0;$attempt -lt 15;$attempt++){$state=(Rpc 'native-status').Native;if($state.runtime.nativeDnsProtocol -eq 1 -and $state.runtime.fakeIpVpnDials -gt $before){break};Start-Sleep -Milliseconds 200}
+  if($state.operation -ne $active.operation -or $state.generation -ne $active.generation -or $state.runtime.nativeDnsProtocol -ne 1 -or $state.runtime.fakeIpVpnDials -le $before){throw 'Service DNS recovery identity/counter proof failed'}
+  $report.serviceNativeDnsTraffic=$true
+ }
  if($Performance){
   $phase='service-resources';$selected=(Rpc 'native-status').Native;$bad=(Rpc 'native-resources' ('0'*32)).Native;if($bad.available){throw 'Stale native metrics identity accepted'}
   for($warm=0;$warm -lt 10;$warm++){Start-Sleep -Seconds 1;$warmState=(Rpc 'native-resources' $selected.operation).Native;if(-not $warmState.available){throw 'Service resource warmup lost its epoch'}}

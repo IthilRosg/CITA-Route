@@ -50,7 +50,7 @@ func prepareNativePolicy(update *nativePolicyUpdate,previous nativePolicyTable,n
   switch rule.Route {
   case "direct","dpi":
    if !validBindingHex(update.GuardDigest,32)||len(rule.Addresses)==0||len(rule.Addresses)>4{return nativePolicyTable{},errNativePolicy};seen:=map[string]bool{}
-   for _,ip:=range rule.Addresses {a,e:=netip.ParseAddr(ip);if e!=nil||!a.Is4()||!a.IsGlobalUnicast()||a.IsPrivate()||a.IsLoopback()||a.IsLinkLocalUnicast()||netip.MustParsePrefix("100.64.0.0/10").Contains(a)||a.String()!=ip||seen[ip]{return nativePolicyTable{},errNativePolicy};seen[ip]=true}
+   for _,ip:=range rule.Addresses {a,e:=netip.ParseAddr(ip);if e!=nil||!nativePublic(a)||a.String()!=ip||seen[ip]{return nativePolicyTable{},errNativePolicy};seen[ip]=true}
   case "vpn","blocked":if len(rule.Addresses)!=0{return nativePolicyTable{},errNativePolicy}
   default:return nativePolicyTable{},errNativePolicy
   }

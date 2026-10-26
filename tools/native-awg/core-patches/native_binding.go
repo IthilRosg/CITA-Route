@@ -56,6 +56,9 @@ type bindingReply struct {
  Observations []nativeObservation `json:"observations,omitempty"`
  ProbeReachable bool `json:"probeReachable,omitempty"`
  DirectScopeProtocol int `json:"directScopeProtocol,omitempty"`
+ NativeDnsProtocol int `json:"nativeDnsProtocol,omitempty"`
+ FakeIpVpnDials uint64 `json:"fakeIpVpnDials"`
+ FakeIpRefused uint64 `json:"fakeIpRefused"`
  Scope *nativeDirectScope `json:"scope,omitempty"`
  ScopeRetired bool `json:"scopeRetired,omitempty"`
 }
@@ -141,6 +144,8 @@ type CitaNativeBinding struct {
  policy nativePolicyTable
  policyDirectDials atomic.Uint64
  policyBlockedDials atomic.Uint64
+ fakeIpVpnDials atomic.Uint64
+ fakeIpRefused atomic.Uint64
  outbounds adapter.OutboundManager
  observations map[string]nativeObservation
  observationOrder []string
@@ -186,7 +191,7 @@ func (h *CitaNativeBinding) apply(c bindingCommand) (r bindingReply) {
 	if c.Action=="EnableDirect"||c.Action=="RetireDirect"{r=h.directScopeLocked(c);r.State=h.state;r.CurrentGeneration=h.generation;r.PolicyDirectDials=h.policyDirectDials.Load();r.PolicyBlockedDials=h.policyBlockedDials.Load();return}
 	if c.Scope!=nil||c.Revision!=0{return bindingReply{Stage:c.Action,Owner:h.owner,Session:c.Session,Generation:c.Generation,State:h.state,CurrentGeneration:h.generation}}
 	r = bindingReply{Stage: c.Action, Owner: h.owner, Session: c.Session, Generation: c.Generation}
-	defer func() { r.State = h.state; r.CurrentGeneration = h.generation;r.PolicyRevision=h.policy.revision;r.PolicyDigest=h.policy.digest;r.PolicyDirectDials=h.policyDirectDials.Load();r.PolicyBlockedDials=h.policyBlockedDials.Load() }()
+	defer func() { r.State = h.state; r.CurrentGeneration = h.generation;r.PolicyRevision=h.policy.revision;r.PolicyDigest=h.policy.digest;r.PolicyDirectDials=h.policyDirectDials.Load();r.PolicyBlockedDials=h.policyBlockedDials.Load();r.NativeDnsProtocol=1;r.FakeIpVpnDials=h.fakeIpVpnDials.Load();r.FakeIpRefused=h.fakeIpRefused.Load() }()
 	if c.Owner != h.owner {
 		return
 	}
@@ -335,10 +340,13 @@ func (h *CitaNativeBinding) DialContext(ctx context.Context, network string, des
 	}
 	child, done := b.dialContext(ctx, network == "tcp")
 	defer done()
+	name:=metadata.Domain;if name==""&&destination.IsFqdn(){name=destination.Fqdn}
+	destination,fakeRecovered,e:=nativeVpnDestination(network,destination,name);if e!=nil{h.fakeIpRefused.Add(1);return nil,e}
 	conn, e := b.client.DialContext(child, network, destination)
 	if e != nil {
 		return nil, e
 	}
+	if fakeRecovered{h.fakeIpVpnDials.Add(1)}
 	if network == "udp" {
 		p := &nativeBindingPacket{PacketConn: conn.(net.PacketConn), b: b}
 		if !b.register(p, true) {
