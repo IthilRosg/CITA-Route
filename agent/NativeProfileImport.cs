@@ -17,6 +17,26 @@ public sealed record NativeProfileImportRequest(string Base64,string Name,string
 internal static class NativeProfileImport
 {
     internal sealed record Input(string Config,string Name,string Endpoint,string[] Allowed,int Mtu);
+    internal sealed class HttpsProbeFailure:IOException { internal HttpsProbeFailure():base("Native HTTPS validation failed."){} }
+    sealed class ProbeFailure:IOException { internal ProbeFailure():base("Native import connectivity check failed."){} }
+    internal static Input LowerMtu(Input input)
+    {
+        if(input.Mtu<=1280)throw new InvalidOperationException("The profile MTU is already low.");
+        const string pattern=@"(?im)^[ \t]*MTU[ \t]*=[ \t]*[0-9]+[ \t]*\r?$";
+        var mtus=Regex.Matches(input.Config,pattern);if(mtus.Count>1)throw new InvalidDataException("Duplicate profile MTU.");
+        string config;
+        if(mtus.Count==1){var match=mtus[0];config=input.Config[..match.Index]+"MTU = 1280"+input.Config[(match.Index+match.Length)..];}
+        else{var sections=Regex.Matches(input.Config,@"(?im)^[ \t]*\[Interface\][ \t]*\r?$");if(sections.Count!=1)throw new InvalidDataException("Exactly one interface required.");int at=sections[0].Index+sections[0].Length;config=input.Config[..at]+"\nMTU = 1280"+input.Config[at..];}
+        return input with{Config=config,Mtu=1280};
+    }
+    internal static async Task<(Input Input,string Exit)> WithMtuFallback(Input input,Func<Input,Task<string>> probe,CancellationToken stop,Action<string>? progress=null)
+    {
+        try{return(input,await probe(input));}
+        catch(HttpsProbeFailure)when(input.Mtu>1280&&!stop.IsCancellationRequested)
+        {
+            stop.ThrowIfCancellationRequested();progress?.Invoke("RetryingMtu");var smaller=LowerMtu(input);return(smaller,await probe(smaller));
+        }
+    }
     internal static async Task<Input> Parse(NativeProfileImportRequest request,CancellationToken stop)
     {
         if(request.Base64.Length>16384)throw new InvalidDataException("Native profile size refused.");
@@ -60,8 +80,30 @@ internal static class NativeProfileImport
     {
         var info=new ProcessStartInfo(image){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};info.ArgumentList.Add(mode);
         using var p=Process.Start(info)??throw new IOException("Native import probe unavailable.");job.Attach(p);_=p.StandardError.BaseStream.CopyToAsync(Stream.Null);
-        try{await p.StandardInput.WriteLineAsync(JsonSerializer.Serialize(spec).AsMemory(),stop);p.StandardInput.Close();var result=await NativeAwgBackend.ReadReply(p.StandardOutput,stop);await p.WaitForExitAsync(stop);if(p.ExitCode!=0||!result.GetProperty("success").GetBoolean())throw new IOException("Native import connectivity check failed.");return result;}
+        try{await p.StandardInput.WriteLineAsync(JsonSerializer.Serialize(spec).AsMemory(),stop);p.StandardInput.Close();var result=await NativeAwgBackend.ReadReply(p.StandardOutput,stop);await p.WaitForExitAsync(stop);if(p.ExitCode!=0||!result.GetProperty("success").GetBoolean())throw new ProbeFailure();return result;}
         finally{if(!p.HasExited){p.Kill(true);await p.WaitForExitAsync();}}
+    }
+    static async Task<string> ProbeProfile(string image,Input input,CancellationToken stop,Action<string>? progress)
+    {
+        string session=Guid.NewGuid().ToString("N"),token=Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        var spec=JsonSerializer.SerializeToElement(new{Session=session,Generation=1UL,Token=token,Config=input.Config});
+        progress?.Invoke("ValidatingProfile");await NativeAwgBackend.PreflightAsync(image,spec,stop);
+        using var job=new NativeProcessJob();
+        try
+        {
+            await using var backend=new NativeAwgBackend(image,true,job.Attach);var ready=await backend.StartAsync(spec,stop);int port=ready.GetProperty("port").GetInt32();
+            progress?.Invoke("ProbingHttps");JsonElement https=default;
+            for(int attempt=0;attempt<2;attempt++)
+            {
+                try{https=await Probe(image,"--proxy-client",new{Port=port,Token=token,LiteralIPv4=true},job,stop);break;}
+                catch(ProbeFailure)when(attempt==0&&!stop.IsCancellationRequested){await Task.Delay(300,stop);}
+                catch(ProbeFailure){throw new HttpsProbeFailure();}
+            }
+            string exit=https.GetProperty("egressHash").GetString()??"";
+            if(exit.Length!=64||!exit.All(Uri.IsHexDigit))throw new InvalidDataException("Native import exit proof missing.");
+            progress?.Invoke("ProbingUdp");await Probe(image,"--proxy-udp-client",new{Port=port,Token=token,Server="1.1.1.1"},job,stop);return exit;
+        }
+        finally{using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(8));await job.TerminateAsync(cleanup.Token);}
     }
     internal sealed class Prepared:IDisposable
     {
@@ -78,21 +120,9 @@ internal static class NativeProfileImport
     {
         // Only existing protected component paths are executable. No imported
         // scripts, routes, program paths or exit expectations are trusted.
-        using var budget=CancellationTokenSource.CreateLinkedTokenSource(stop);budget.CancelAfter(TimeSpan.FromSeconds(45));stop=budget.Token;
-        progress?.Invoke("ReadingProfile");Input input=await Parse(request,stop);string session=Guid.NewGuid().ToString("N"),token=Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-        progress?.Invoke("ValidatingProfile");var spec=JsonSerializer.SerializeToElement(new{Session=session,Generation=1UL,Token=token,Config=input.Config});await NativeAwgBackend.PreflightAsync(old.OwnerPath,spec,stop);
-        string exit;
-        using(var job=new NativeProcessJob())
-        {
-            try
-            {
-                await using var backend=new NativeAwgBackend(old.OwnerPath,true,job.Attach);var ready=await backend.StartAsync(spec,stop);int port=ready.GetProperty("port").GetInt32();
-                progress?.Invoke("ProbingHttps");var https=await Probe(old.OwnerPath,"--proxy-client",new{Port=port,Token=token,LiteralIPv4=true},job,stop);exit=https.GetProperty("egressHash").GetString()??"";
-                if(exit.Length!=64||!exit.All(Uri.IsHexDigit))throw new InvalidDataException("Native import exit proof missing.");
-                progress?.Invoke("ProbingUdp");await Probe(old.OwnerPath,"--proxy-udp-client",new{Port=port,Token=token,Server="1.1.1.1"},job,stop);
-            }
-            finally{using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(8));await job.TerminateAsync(cleanup.Token);}
-        }
+        using var budget=CancellationTokenSource.CreateLinkedTokenSource(stop);budget.CancelAfter(TimeSpan.FromSeconds(85));stop=budget.Token;
+        progress?.Invoke("ReadingProfile");Input input=await Parse(request,stop);
+        var result=await WithMtuFallback(input,candidate=>ProbeProfile(old.OwnerPath,candidate,stop,progress),stop,progress);input=result.Input;string exit=result.Exit;
         // Retain immutable old revisions for rollback. Bound storage rather than
         // deleting unknown or leased files to make room.
         if(Directory.EnumerateFiles(root,"catalog-*.json").Take(32).Count()>=32)throw new IOException("Native profile revision limit reached.");

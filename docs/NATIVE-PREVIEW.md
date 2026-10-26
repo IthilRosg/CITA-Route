@@ -1,4 +1,4 @@
-# CITA Route 0.6.7 — Standalone Native Preview
+# CITA Route 0.6.8 — Standalone Native Preview
 
 Самостоятельный клиент WireGuard / AmneziaWG. WireSock не требуется.
 Нет выбора, поиска и установки внешнего клиента, прежнего SOCKS-моста и скриптов подключения.

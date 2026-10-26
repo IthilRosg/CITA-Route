@@ -40,7 +40,7 @@ public partial class MainWindow
             if(!reply.Success||reply.Native==null)throw new IOException("Служба не приняла импорт. Проверь выбранный профиль.");
             _nativeChoice.Selected=true;AppPaths.Write(NativeChoicePath,_nativeChoice);
             _nativeModeChanging=true;try{_nativeMode.SelectedIndex=1;}finally{_nativeModeChanging=false;}
-            using var deadline=CancellationTokenSource.CreateLinkedTokenSource(_connectionCancellation.Token);deadline.CancelAfter(TimeSpan.FromSeconds(60));
+            using var deadline=CancellationTokenSource.CreateLinkedTokenSource(_connectionCancellation.Token);deadline.CancelAfter(TimeSpan.FromSeconds(100));
             var selected=await _nativeClient.WaitImport(operation,new Progress<NativeRouteView>(ApplyNativeView),deadline.Token);ApplyNativeView(selected);_nativeChoice.ConfirmedProfile=selected.ProfileId;AppPaths.Write(NativeChoicePath,_nativeChoice);
             Notice("Профиль проверен и выбран. Можно подключаться.");
         }

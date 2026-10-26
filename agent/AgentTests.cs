@@ -8,6 +8,7 @@ public static class AgentTests
 {
     public static async Task Run()
     {
+        await NativeProfileImportTests.Run();
         StartupTests.Run();
         TcpListenerOwnership.Test();
         ResourceGuardTests.Run();
