@@ -15,12 +15,16 @@ import (
 // The parent is the only recovery writer. Child commands contain ownership
 // identity, not credentials; stdin itself is the inherited private lease.
 func (c *ownedProxy) call(ctx context.Context, spec proxyStart, action string) (lossSnapshot, error) {
+ return c.callCommand(ctx, spec, lossCommand{Action: action})
+}
+func (c *ownedProxy) callCommand(ctx context.Context, spec proxyStart, command lossCommand) (lossSnapshot, error) {
 	c.ioMu.Lock()
 	defer c.ioMu.Unlock()
 	if ctx.Err() != nil {
 		return lossSnapshot{}, errProxy
 	}
-	if json.NewEncoder(c.input).Encode(lossCommand{Session: spec.Session, Generation: spec.Generation, Action: action}) != nil {
+	command.Session = spec.Session; command.Generation = spec.Generation
+ if json.NewEncoder(c.input).Encode(command) != nil {
 		return lossSnapshot{}, errProxy
 	}
 	type reply struct {
@@ -45,7 +49,7 @@ func (c *ownedProxy) call(ctx context.Context, spec proxyStart, action string) (
 		<-result
 		return lossSnapshot{}, errProxy
 	}
-	if r.err != nil || r.value.Stage != action || r.value.Session != spec.Session || r.value.Generation != spec.Generation {
+	if r.err != nil || r.value.Stage != command.Action || r.value.Session != spec.Session || r.value.Generation != spec.Generation {
 		return lossSnapshot{}, errProxy
 	}
 	return r.value, nil

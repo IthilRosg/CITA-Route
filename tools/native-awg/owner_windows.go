@@ -346,7 +346,7 @@ func ownerMainMode(input io.Reader, output io.Writer, coordinated bool) int {
 			}
 			return 1
 		}
-		if command.Session != spec.Session || command.Generation != spec.Generation || command.Milliseconds != 0 || command.IncomingOnly {
+		if command.Session != spec.Session || command.Generation != spec.Generation || (!validOwnerPause(command, coordinated) && (command.Milliseconds != 0 || command.IncomingOnly)) {
 			return 1
 		}
 		switch command.Action {
@@ -354,7 +354,14 @@ func ownerMainMode(input io.Reader, output io.Writer, coordinated bool) int {
 			if coordinated {
 				o.transportSnapshot(ctx, spec)
 			}
-		case "BlackholeChild":
+		case "PauseChild":
+   if !validOwnerPause(command, coordinated) { return 1 }
+   o.mu.Lock(); c := o.child; o.mu.Unlock()
+   if c == nil { return 1 }
+   command.Action = "Pause"
+   if _, e := c.callCommand(ctx, spec, command); e != nil { return 1 }
+   command.Action = "PauseChild"
+  case "BlackholeChild":
 			if !coordinated {
 				return 1
 			}

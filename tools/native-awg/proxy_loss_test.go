@@ -116,3 +116,14 @@ func TestShortLossDurationAllowlist(t *testing.T) {
 		}
 	}
 }
+
+func TestOwnedPauseIsExplicitLabOnly(t *testing.T) {
+ c:=lossCommand{Action:"PauseChild",Milliseconds:500}
+ t.Setenv("CITA_NATIVE_PERSISTENT_CONTROL", "")
+ t.Setenv("CITA_NATIVE_SHORT_LOSS_LAB", "")
+ if validOwnerPause(c,true) {t.Fatal("ordinary owner accepts loss")}
+ t.Setenv("CITA_NATIVE_SHORT_LOSS_LAB", "1")
+ if !validOwnerPause(c,true)||validOwnerPause(c,false) {t.Fatal("lab owner boundary")}
+ t.Setenv("CITA_NATIVE_PERSISTENT_CONTROL", "1")
+ if shortLossLab()||validOwnerPause(c,true) {t.Fatal("installed persistent owner accepts loss")}
+}

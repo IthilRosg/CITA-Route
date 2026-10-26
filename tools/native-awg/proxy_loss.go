@@ -51,6 +51,12 @@ func validLossCommand(c lossCommand, session string, generation uint64, used boo
 	return c.Action == "Pause" && !used && validLossDuration(c.Milliseconds)
 }
 
+// Explicit VM fixture only; installed persistent control never accepts Pause.
+func shortLossLab() bool { return os.Getenv("CITA_NATIVE_SHORT_LOSS_LAB") == "1" && !persistentControl() }
+func validOwnerPause(c lossCommand, coordinated bool) bool {
+ return coordinated && shortLossLab() && c.Action == "PauseChild" && validLossDuration(c.Milliseconds)
+}
+
 func validLossDuration(milliseconds int) bool {
 	return milliseconds == 500 || milliseconds == 2000 || milliseconds == 3000 || milliseconds == 10000
 }
@@ -80,7 +86,7 @@ func proxyLossControl(input io.Reader, output io.Writer, session string, generat
 		if decoder.Decode(&c) != nil || !validLossCommand(c, session, generation, used && !(bind.ownedControl && c.Action == "Rebind")) {
 			return
 		}
-		if bind.ownedControl && (c.Action != "Snapshot" && c.Action != "Rebind" && c.Action != "Blackhole" || c.Action == "Rebind" && (!persistent && rebinds >= 2 || persistent && !repairBudget.acquire(time.Now(), "socket"))) {
+		if bind.ownedControl && (c.Action != "Snapshot" && c.Action != "Rebind" && c.Action != "Blackhole" && !(c.Action == "Pause" && shortLossLab()) || c.Action == "Rebind" && (!persistent && rebinds >= 2 || persistent && !repairBudget.acquire(time.Now(), "socket"))) {
 			return
 		}
 		if c.Action == "Pause" {
