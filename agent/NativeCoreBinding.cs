@@ -125,12 +125,12 @@ internal sealed class NativeCoreBinding : INativeAwgBinding,IAsyncDisposable
         }
         bool exitMatched=https.GetProperty("success").GetBoolean()&&string.Equals(https.GetProperty("egressHash").GetString(),expected,StringComparison.OrdinalIgnoreCase);
         LastValidation=new(attempts,exitMatched,failure,false,owner.GetProperty("epoch").GetInt32(),https.TryGetProperty("egressHash",out var seenExit)?seenExit.GetString():null,https.TryGetProperty("failurePhase",out var phase)?phase.GetString():null);
-        if(!exitMatched)throw new InvalidDataException("Candidate HTTPS validation failed.");
+        if(!exitMatched)throw NativeCandidateValidationError.Create(https.GetProperty("success").GetBoolean()?"NativeEgressMismatch":"NativeHttpsUnavailable");
         // Configured DNS may be private inside the peer. The public-only SOCKS
         // acceptance client must never mistake that policy refusal for UDP loss.
         // Keep profile DNS for resolution; use the fixed public control route here.
         var udp=await ProbeAsync("--proxy-udp-client",new{Port=port,Token=token,Server="1.1.1.1"},stop);
-        if(!udp.GetProperty("success").GetBoolean())throw new InvalidDataException("Candidate UDP validation failed.");
+        if(!udp.GetProperty("success").GetBoolean())throw NativeCandidateValidationError.Create("NativeUdpUnavailable");
         LastValidation=LastValidation with {UdpVerified=true};
         stop.ThrowIfCancellationRequested();await CommandAsync("Activate",id.Session,id.Generation,port,token,stop:stop);stop.ThrowIfCancellationRequested();
     }

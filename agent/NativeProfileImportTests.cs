@@ -5,6 +5,9 @@ internal static class NativeProfileImportTests
     internal static async Task Run()
     {
         void Check(bool value,string message){if(!value)throw new Exception(message);}
+        foreach(string code in new[]{"NativeHttpsUnavailable","NativeEgressMismatch","NativeUdpUnavailable"})Check(NativeCandidateValidationError.Code(NativeCandidateValidationError.Create(code))==code,"Safe validation diagnostic code must be retained.");
+        try{_ = NativeCandidateValidationError.Create("untrusted");throw new Exception("Untrusted validation code accepted.");}catch(ArgumentException){}
+        var malformed=new InvalidDataException();malformed.Data["NativeValidationCode"]="untrusted";Check(NativeCandidateValidationError.Code(malformed)=="InvalidDataException","Untrusted diagnostic code must not escape.");
         var original=new NativeProfileImport.Input("[Interface]\r\nAddress = 10.0.0.2/32\r\n[Peer]\r\nAllowedIPs = 0.0.0.0/0\r\n","fixture","192.0.2.2:1234",new[]{"0.0.0.0/0"},1400);
         var lower=NativeProfileImport.LowerMtu(original);
         Check(lower.Mtu==1280&&lower.Config.Contains("[Interface]\r\nMTU = 1280\n")&&!original.Config.Contains("MTU"),"MTU fallback must change only a separate candidate.");

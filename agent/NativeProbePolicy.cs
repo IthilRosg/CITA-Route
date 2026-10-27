@@ -14,3 +14,14 @@ internal static class NativeProbePolicy
 }
 
 internal sealed record NativeValidationEvidence(int HttpsAttempts,bool ExitMatched,string? FailureCode,bool UdpVerified,int Epoch,string? ObservedExitHash=null,string? FailurePhase=null);
+
+// Fixed public diagnostic codes only: never propagate a probe response or address.
+internal static class NativeCandidateValidationError
+{
+    internal static InvalidDataException Create(string code)
+    {
+        if(code is not ("NativeHttpsUnavailable" or "NativeEgressMismatch" or "NativeUdpUnavailable"))throw new ArgumentException("Unknown native validation code.");
+        var error=new InvalidDataException("Native candidate validation failed.");error.Data["NativeValidationCode"]=code;return error;
+    }
+    internal static string Code(Exception error)=>error is InvalidDataException&&error.Data["NativeValidationCode"] is string code&&code is "NativeHttpsUnavailable" or "NativeEgressMismatch" or "NativeUdpUnavailable"?code:error.GetType().Name;
+}

@@ -163,7 +163,7 @@ internal sealed class NativeServiceRoute
                     }
                 }
                 catch(OperationCanceledException)when(attempt.IsCancellationRequested){}
-                catch(Exception e){lock(sync){phase="RecoveryFailed";failure=e.GetType().Name;}}
+                catch(Exception e){lock(sync){phase="RecoveryFailed";failure=NativeCandidateValidationError.Code(e);}}
                 finally{lock(sync)if(ReferenceEquals(operation,attempt))operation=null;attempt.Dispose();}
             }
         }

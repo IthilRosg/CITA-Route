@@ -35,6 +35,7 @@ public partial class MainWindow
     internal void VerifyStandalonePresentation()
     {
         if(!_render||!UseNativeBackend||!_nativeChoice.Selected)throw new Exception("Standalone must select its native backend regardless of saved legacy preferences.");
+        foreach(var code in new[]{"NativeHttpsUnavailable","NativeEgressMismatch","NativeUdpUnavailable"})if(NativeRoutePresentation.Detail(new NativeRouteView{Phase="RecoveryFailed",ErrorCode=code})==NativeRoutePresentation.Detail(new NativeRouteView{Phase="RecoveryFailed"}))throw new Exception("Specific native validation errors must be visible.");
         if(_nativeWireSockCard?.Parent!=null||_nativeMode.Parent!=null)throw new Exception("Standalone must not expose a legacy settings card or backend switch.");
         int picks=0;string confirmed=_nativeChoice.ConfirmedProfile;
         NativeFilePickerFixture=()=>{picks++;return null;};
