@@ -9,7 +9,7 @@ internal static class NativeForcedIntentStoreTests
         try
         {
             var store=NativeForcedIntentStore.ForTests(root,(item,_)=>{if(item is FileInfo file&&!file.Exists)throw new InvalidDataException("ACL checks require an existing file.");});
-            bool missing=false;try{store.Read(0);}catch(InvalidDataException){missing=true;}Check(missing,"Missing document silently became an empty policy.");
+            bool missing=false;try{store.Read(1);}catch(InvalidDataException){missing=true;}Check(missing,"Missing document silently became an empty policy.");
             var rule=new NativeForcedIntentRule("example.com",@"C:\Browser\App.exe","tcp",443,"direct");
             Check(store.InitializeNew().Revision==1&&store.Replace(1,[rule]).Revision==2,"Initial and first user revisions were not saved.");
             var reopened=NativeForcedIntentStore.ForTests(root);Check(reopened.Read(2).Rules.Length==1,"Saved intent was not recovered.");
