@@ -1,5 +1,7 @@
 name: Native managed components
 on:
+  push:
+    branches: [codex/native-awg-installer-preview]
   pull_request:
   workflow_dispatch:
 permissions:
