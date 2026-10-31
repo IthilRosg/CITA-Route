@@ -187,3 +187,11 @@ A02 теперь PASS для текущего кандидата, этап A —
 ### Native installer integration принят
 
 После привязки к stage `fd2490f6` `Verify-Installer.ps1 -NativeStandalone -IsolatedTest` прошёл полный dedicated fixture-цикл. Он подтвердил чистую установку, upgrade старой версии, same-version decline/confirm, downgrade и invalid-version refusal, ярлыки и uninstall registration, отказ при активном маршруте, interrupted-copy rollback, uninstall/reinstall и сохранение пользовательских данных. В harness добавлен bounded retry чтения transaction journal; краткий файл-lock больше не превращает корректный rollback в ложный FAIL. Receipt: `runtime/installer-integration-result-fd2490f6.json`. Это закрывает installer integration gate кандидата; отдельные G01–G06 acceptance-сценарии остаются открыты до полной матрицы.
+
+### Canonical current candidate и ускоренный harness
+
+Кандидат `235f7600` канонизирован для текущего цикла с lineage `df7c36b7`. Source/package gates, app/updater self-tests, installer integration и physical install/protected bundle upgrade привязаны к одному receipt `runtime/private-preview-candidate-235f7600.json`. На РМ защищённый agent `600ED0B...`, native archive `BBCBD...`, service Running, intent Desired=false, generation 59, temporary producer/installer payloads отсутствуют.
+
+D02 прошёл на этом кандидате: core PID `3316` → `9764`, same connection, generation 60, recovery 3229 ms, exact cleanup. D03 прошёл на этом кандидате: service PID `1712` → `7732`, native start refusal при deny intent, jobActiveAfter=0, intent/agent/manifest unchanged, exact cleanup. Evidence сохранён в соответствующих runtime receipts.
+
+Для ускорения дальнейших прогонов physical-service harness теперь принимает AgentSha/ManifestSha/HelperPath/HelperSha параметрами; C# helper больше не содержит hash старой сборки. Подробный порядок пачек: `docs/ACCELERATED-ACCEPTANCE-20261031.md`. Общая приёмка остаётся 7/44 (15,91%): следующий приоритет — B и C.

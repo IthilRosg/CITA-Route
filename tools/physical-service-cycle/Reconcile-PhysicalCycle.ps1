@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$CleanupVerified)
+param([switch]$CleanupVerified,[switch]$ViaRadmin)
 $ErrorActionPreference='Stop'
 $workspace=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'));. (Join-Path $workspace 'tools/native-control-probe/Invoke-BoundedRm.ps1')
 $journal=Join-Path $workspace 'runtime/service-cycle-active.json';if(!(Test-Path -LiteralPath $journal)){throw 'No retained service cycle journal.'}
@@ -17,7 +17,7 @@ $svc=Get-CimInstance Win32_Service -Filter "Name='RoutePilotRescue'"
 [pscustomobject]@{run=$id;rootExists=$exists;tasks=$tasks;actors=$actors;results=$results;failures=$failures;serviceState=$svc.State;servicePid=$svc.ProcessId;scope='Read-only; no retry or cleanup'}|ConvertTo-Json -Depth 6 -Compress
 '@
 $probe=$probe.Replace('__ROOT__',$j.root).Replace('__TASK__',$j.primaryTask).Replace('__ID__',$j.run)
-$observation=(Invoke-BoundedRm $probe)|ConvertFrom-Json
+$observation=(Invoke-BoundedRm $probe -ViaRadmin:$ViaRadmin)|ConvertFrom-Json
 if($observation.run -cne $j.run){throw 'Remote observation identity differs.'}
 if(!$CleanupVerified){return $observation}
 if($j.state -cne 'VerifiedRetained'){throw 'Cleanup requires verified terminal receipt.'}
@@ -43,10 +43,10 @@ $acl=Get-Acl -LiteralPath $root;$trusted=@('S-1-5-18','S-1-5-32-544','S-1-5-80-9
 if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted){throw 'Owner refused'}
 foreach($r in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){if($r.AccessControlType -eq 'Allow' -and -not ($r.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and $r.IdentityReference.Value -notin $trusted -and (([int64]$r.FileSystemRights -band 0xffffffff) -band 0x500d0156)){throw 'ACL refused'}};'ready'
 '@
- if((Invoke-BoundedRm $pre.Replace('__ROOT__',$j.root)).Trim() -ne 'ready'){throw 'Protected transfer root unconfirmed.'}
- Invoke-BoundedScp $local ("citastation@26.68.227.253:C:/Program Files/RoutePilot/Agent/cita-cycle-$($j.run)/$name")
+ if((Invoke-BoundedRm $pre.Replace('__ROOT__',$j.root) -ViaRadmin:$ViaRadmin).Trim() -ne 'ready'){throw 'Protected transfer root unconfirmed.'}
+ Invoke-BoundedScp $local ("citastation@26.68.227.253:C:/Program Files/RoutePilot/Agent/cita-cycle-$($j.run)/$name") 45 $ViaRadmin
  $remote=Join-Path $j.root $name
- $result=(Invoke-BoundedRm "if((Get-FileHash -LiteralPath '$remote').Hash -ne '$sha'){throw 'Cleanup differs'};& ([ScriptBlock]::Create([IO.File]::ReadAllText('$remote')))" 60)|ConvertFrom-Json
+ $result=(Invoke-BoundedRm "if((Get-FileHash -LiteralPath '$remote').Hash -ne '$sha'){throw 'Cleanup differs'};& ([ScriptBlock]::Create([IO.File]::ReadAllText('$remote')))" 60 -ViaRadmin:$ViaRadmin)|ConvertFrom-Json
  if($result.run -cne $j.run -or !$result.success){throw 'Cleanup unconfirmed; journal retained.'}
  $result|ConvertTo-Json -Compress|Set-Content -LiteralPath (Join-Path $workspace ('runtime/service-cycle-cleanup-'+$j.run+'.json')) -Encoding UTF8
  Remove-Item -LiteralPath $journal -Force

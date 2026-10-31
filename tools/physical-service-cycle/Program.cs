@@ -39,7 +39,7 @@ string image=Path.Combine(root,"Cita.PhysicalServiceCycle.exe");if(!string.Equal
 using var imageLease=Locked(image);using var planLease=Locked(Path.Combine(root,"plan.json"));
 if(planLease.Length>8192)throw new IOException("Plan too large.");
 var plan=JsonSerializer.Deserialize<Plan>(planLease,new JsonSerializerOptions{UnmappedMemberHandling=JsonUnmappedMemberHandling.Disallow})??throw new IOException("Plan missing.");
-if(plan.Schema!=1||plan.Run!=id||plan.UserSid is null||!System.Text.RegularExpressions.Regex.IsMatch(plan.UserSid,@"\AS-1-5-21-(\d+-){3}\d+\z")||plan.DeadlineUtc<=DateTimeOffset.UtcNow||plan.DeadlineUtc>DateTimeOffset.UtcNow.AddSeconds(120)||plan.AgentSha256!="69AADD1AD109B67FC43360E655CE01BF21D34635DFD793A281CAF03F797DE217"||plan.HelperSha256 is not {Length:64})throw new IOException("Cycle plan refused.");
+if(plan.Schema!=1||plan.Run!=id||plan.UserSid is null||!System.Text.RegularExpressions.Regex.IsMatch(plan.UserSid,@"\AS-1-5-21-(\d+-){3}\d+\z")||plan.DeadlineUtc<=DateTimeOffset.UtcNow||plan.DeadlineUtc>DateTimeOffset.UtcNow.AddSeconds(120)||plan.AgentSha256 is not {Length:64}||plan.ManifestSha256 is not {Length:64}||plan.HelperSha256 is not {Length:64})throw new IOException("Cycle plan refused.");
 string tokenSid=WindowsIdentity.GetCurrent().User?.Value??throw new UnauthorizedAccessException("Identity unavailable.");
 if(args[0]=="--controller"){if(tokenSid!="S-1-5-18"&&tokenSid!=plan.UserSid)throw new UnauthorizedAccessException("Controller identity refused.");}else if(args[0]=="--actor"){if(tokenSid!="S-1-5-18"&&tokenSid!=plan.UserSid)throw new UnauthorizedAccessException("Actor identity refused.");}else if(tokenSid!="S-1-5-18")throw new UnauthorizedAccessException("Watcher identity refused.");
 CheckMachine();if(!string.Equals(Hash(imageLease),plan.HelperSha256,StringComparison.Ordinal))throw new IOException("Helper hash differs.");
@@ -48,7 +48,7 @@ string appRoot=@"C:\Users\CITASTATION\AppData\Local\Programs\CITA Route\client";
 using(var config=Locked(Path.Combine(parent,"agent-config.json"))){using var doc=JsonDocument.Parse(config);if(doc.RootElement.GetProperty("UserSid").GetString()!=plan.UserSid||!string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(doc.RootElement.GetProperty("AppRoot").GetString()!)),appRoot,StringComparison.OrdinalIgnoreCase))throw new IOException("Owner or application root differs.");}
 string clientManifest=Path.Combine(appRoot,"manifest.json");for(string? p=clientManifest;p!=null;p=Path.GetDirectoryName(p)){if((File.GetAttributes(p)&FileAttributes.ReparsePoint)!=0)throw new IOException("Client manifest path link refused.");}
 using var manifestLease=new FileStream(clientManifest,FileMode.Open,FileAccess.Read,FileShare.Read);
-if(Hash(manifestLease)!="BC8E46DD1D8FE4E93F2F8E8B4273AF102F76D22D632C902786DA15F24703606A")throw new IOException("Initial client manifest differs.");
+if(Hash(manifestLease)!=plan.ManifestSha256)throw new IOException("Initial client manifest differs.");
 string failureRole=args[0][2..];
 string diagnosticStage="InitialReadiness";
 AppDomain.CurrentDomain.UnhandledException+=(_,eventArgs)=>{
@@ -188,7 +188,7 @@ static void Check(string path,bool ancestor=false)
 static void Save(string path,object value){string temp=path+"."+Guid.NewGuid().ToString("N")+".new";try{using(var f=new FileStream(temp,FileMode.CreateNew,FileAccess.Write,FileShare.Read)){JsonSerializer.Serialize(f,value);f.Flush(true);}File.Move(temp,path,true);}finally{if(File.Exists(temp))File.Delete(temp);}}
 static async Task Until(Func<bool> condition,TimeSpan limit){var timer=Stopwatch.StartNew();while(!condition()){if(timer.Elapsed>limit)throw new TimeoutException("Watcher readiness unconfirmed.");await Task.Delay(100);}}
 
-internal sealed record Plan(int Schema,string Run,string UserSid,string AgentSha256,string HelperSha256,DateTimeOffset DeadlineUtc);
+internal sealed record Plan(int Schema,string Run,string UserSid,string AgentSha256,string ManifestSha256,string HelperSha256,DateTimeOffset DeadlineUtc);
 internal static class RefusalEvidence
 {
     internal static string Classify(string? message,string intent)
