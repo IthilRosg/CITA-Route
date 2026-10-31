@@ -221,3 +221,5 @@ Installer test-кандидат также компилируется. Полн�
 разрешает удалить. Evidence: `runtime/managed-build-result-20261031.json`.
 
 31 октября: managed CI run `41219677919` прошёл на clean checkout и закрыл A02 для текущего кандидата. Тестовая несостыковка с `minimumRevision=0` исправлена; private-preview stage обновлён до `fd2490f6`, hashes и результаты записаны в `runtime/private-preview-candidate-092276ed.json`. Этап A теперь 5/5 (100%), общий счёт 7/44 (15,91%). Public release остаётся закрыт: физическая приёмка, installer integration и остальные пользовательские сценарии не пройдены.
+
+Installer integration для stage `fd2490f6` прошла на dedicated native isolated fixture после bounded retry чтения transaction journal. Кандидатный metadata теперь содержит `installerIntegration=PASS`; full G-секция приёмки остаётся открытой до расширенной матрицы.

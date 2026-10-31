@@ -65,6 +65,13 @@ function Uninstall([string]$Log){
     $process=Start-Process -FilePath $uninstaller -WindowStyle Hidden -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/LOG="'+(Join-Path $base $Log)+'"')) -PassThru -Wait
     return $process.ExitCode
 }
+function Read-JsonWithRetry([string]$Path,[int]$Attempts=60){
+    for($attempt=0;$attempt -lt $Attempts;$attempt++){
+        try{return [IO.File]::ReadAllText($Path)|ConvertFrom-Json}
+        catch [IO.IOException]{if($attempt -ge ($Attempts-1)){throw};Start-Sleep -Milliseconds 100}
+    }
+    throw "Unable to read JSON fixture: $Path"
+}
 function Test-InterruptedCopy {
     $marker=Join-Path $client 'runtime\fixture-copy-paused.pid'
     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
@@ -89,7 +96,7 @@ $smart=Join-Path $client $faultFile
         $actual.Kill();Assert ($actual.WaitForExit(5000)) 'Test Setup did not terminate.'
         $watch.Restart();$journal=Join-Path $client 'runtime\installation-transaction.json'
         do{
-            $state=[IO.File]::ReadAllText($journal)|ConvertFrom-Json
+            $state=Read-JsonWithRetry $journal
             if($state.phase -in @('RolledBack','RecoveryFailed')){break}
             Start-Sleep -Milliseconds 100
         }while($watch.Elapsed.TotalSeconds -lt 30)
