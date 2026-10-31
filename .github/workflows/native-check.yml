@@ -25,6 +25,9 @@ jobs:
           New-Item runtime -ItemType Directory -Force | Out-Null
           $env:CITA_DOTNET_EXE=(Get-Command dotnet).Source
           ./Build-Agent.ps1 *> runtime/native-managed-tests.log
+          $exitCode=$LASTEXITCODE
+          Get-Content runtime/native-managed-tests.log
+          if($exitCode){throw "Agent build/self-tests failed with exit code $exitCode"}
       - name: Compile native UI and updater
         shell: pwsh
         run: |
