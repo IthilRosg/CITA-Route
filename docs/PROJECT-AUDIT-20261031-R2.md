@@ -219,3 +219,5 @@ Installer test-кандидат также компилируется. Полн�
 полный набор host-интеграционных тестов. Локальная installer-интеграция пока
 не запускается из-за старых fixture-ключей в HKCU, которые текущая среда не
 разрешает удалить. Evidence: `runtime/managed-build-result-20261031.json`.
+
+31 октября: managed CI run `41219677919` прошёл на clean checkout и закрыл A02 для текущего кандидата. Тестовая несостыковка с `minimumRevision=0` исправлена; private-preview stage обновлён до `fd2490f6`, hashes и результаты записаны в `runtime/private-preview-candidate-092276ed.json`. Этап A теперь 5/5 (100%), общий счёт 7/44 (15,91%). Public release остаётся закрыт: физическая приёмка, installer integration и остальные пользовательские сценарии не пройдены.
