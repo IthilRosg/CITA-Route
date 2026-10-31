@@ -78,8 +78,16 @@ internal static class NativeZapretTests
             using var child=job.StartOwned(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"WindowsPowerShell","v1.0","powershell.exe"),
                 ["-NoProfile","-NonInteractive","-Command",command],root);
             using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            while(!File.Exists(evidence)&&!child.HasExited)await Task.Delay(20,deadline.Token);
-            Check(File.Exists(evidence)&&File.ReadAllText(evidence)==payload,"Owned process argument quoting did not round-trip.");
+            string? observed=null;
+            while(!child.HasExited&&!string.Equals(observed,payload,StringComparison.Ordinal))
+            {
+                if(File.Exists(evidence))
+                {
+                    try{observed=File.ReadAllText(evidence);}catch(IOException){/* writer still owns the handle; retry within the test budget */}
+                }
+                if(!string.Equals(observed,payload,StringComparison.Ordinal))await Task.Delay(20,deadline.Token);
+            }
+            Check(string.Equals(observed,payload,StringComparison.Ordinal),"Owned process argument quoting did not round-trip.");
             Check(job.ReadUsage().ActiveProcesses>0,"Child did not enter its job at creation.");
             job.Dispose();
             await child.WaitForExitAsync(deadline.Token);
