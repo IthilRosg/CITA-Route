@@ -35,6 +35,7 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
     internal void TraceCalibration(string phase,NativeObservedDestination observation)
     {try{CalibrationObserver?.Invoke(phase,observation,ProcessId,Environment.TickCount64);}catch{/* Diagnostics must not affect routing. */}}
     internal Task<bool> WaitForObservationsAsync(CancellationToken stop)=>observationWakeup.WaitAsync(stop);
+    internal void NotifyNetworkChanged()=>observationWakeup.Wake();
     readonly SemaphoreSlim gate=new(1);
     readonly CancellationTokenSource lifetime=new();
     NativeCoreBinding? binding;
@@ -45,11 +46,17 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
     int repairs,desired;
     int leaseChecks;
     internal int ProcessId=>binding?.ProcessId??0;
+    internal NativePathProbeResult? LastPathProbe=>binding?.LastPathProbe;
+    internal NativeConnectorCounts? ConnectorCounts
+    {get{var selected=Volatile.Read(ref binding);var counts=selected?.ConnectorCounts;return ReferenceEquals(selected,Volatile.Read(ref binding))?counts:null;}}
     internal int Repairs=>Volatile.Read(ref repairs);
     internal bool SupportsPolicy=>binding?.SupportsPolicy==true;
     internal bool SupportsDirectScopes=>binding?.SupportsDirectScopes==true;
+    internal bool SupportsAutomaticProof=>binding?.SupportsAutomaticProof==true;
+    internal bool SupportsForcedPolicy=>binding?.SupportsForcedPolicy==true;
     internal int NativeDnsProtocol=>binding?.NativeDnsProtocol??0;
     internal long FakeIpVpnDials=>binding?.FakeIpVpnDials??0;
+    internal long FakeIpVpnAttempts=>binding?.FakeIpVpnAttempts??0;
     internal long FakeIpRefused=>binding?.FakeIpRefused??0;
     internal async Task<bool> DirectScopeAsync(NativeDirectPermission permission,bool enable,ulong revision,int expectedPid,CancellationToken stop)
     {
@@ -59,18 +66,84 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
     }
     internal long PolicyDirectDials=>binding?.PolicyDirectDials??0;
     internal long PolicyBlockedDials=>binding?.PolicyBlockedDials??0;
+    internal bool IsOwnedConnectorReady(int expectedPid,string epoch)
+    {var selected=Volatile.Read(ref binding);return selected!=null&&selected.ProcessId==expectedPid&&selected.IsOwnedConnectorReady(epoch)&&ReferenceEquals(selected,Volatile.Read(ref binding));}
     internal string? StartupIssue{get;private set;}
     internal NativeObservedDestination[] Observations=>binding?.Observations??[];
+    internal object? ValidationSummary
+    {
+        get
+        {
+            var v=binding?.LastValidation;if(v==null)return null;
+            static string Safe(string? value,params string[] allowed)=>value==null?"":allowed.Contains(value,StringComparer.Ordinal)?value:"Other";
+            return new{httpsAttempts=v.HttpsAttempts,exitMatched=v.ExitMatched,httpsFailure=Safe(v.FailureCode,"","Closed","Truncated","Timeout","ConnectionReset","ConnectionRefused","NetworkUnreachable","HttpStatus","ResponseTooLarge","CertificateRejected","TlsRecordRejected","ProxyPolicyRefused","ProxyRefused","ProxyIdentityRefused","Canceled"),httpsPhase=Safe(v.FailurePhase,"","ProxyDial","TlsHandshake","ResponseHeaders","ResponseRead","ResponseBodyOrStatus"),udpVerified=v.UdpVerified,udpAttempts=v.UdpAttempts,udpFailure=Safe(v.UdpFailure,"","ReadTimeout","WriteError","ReadError","InvalidFrame","Oversize","Deadline","QueryCreation","TooManyStaleDNSResponses"),udpStage=Safe(v.UdpStage,"","UdpAssociation","UdpOpen","UdpQueries","VerifiedUdpAssociationLifecycle"),udpQueries=v.UdpQueries,udpWrongSourceNoReply=v.UdpWrongSourceNoReply,udpInvalidFramesNoReply=v.UdpInvalidFramesNoReply,udpNoReplyAfterClose=v.UdpNoReplyAfterClose};
+        }
+    }
     internal async Task<bool> ProbeDirectAsync(NativeObservedDestination observed,int expectedPid,CancellationToken stop)
     {
         await gate.WaitAsync(stop);
         try{if(binding==null||binding.ProcessId!=expectedPid||State!="Active")return false;return await binding.ProbeDirectAsync(observed,stop);}
         finally{gate.Release();}
     }
-    internal async Task PublishPolicyAsync(ulong revision,string document,string guardDigest,int expectedPid,CancellationToken stop)
+#if CITA_DPI_LAB
+    internal async Task<bool> ProbeDpiForLabAsync(NativeObservedDestination observed,int expectedPid,CancellationToken stop)
     {
         await gate.WaitAsync(stop);
-        try{if(binding==null||binding.ProcessId!=expectedPid||State is not ("Active" or "TransportDegraded"))throw new InvalidOperationException("Native policy generation changed.");await binding.PublishPolicyAsync(revision,document,guardDigest,stop);}
+        try{if(binding==null||binding.ProcessId!=expectedPid||State!="Active")return false;return await binding.ProbeDpiForLabAsync(observed,stop);}
+        finally{gate.Release();}
+    }
+#endif
+    internal async Task PublishPolicyAsync(ulong revision,string document,string guardDigest,int expectedPid,CancellationToken stop,Action? beforeWrite=null,ulong forcedIntentRevision=0)
+    {
+        await gate.WaitAsync(stop);
+        try{if(binding==null||binding.ProcessId!=expectedPid||State is not ("Active" or "TransportDegraded"))throw new InvalidOperationException("Native policy generation changed.");await binding.PublishPolicyAsync(revision,document,guardDigest,stop,beforeWrite,forcedIntentRevision);}
+        finally{gate.Release();}
+    }
+    // Written only after successful binding disposal while holding gate. A late
+    // policy failure from this process cannot affect a replacement binding.
+    int retiredPolicyPid;
+    internal async Task FailClosedPolicyAsync(int expectedPid,Func<CancellationToken,Task> closeGuard,CancellationToken stop)
+    {
+        await gate.WaitAsync(stop);
+        try
+        {
+            if(expectedPid>0&&expectedPid==retiredPolicyPid&&(binding==null||binding.ProcessId!=expectedPid))return;
+            if(expectedPid<=0||binding==null||binding.ProcessId!=expectedPid)throw new IOException("Policy cleanup core identity changed.");
+            // A dead owned core cannot acknowledge Close. Confirm retirement
+            // of its connector/probes/process, then let Monitor repair it while
+            // retaining desired intent and the independent guard. Failed
+            // disposal still propagates as unconfirmed cleanup.
+            if(binding.ProcessExitConfirmed)
+            {
+                await binding.DisposeAsync();retiredPolicyPid=expectedPid;binding=null;State="Recovering";return;
+            }
+            Volatile.Write(ref desired,0);CancelRepair();Exception? failure=null;
+            try{await closeGuard(stop);}catch(Exception error){failure=error;}
+            try{await binding.CloseAsync(stop);}catch(Exception error){failure=failure==null?error:new AggregateException(failure,error);}
+            backend=null;spec=default;ready=default;Volatile.Write(ref transportHealth,null);
+            // Deliberate Stop remains Closed. A policy failure is distinct so
+            // the service can recover only while the user's intent is active.
+            State=failure==null?"PolicyFailClosed":"PolicyRecoveryUnconfirmed";
+            if(failure!=null)throw new IOException("Policy fail-closed cleanup unconfirmed.",failure);
+        }
+        finally{gate.Release();}
+    }
+    // This does not authorize any route. The session must provide a trusted,
+    // generation-fenced policy predicate and guarded connection factory.
+    internal async Task StartOwnedConnectorAsync(int expectedPid,string epoch,Func<bool> current,Func<NativeConnectorRequest,bool> authorized,
+        Func<NativeConnectorRequest,CancellationToken,Task<INativeConnectorConnection>> connect,CancellationToken sessionStop,CancellationToken stop,NativeConnectorAdmission? admission=null,bool replace=false)
+    {
+        await gate.WaitAsync(stop);
+        try
+        {
+            if(binding==null||expectedPid<=0||binding.ProcessId!=expectedPid||State!="Active"||!current())throw new InvalidOperationException("Native connector generation changed.");
+            // Neither an active process nor a live named-pipe listener proves
+            // that the independently owned protection is still present.
+            if(!await guard(stop))throw new IOException("Native connector guard unavailable.");
+            stop.ThrowIfCancellationRequested();
+            if(binding==null||binding.ProcessId!=expectedPid||State!="Active"||!current())throw new InvalidOperationException("Native connector generation changed during guard verification.");
+            await binding.StartOwnedConnectorAsync(epoch,current,authorized,connect,sessionStop,stop,admission,replace);
+        }
         finally{gate.Release();}
     }
     string state="Stopped";
@@ -208,7 +281,7 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
                     }
                     catch(OperationCanceledException)when(lifetime.IsCancellationRequested){break;}
                     catch{State="Recovering";}
-                    if(binding!=null){await binding.DisposeAsync();binding=null;}
+                    if(binding!=null){int retiringPid=binding.ProcessId;await binding.DisposeAsync();retiredPolicyPid=retiringPid;binding=null;}
                     // A newer Stop/profile intent can arrive while disposal is
                     // awaited. Keep its controller alive rather than declaring
                     // this deliberate cancellation an exhausted crash loop.
@@ -220,13 +293,20 @@ internal sealed class NativeCoreRecovery : INativeAwgBinding,IAsyncDisposable
                     using var repair=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);repair.CancelAfter(TimeSpan.FromSeconds(35));
                     Volatile.Write(ref repairAttempt,repair);
                     try{if(beforeRepair!=null)await beforeRepair(repair.Token);await Create(repair.Token);}
-                    catch{if(binding!=null){await binding.DisposeAsync();binding=null;}State="Closed";if(Volatile.Read(ref desired)!=0)break;}
+                    catch
+                    {
+                        try{if(binding!=null){await binding.DisposeAsync();binding=null;}}
+                        catch{State="CoreRecoveryUnconfirmed";break;}
+                        State=Volatile.Read(ref desired)==0?"Closed":"CoreRepairFailed";
+                        if(Volatile.Read(ref desired)!=0)break;
+                    }
                     finally{Interlocked.CompareExchange(ref repairAttempt,null,repair);}
                 }
                 finally{gate.Release();}
             }
         }
         catch(OperationCanceledException)when(lifetime.IsCancellationRequested){}
+        catch{State="CoreRecoveryUnconfirmed";}
     }
     public async ValueTask DisposeAsync()
     {

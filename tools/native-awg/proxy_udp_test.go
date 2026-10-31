@@ -127,6 +127,7 @@ func TestChildWideUDPBudgetCannotMultiplyAcrossAssociations(t *testing.T) {
 }
 
 func TestUDPRelayPinFlowLimitAndTcpLifetime(t *testing.T) {
+	inputBefore, rejectedBefore, writesBefore, repliesBefore, limitBefore := udpRelayInput.Load(), udpRelayRejected.Load(), udpTunnelWrites.Load(), udpRelayReplies.Load(), udpFlowLimitDrops.Load()
 	control, peer := net.Pipe()
 	defer peer.Close()
 	relay := newTestPacketConn()
@@ -192,11 +193,18 @@ func TestUDPRelayPinFlowLimitAndTcpLifetime(t *testing.T) {
 	if calls.Load() != 8 {
 		t.Fatal("Flow cap bypassed")
 	}
+	until := time.Now().Add(time.Second)
+	for udpRelayReplies.Load()-repliesBefore < 10 && time.Now().Before(until) {
+		time.Sleep(time.Millisecond)
+	}
 	peer.Close()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("TCP EOF did not close UDP association")
+	}
+	if udpRelayInput.Load()-inputBefore != 14 || udpRelayRejected.Load()-rejectedBefore != 3 || udpTunnelWrites.Load()-writesBefore != 10 || udpRelayReplies.Load()-repliesBefore != 10 || udpFlowLimitDrops.Load()-limitBefore != 1 {
+		t.Fatalf("Relay diagnostics deltas input=%d rejected=%d writes=%d replies=%d limit=%d", udpRelayInput.Load()-inputBefore, udpRelayRejected.Load()-rejectedBefore, udpTunnelWrites.Load()-writesBefore, udpRelayReplies.Load()-repliesBefore, udpFlowLimitDrops.Load()-limitBefore)
 	}
 	gate.Lock()
 	defer gate.Unlock()

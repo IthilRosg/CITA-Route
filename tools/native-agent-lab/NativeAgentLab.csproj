@@ -2,7 +2,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
-    <AssemblyName>Cita.NativeAgentLab</AssemblyName><NuGetAudit>false</NuGetAudit>
+    <AssemblyName>Cita.NativeAgentLab</AssemblyName><NuGetAudit>false</NuGetAudit><DefineConstants>$(DefineConstants);CITA_DPI_LAB</DefineConstants>
   </PropertyGroup>
   <ItemGroup><Compile Include="../../agent/NativeAwgBackend.cs" Link="NativeAwgBackend.cs" /><Compile Include="../../agent/NativeAwgProfiles.cs" Link="NativeAwgProfiles.cs" /><Compile Include="../../agent/NativeCoreBinding.cs" Link="NativeCoreBinding.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../agent/NativeCoreRecovery.cs" Link="NativeCoreRecovery.cs" /></ItemGroup>
@@ -13,6 +13,8 @@
   <ItemGroup><Compile Include="../../agent/NativeProcessJob.cs" Link="NativeProcessJob.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../agent/NativeGuardedSession.cs" Link="NativeGuardedSession.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../agent/NativeProfileImport.cs" Link="NativeProfileImport.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../agent/NativeProfileImportTests.cs" Link="NativeProfileImportTests.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../agent/NativeRoutePolicyPublisher.cs" Link="NativeRoutePolicyPublisher.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../agent/NativeBootIdentity.cs" Link="NativeBootIdentity.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../agent/NativeDecisionTrace.cs" Link="NativeDecisionTrace.cs" /></ItemGroup>
 </Project>

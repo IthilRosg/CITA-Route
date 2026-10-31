@@ -1,3 +1,4 @@
+using System.Text.Json;
 namespace RoutePilot.Agent;
 
 internal static class NativeProfileImportTests
@@ -5,7 +6,7 @@ internal static class NativeProfileImportTests
     internal static async Task Run()
     {
         void Check(bool value,string message){if(!value)throw new Exception(message);}
-        foreach(string code in new[]{"NativeHttpsUnavailable","NativeEgressMismatch","NativeUdpUnavailable"})Check(NativeCandidateValidationError.Code(NativeCandidateValidationError.Create(code))==code,"Safe validation diagnostic code must be retained.");
+        foreach(string code in new[]{"NativeHttpsUnavailable","NativeEgressMismatch","NativeUdpUnavailable","NativeUdpTimeout"})Check(NativeCandidateValidationError.Code(NativeCandidateValidationError.Create(code))==code,"Safe validation diagnostic code must be retained.");
         try{_ = NativeCandidateValidationError.Create("untrusted");throw new Exception("Untrusted validation code accepted.");}catch(ArgumentException){}
         var malformed=new InvalidDataException();malformed.Data["NativeValidationCode"]="untrusted";Check(NativeCandidateValidationError.Code(malformed)=="InvalidDataException","Untrusted diagnostic code must not escape.");
         var original=new NativeProfileImport.Input("[Interface]\r\nAddress = 10.0.0.2/32\r\n[Peer]\r\nAllowedIPs = 0.0.0.0/0\r\n","fixture","192.0.2.2:1234",new[]{"0.0.0.0/0"},1400);
@@ -21,5 +22,12 @@ internal static class NativeProfileImportTests
         calls=0;try{await NativeProfileImport.WithMtuFallback(original with{Mtu=1200},_=>{calls++;return Task.FromException<string>(new NativeProfileImport.HttpsProbeFailure());},default);throw new Exception("A lower MTU must not be increased.");}catch(NativeProfileImport.HttpsProbeFailure){}Check(calls==1,"Do not retry a profile with an already lower MTU.");
         calls=0;try{await NativeProfileImport.WithMtuFallback(original,_=>{calls++;return Task.FromException<string>(new IOException("UDP fixture"));},default);throw new Exception("Other errors must not change MTU.");}catch(IOException){}Check(calls==1,"UDP or setup errors must not trigger MTU fallback.");
         using var cancelled=new CancellationTokenSource();cancelled.Cancel();calls=0;try{await NativeProfileImport.WithMtuFallback(original,_=>{calls++;return Task.FromException<string>(new NativeProfileImport.HttpsProbeFailure());},cancelled.Token);throw new Exception("Cancelled checks must not retry.");}catch(NativeProfileImport.HttpsProbeFailure){}Check(calls==1,"Cancellation must prevent a retry.");
+        JsonElement Reply(string stage,string reason)=>JsonSerializer.SerializeToElement(new{success=false,stage,dnsFailure=reason});
+        JsonElement Owner(int epoch)=>JsonSerializer.SerializeToElement(new{state="RunningUnverified",epoch});
+        calls=0;int snapshots=0;await NativeProfileImport.ProbeUdpWithRetry(_=>{calls++;return calls==1?Task.FromException(new NativeProfileImport.ProbeFailure(Reply("UdpQueries","ReadTimeout"))):Task.CompletedTask;},_=>{snapshots++;return Task.FromResult(Owner(1));},default);
+        Check(calls==2&&snapshots==2,"A UDP timeout must retry once in the same owner epoch.");
+        calls=0;snapshots=0;try{await NativeProfileImport.ProbeUdpWithRetry(_=>{calls++;return Task.FromException(new NativeProfileImport.ProbeFailure(Reply("UdpQueries","ReadTimeout")));},_=>Task.FromResult(Owner(++snapshots)),default);throw new Exception("Changed epoch must stop UDP retry.");}catch(NativeProfileImport.ProbeFailure){}Check(calls==1,"Changed epoch must not retry.");
+        calls=0;try{await NativeProfileImport.ProbeUdpWithRetry(_=>{calls++;return Task.FromException(new NativeProfileImport.ProbeFailure(Reply("UdpQueries","InvalidFrame")));},_=>Task.FromResult(Owner(1)),default);throw new Exception("Protocol errors must not retry.");}catch(NativeProfileImport.ProbeFailure){}Check(calls==1,"Protocol errors must fail closed.");
+        calls=0;try{await NativeProfileImport.ProbeUdpWithRetry(_=>{calls++;return Task.FromException(new NativeProfileImport.ProbeFailure(Reply("UdpQueries","ReadTimeout")));},_=>Task.FromResult(Owner(1)),cancelled.Token);throw new Exception("Cancellation must stop UDP retry.");}catch(NativeProfileImport.ProbeFailure){}Check(calls==1,"Cancellation must prevent UDP retry.");
     }
 }

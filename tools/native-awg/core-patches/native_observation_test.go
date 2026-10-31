@@ -1,5 +1,20 @@
 package socks
-import("testing";"fmt";"context";"net";"time")
+import("testing";"fmt";"context";"net";"net/netip";"time";"crypto/tls";"crypto/x509";"errors";"strings";"io")
+func TestCitaNativePolicyProbeResponseBudget(t *testing.T){
+ response:=func(n int)string{return "HTTP/1.1 200 OK\r\nX-Fixture: "+strings.Repeat("a",n)+"\r\nContent-Length: 4\r\n\r\nbody"}
+ r,e:=nativeProbeReadResponse(strings.NewReader(response(13000)));if e!=nil{t.Fatalf("valid long response rejected: %v",e)}
+ defer r.Body.Close();body,e:=io.ReadAll(r.Body);if e!=nil||string(body)!="body"{t.Fatal("valid long response body lost")}
+ if r,e:=nativeProbeReadResponse(strings.NewReader(response(70000)));e==nil{r.Body.Close();t.Fatal("oversized response headers accepted")}
+}
+func TestCitaNativePolicyProbeResultClassification(t *testing.T){
+ cases:=[]struct{stage string;err error;want string}{
+  {"dial",context.DeadlineExceeded,"dial-timeout"},
+  {"tls",&tls.CertificateVerificationError{Err:x509.UnknownAuthorityError{}},"tls-certificate"},
+  {"http-body",context.DeadlineExceeded,"http-body-timeout"},
+  {"dial",errors.New("private data must not appear"),"dial-failed"},
+ }
+ for _,c:=range cases{if got:=nativeProbeFailure(c.stage,c.err);got!=c.want{t.Fatalf("got %q, want %q",got,c.want)}}
+}
 func TestCitaNativePolicyProbeSharedDeadline(t *testing.T){
  a,b:=net.Pipe();defer a.Close();defer b.Close()
  if nativeProbeSetDeadline(context.Background(),a)==nil{t.Fatal("unbounded probe accepted")}
@@ -23,7 +38,7 @@ func TestCitaNativePolicyFailureInvalidatesOnlyAffectedDomain(t *testing.T){
  nativePolicyKey("example.com","","tcp",443):{Domain:"example.com",Route:"direct"},
  nativePolicyKey("other.example","","tcp",443):{Domain:"other.example",Route:"direct"},
  }}}
- previous:=h.policy.rules;h.invalidatePolicy("EXAMPLE.COM","","tcp",443)
+ previous:=h.policy.rules;h.invalidatePolicy("EXAMPLE.COM","","","tcp",443,netip.MustParseAddr("1.1.1.1"),h.policy.revision)
  if len(h.policy.rules)!=1||len(previous)!=2{t.Fatal("invalidation must preserve unrelated routes and immutable published tables")}
 }
 func TestCitaNativePolicyObservationRotation(t *testing.T){

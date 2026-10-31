@@ -78,7 +78,8 @@ public sealed class AgentConfig
     public int EndpointPort{get;set;}
 }
 public sealed record OwnedRoute(string Prefix,int InterfaceIndex,string Gateway,int Metric);
-public sealed record AgentRequest(string Command,string? RunId=null,NativeProfileImportRequest? Profile=null,NativePolicyRequest? Policy=null);
+public sealed record NativeForcedIntentChange(ulong ExpectedRevision,NativeForcedIntentRule[] Rules);
+public sealed record AgentRequest(string Command,string? RunId=null,NativeProfileImportRequest? Profile=null,NativePolicyRequest? Policy=null,string? ConnectionId=null,NativeForcedIntentChange? Forced=null);
 public sealed record AgentReply(bool Success,string Message,RunState? State=null,System.Text.Json.JsonElement? Native=null);
 
 public sealed class RunStore

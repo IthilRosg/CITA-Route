@@ -22,7 +22,9 @@ public partial class MainWindow
         try
         {
             Notice("Собираем диагностику. Подключение продолжает работать.");
-            await Task.Run(()=>Cita.Diagnostics.SessionEvidence.Export(_root,temporary));
+            System.Text.Json.JsonElement? native=null;
+            if(ClientEdition.NativeOnly)try{var reply=await _nativeClient.Command("status");if(reply.Success&&reply.Native!=null)native=System.Text.Json.JsonSerializer.SerializeToElement(reply.Native);}catch(Exception ex)when(ex is IOException or UnauthorizedAccessException or OperationCanceledException or System.Text.Json.JsonException){}
+            await Task.Run(()=>Cita.Diagnostics.SessionEvidence.Export(_root,temporary,nativeEdition:ClientEdition.NativeOnly,nativeSnapshot:native));
             File.Move(temporary,picker.FileName,true);
             Notice("Диагностика сохранена: "+picker.FileName);Event("Диагностика сохранена пользователем.");
         }

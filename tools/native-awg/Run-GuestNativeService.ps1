@@ -1,5 +1,9 @@
-param([switch]$Bootstrap,[switch]$Reboot,[switch]$Network,[switch]$Performance,[ValidateRange(12,90)][int]$PerformanceSeconds=12,[switch]$Dns)
+param([switch]$Bootstrap,[switch]$Reboot,[switch]$Network,[switch]$Performance,[ValidateRange(12,90)][int]$PerformanceSeconds=12,[switch]$Dns,[switch]$Voice,[switch]$VoiceProbe,[switch]$VoiceTcpOnly)
 $ErrorActionPreference='Stop'
+if($Dns -and -not $Bootstrap){throw 'DNS acceptance requires -Bootstrap; the seed fixture disables native DNS.'}
+if($Voice -and ($Network -or $Performance)){throw 'Voice workload runs separately from network/performance scenarios.'}
+if($Voice -and $VoiceProbe){throw 'Voice probe and workload must run separately.'}
+if($VoiceTcpOnly -and -not $Voice){throw 'VoiceTcpOnly requires -Voice.'}
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){throw 'Wrong isolated guest'}
 $root='C:\CitaLab\NativeAwg';$run=[guid]::NewGuid().ToString('N');$folder=Join-Path ([Environment]::GetFolderPath('ProgramFiles')) ('CitaNativeService-'+$run);$native=Join-Path $folder 'native';$restore=Join-Path $root ('private\restore-service-'+$run+'.ps1');$report=@{schema=1;success=$false;startedUtc=[datetime]::UtcNow.ToString('o');scope='Actual RoutePilotRescue SCM service with protected native snapshot; isolated W11'};$rescue=$null;$changed=$false;$created=$false;$old=$null;$phase='prepare'
 function Rpc([string]$command,[string]$id='',[object]$profile=$null){
@@ -43,7 +47,7 @@ try{
  $undo=@'
 param([switch]$Delayed)
 $ErrorActionPreference='Stop'
-if($Delayed){Start-Sleep -Seconds 360}
+if($Delayed){Start-Sleep -Seconds __DELAY__}
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83'){exit 1}
 $folder='__FOLDER__';$oldPath='__OLD__'
 $service=Get-CimInstance Win32_Service -Filter "Name='RoutePilotRescue'"
@@ -56,7 +60,7 @@ if($service.PathName.Contains($folder)){
  if(__RUNNING__){Start-Service RoutePilotRescue}
 }
 '@
- $undo=$undo.Replace('__FOLDER__',$escapedFolder).Replace('__OLD__',$escapedOld).Replace('__RUNNING__',$wasRunning);[IO.File]::WriteAllText($restore,$undo,[Text.UTF8Encoding]::new($true))
+ $undo=$undo.Replace('__FOLDER__',$escapedFolder).Replace('__OLD__',$escapedOld).Replace('__RUNNING__',$wasRunning).Replace('__DELAY__',$(if($Voice){'600'}else{'360'}));[IO.File]::WriteAllText($restore,$undo,[Text.UTF8Encoding]::new($true))
  $rescue=Start-Process powershell.exe -WindowStyle Hidden -ArgumentList ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$restore+'" -Delayed') -PassThru
  Stop-Service RoutePilotRescue -Force;(Get-Service RoutePilotRescue).WaitForStatus('Stopped',[timespan]::FromSeconds(20))
  $newPath='"'+(Join-Path $folder 'RoutePilot.Agent.exe')+'" --service';$result=Invoke-CimMethod -InputObject $old -MethodName Change -Arguments @{PathName=$newPath};if($result.ReturnValue -ne 0){throw 'Candidate service path failed'};$changed=$true
@@ -82,6 +86,19 @@ if($service.PathName.Contains($folder)){
   $restored=Wait-Native 'Disconnected';if($restored.profileId -ne $selected.profileId){throw 'Component rollback lost profile'};$report.componentRollbackVerified=$true
  }
  $phase='connect';$null=Rpc 'native-start';$active=Wait-Native 'Connected';$report.firstTraffic=Probe-Tun
+ if($VoiceProbe){
+  $phase='candidate-voice-egress';$candidateIp=[string](Invoke-RestMethod -Uri 'https://api.ipify.org' -TimeoutSec 12);$parsedIp=$null
+  if(-not [Net.IPAddress]::TryParse($candidateIp,[ref]$parsedIp) -or $parsedIp.AddressFamily -ne 'InterNetwork'){throw 'Candidate IPv4 egress unavailable'}
+  [IO.File]::WriteAllText('C:\CitaLab\voice-vpn-ip.txt',$parsedIp.ToString());$report.candidateEgressCaptured=$true
+ }
+ if($Voice){
+  $phase='candidate-voice-load';$voiceRun=[guid]::NewGuid().ToString('N')
+  & 'C:\CitaLab\VoiceReliable\Run-GuestCandidateVoice.ps1' -Run $voiceRun -TcpOnly:$VoiceTcpOnly
+  $voiceResult=Get-Content -LiteralPath ('C:\CitaLab\VoiceReliable\candidate-result-'+$voiceRun+'.json') -Raw|ConvertFrom-Json
+  $report.voice=$voiceResult
+  $current=(Rpc 'native-status').Native
+  if(-not $voiceResult.success -or -not $voiceResult.firewallRemoved -or $current.phase -ne 'Connected' -or $current.operation -ne $active.operation -or $current.generation -ne $active.generation){throw 'Candidate voice measurement failed or session changed'}
+ }
  $phase='transport-health-evidence'
  for($proof=0;$proof -lt 20;$proof++){$current=(Rpc 'native-status').Native;$health=$current.runtime.transportHealth;if($health.Epoch -gt 0 -and $health.Https -is [bool] -and $health.Udp -is [bool] -and $health.CompletedUnixMilliseconds -gt 0){break};Start-Sleep -Milliseconds 200}
  if($current.operation -ne $active.operation -or $current.generation -ne $active.generation -or $health.Epoch -le 0 -or $health.Https -isnot [bool] -or $health.Udp -isnot [bool] -or $health.CompletedUnixMilliseconds -le 0){throw 'Service transport health evidence unavailable or stale operation'}
@@ -145,8 +162,8 @@ if($service.PathName.Contains($folder)){
   Stop-Process -Id $PID -Force
  }
  if(Get-Process native-owner,native-core -ErrorAction SilentlyContinue){throw 'Native children remain after disconnect'}
- $report.ownerSha256=(Get-FileHash (Join-Path $native 'native-owner.exe')).Hash;$report.coreSha256=(Get-FileHash (Join-Path $native 'native-core.exe')).Hash;$report.agentSha256=(Get-FileHash (Join-Path $folder 'RoutePilot.Agent.dll')).Hash;$report.guardSha256=(Get-FileHash (Join-Path $native 'native-guard.exe')).Hash;$report.success=$true
-}catch{$report.errorType=$_.Exception.GetType().Name;$report.failedPhase=$phase;$report.failedLine=$_.InvocationInfo.ScriptLineNumber;$report.errorId=$_.FullyQualifiedErrorId;try{$report.failedRuntime=(Rpc 'native-status').Native.runtime}catch{}}
+ $report.ownerSha256=(Get-FileHash (Join-Path $native 'native-owner.exe')).Hash;$report.coreSha256=(Get-FileHash (Join-Path $native 'native-core.exe')).Hash;$report.agentSha256=(Get-FileHash (Join-Path $folder 'RoutePilot.Agent.dll')).Hash;$report.guardSha256=(Get-FileHash (Join-Path $native 'native-guard.exe')).Hash;$report.labAgentSha256=(Get-FileHash (Join-Path $root 'AgentBackend\Cita.NativeAgentLab.dll')).Hash;$report.success=$true
+}catch{$report.errorType=$_.Exception.GetType().Name;$baseError=$_.Exception.GetBaseException();$report.baseErrorType=$baseError.GetType().Name;$report.baseErrorHResult=$baseError.HResult;$report.installLine=if($_.ScriptStackTrace -match 'Install-NativeComponents\.ps1: line (\d+)'){[int]$Matches[1]}else{0};$report.failedPhase=$phase;$report.failedLine=$_.InvocationInfo.ScriptLineNumber;$report.errorId=$_.FullyQualifiedErrorId;try{$report.failedRuntime=(Rpc 'native-status').Native.runtime}catch{}}
 finally{
  if($changed){try{& $restore;$current=Get-CimInstance Win32_Service -Filter "Name='RoutePilotRescue'";$report.serviceRestored=[bool]($current.PathName -eq $oldPath)}catch{$report.serviceRestored=$false;$report.restoreErrorType=$_.Exception.GetType().Name;$report.success=$false}}
  else{$report.serviceRestored=$true}

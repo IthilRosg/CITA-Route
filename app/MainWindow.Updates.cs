@@ -36,6 +36,12 @@ public partial class MainWindow
         InstallUpdateButton.Visibility=_updates.Prepared!=null?Visibility.Visible:Visibility.Collapsed;
         DownloadUpdateButton.IsEnabled=!_updateDownloading&&!_updateInstalling;
         InstallUpdateButton.IsEnabled=!_updateDownloading&&!_updateInstalling;
+        if(UseNativeBackend&&_updates.Prepared!=null)
+        {
+            InstallUpdateButton.IsEnabled=false;
+            UpdateStatusLabel.Text="Пакет загружен. Установка обновлений встроенного клиента пока недоступна: нужен совместимый установщик.";
+            return;
+        }
         if(_updates.Phase=="Failed")UpdateStatusLabel.Text="Обновление отложено: "+Backend.Redact(_updates.Error);
         else if(_updates.Phase=="WaitingForNetwork")UpdateStatusLabel.Text="Пакет готов. Повторная проверка GitHub ожидает доступ к интернету.";
         else if(_updates.Prepared!=null && _updates.Phase is "Verified" or "WaitingForDisconnect")
@@ -100,6 +106,10 @@ public partial class MainWindow
     }
     private async Task TryAutoInstallAsync()
     {
+        // The legacy updater cannot prove retirement of the native tunnel,
+        // its guard and workers. Never infer that it is stopped from the old
+        // WireSock session file.
+        if(UseNativeBackend)return;
         if(_render||_exiting||_updatePromptOpen||_updates.DeferredUntilUtc>DateTime.UtcNow||_updates.NextRetryUtc>DateTime.UtcNow||!_preferences.AutoInstallUpdates||_updates.Prepared==null||_updates.Phase is not ("Verified" or "WaitingForDisconnect" or "WaitingForNetwork") || (DateTime.UtcNow-_lastAutoAttempt).TotalSeconds<10)return;
         _lastAutoAttempt=DateTime.UtcNow;
         await InstallUpdateAsync(false);
@@ -107,6 +117,12 @@ public partial class MainWindow
     private async void InstallUpdate_Click(object sender,RoutedEventArgs e)=>await InstallUpdateAsync(true);
     private async Task InstallUpdateAsync(bool manual)
     {
+        if(UseNativeBackend)
+        {
+            UpdateStatusLabel.Text="Установка обновлений встроенного клиента пока недоступна: нужен совместимый установщик.";
+            if(manual)Notice(UpdateStatusLabel.Text,true);
+            return;
+        }
         if(_busy||_updateDownloading||_updateInstalling||_updates.Prepared==null||_exiting)return;
         if(manual){_updates.DeferredUntilUtc=DateTime.MinValue;_updates.NextRetryUtc=DateTime.MinValue;_updates.NetworkRetries=0;}
         RefreshRescueState();

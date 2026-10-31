@@ -37,6 +37,7 @@ type bindingCommand struct {
  Observation *nativeObservation
  Scope *nativeDirectScope
  Revision uint64
+ Connector *nativeConnectorConfig
 }
 type bindingReply struct {
 	Stage             string `json:"stage"`
@@ -50,17 +51,23 @@ type bindingReply struct {
 	UDPClosed         int    `json:"udpClosed"`
  PolicyRevision uint64 `json:"policyRevision"`
  PolicyDigest string `json:"policyDigest,omitempty"`
+ ForcedIntentRevision uint64 `json:"forcedIntentRevision,omitempty"`
  PolicyProtocol int `json:"policyProtocol,omitempty"`
  PolicyDirectDials uint64 `json:"policyDirectDials"`
  PolicyBlockedDials uint64 `json:"policyBlockedDials"`
  Observations []nativeObservation `json:"observations,omitempty"`
  ProbeReachable bool `json:"probeReachable,omitempty"`
+ ProbeResult string `json:"probeResult,omitempty"`
  DirectScopeProtocol int `json:"directScopeProtocol,omitempty"`
  NativeDnsProtocol int `json:"nativeDnsProtocol,omitempty"`
  FakeIpVpnDials uint64 `json:"fakeIpVpnDials"`
+ FakeIpVpnAttempts uint64 `json:"fakeIpVpnAttempts"`
  FakeIpRefused uint64 `json:"fakeIpRefused"`
  Scope *nativeDirectScope `json:"scope,omitempty"`
  ScopeRetired bool `json:"scopeRetired,omitempty"`
+ ZapretConnectorProtocol int `json:"zapretConnectorProtocol,omitempty"`
+ AutomaticProofProtocol int `json:"automaticProofProtocol,omitempty"`
+ ForcedPolicyProtocol int `json:"forcedPolicyProtocol,omitempty"`
 }
 type nativeBinding struct {
 	mu      sync.Mutex
@@ -142,15 +149,20 @@ type CitaNativeBinding struct {
 	tokens         map[[32]byte]bool
 	makeBinding    func(bindingCommand) (*nativeBinding, error)
  policy nativePolicyTable
+ retiredCalibrations map[string]time.Time
+ calibrationOverflow bool
+ calibrationWallHighWater int64
  policyDirectDials atomic.Uint64
  policyBlockedDials atomic.Uint64
  fakeIpVpnDials atomic.Uint64
+ fakeIpVpnAttempts atomic.Uint64
  fakeIpRefused atomic.Uint64
  outbounds adapter.OutboundManager
  observations map[string]nativeObservation
  observationOrder []string
  directEnabled map[string]bool
  directUses map[string]uint64
+ connector *nativeConnectorConfig
 	once           sync.Once
 	closeOnce      sync.Once
 }
@@ -185,21 +197,25 @@ func (h *CitaNativeBinding) create(c bindingCommand) (*nativeBinding, error) {
 	return &nativeBinding{client: client, lease: lease, ctx: ctx, cancel: cancel, flows: make(map[io.Closer]bool)}, nil
 }
 func (h *CitaNativeBinding) apply(c bindingCommand) (r bindingReply) {
- if c.Action=="ProbeDirect" {return h.probeDirect(c)}
+ if c.Action=="ProbeDirect"||c.Action=="ProbeDPI" {return h.probeDirect(c)}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if c.Action=="EnableDirect"||c.Action=="RetireDirect"{r=h.directScopeLocked(c);r.State=h.state;r.CurrentGeneration=h.generation;r.PolicyDirectDials=h.policyDirectDials.Load();r.PolicyBlockedDials=h.policyBlockedDials.Load();return}
 	if c.Scope!=nil||c.Revision!=0{return bindingReply{Stage:c.Action,Owner:h.owner,Session:c.Session,Generation:c.Generation,State:h.state,CurrentGeneration:h.generation}}
-	r = bindingReply{Stage: c.Action, Owner: h.owner, Session: c.Session, Generation: c.Generation}
-	defer func() { r.State = h.state; r.CurrentGeneration = h.generation;r.PolicyRevision=h.policy.revision;r.PolicyDigest=h.policy.digest;r.PolicyDirectDials=h.policyDirectDials.Load();r.PolicyBlockedDials=h.policyBlockedDials.Load();r.NativeDnsProtocol=1;r.FakeIpVpnDials=h.fakeIpVpnDials.Load();r.FakeIpRefused=h.fakeIpRefused.Load() }()
+  r = bindingReply{Stage: c.Action, Owner: h.owner, Session: c.Session, Generation: c.Generation}
+  defer func() { r.State = h.state; r.CurrentGeneration = h.generation;r.PolicyRevision=h.policy.revision;r.PolicyDigest=h.policy.digest;r.ForcedIntentRevision=h.policy.forcedRevision;r.PolicyDirectDials=h.policyDirectDials.Load();r.PolicyBlockedDials=h.policyBlockedDials.Load();r.NativeDnsProtocol=1;r.FakeIpVpnDials=h.fakeIpVpnDials.Load();r.FakeIpVpnAttempts=h.fakeIpVpnAttempts.Load();r.FakeIpRefused=h.fakeIpRefused.Load() }()
 	if c.Owner != h.owner {
 		return
 	}
+ if c.Connector!=nil&&c.Action!="ZapretConnector"{return}
 	switch c.Action {
+ case "ZapretConnector":
+  if c.Generation!=h.generation||c.Session!=h.session||h.state!="Active"||c.Port!=0||c.Token!=""||c.Policy!=nil||c.Observation!=nil||c.Connector==nil||!c.Connector.valid(){return}
+  config:=*c.Connector;h.connector=&config;r.Success=true
  case "Policy":
   if c.Generation!=h.generation||c.Session!=h.session||c.Port!=0||c.Token!=""||h.state!="Active" {return}
-  next,e:=prepareNativePolicy(c.Policy,h.policy,time.Now());if e!=nil{return}
-  for _,rule:=range next.rules {if rule.Route=="direct"||rule.Route=="dpi" {if h.outbounds==nil{return};outbound,ok:=h.outbounds.Outbound("native-"+rule.Route);if !ok||outbound.Type()!="direct"{return};for _,ip:=range rule.Addresses{if !h.directEnabled[(nativeDirectScope{Address:ip,Network:rule.Network,Port:rule.Port}).key()]{return}}}}
+  now:=time.Now();clockOK:=h.observeCalibrationClockLocked(now);if (!clockOK||h.calibrationOverflow)&&nativeUpdateHasCalibration(c.Policy){return};next,e:=prepareNativePolicy(c.Policy,h.policy,now);if e!=nil||!h.acceptsCalibrationsLocked(next,now){return}
+  for _,rule:=range next.rules {if rule.Route=="zapret"{if h.connector==nil||!h.connector.valid(){return}};if rule.Route=="direct"||rule.Route=="dpi" {if h.outbounds==nil{return};outbound,ok:=h.outbounds.Outbound("native-"+rule.Route);if !ok||outbound.Type()!="direct"{return};for _,ip:=range rule.Addresses{if !h.directEnabled[(nativeDirectScope{Address:ip,Network:rule.Network,Port:rule.Port}).key()]{return}}}}
   h.policy=next;r.Success=true
 	case "Quarantine":
 		if !validBindingHex(c.Session, 16) || c.Generation <= h.generation || h.seen[c.Session] || len(h.seen) >= 1024 || c.Port != 0 || c.Token != "" {
@@ -212,6 +228,8 @@ func (h *CitaNativeBinding) apply(c bindingCommand) (r bindingReply) {
 		h.seen[c.Session] = true
 		h.state = "Quarantined"
   h.policy=nativePolicyTable{}
+  h.retiredCalibrations=nil;h.calibrationOverflow=false;h.calibrationWallHighWater=0
+  h.connector=nil
   h.observations=nil
   h.observationOrder=nil
 		if old != nil {
@@ -241,6 +259,7 @@ func (h *CitaNativeBinding) apply(c bindingCommand) (r bindingReply) {
 		old := h.active
 		h.active = nil
 		h.state = "Closed"
+  h.connector=nil
 		if old != nil {
 			r.TCPClosed, r.UDPClosed = old.revoke()
 		}
@@ -256,6 +275,7 @@ func (h *CitaNativeBinding) closeActive() {
 	b := h.active
 	h.active = nil
 	h.state = "Closed"
+	h.connector=nil
 	h.mu.Unlock()
 	if b != nil {
 		b.revoke()
@@ -274,7 +294,7 @@ func (h *CitaNativeBinding) Start(stage adapter.StartStage, scope *adapter.Scope
 		go func() {
 			defer h.closeActive()
 			encoder := json.NewEncoder(os.Stdout)
-			if encoder.Encode(bindingReply{Stage: "BindingControlReady", Owner: h.owner, Success: true, State: "Closed",PolicyProtocol:1,DirectScopeProtocol:1}) != nil {
+            if encoder.Encode(bindingReply{Stage: "BindingControlReady", Owner: h.owner, Success: true, State: "Closed",PolicyProtocol:1,DirectScopeProtocol:1,ZapretConnectorProtocol:1,AutomaticProofProtocol:1,ForcedPolicyProtocol:1}) != nil {
 				return
 			}
 			legacy := json.NewDecoder(io.LimitReader(os.Stdin, 131072))
@@ -309,13 +329,17 @@ func (h *CitaNativeBinding) capture() (*nativeBinding, error) {
 	}
 	return h.active, nil
 }
-func(h *CitaNativeBinding) policyRoute(domain string,process *adapter.ConnectionOwner,network string,destination M.Socksaddr)(string,netip.Addr,bool,*nativeDirectLease){
+func(h *CitaNativeBinding) policyRoute(domain string,process *adapter.ConnectionOwner,network string,destination M.Socksaddr)(string,netip.Addr,bool,*nativeDirectLease,uint64,string){
  if domain==""&&destination.IsFqdn(){domain=destination.Fqdn};application:="";if process!=nil{application=process.ProcessPath}
  h.mu.Lock();defer h.mu.Unlock()
- rule,selected:=h.policy.selectRule(domain,application,network,destination.Port,destination.Addr,time.Now());if !selected||h.state!="Active"{return "",netip.Addr{},false,nil}
+ rule,selected:=h.policy.selectRule(domain,application,network,destination.Port,destination.Addr,time.Now());if !selected||h.state!="Active"{return "",netip.Addr{},false,nil,0,""}
  var lease *nativeDirectLease
- if rule.Route=="direct"||rule.Route=="dpi"{lease=h.acquireDirectLocked(nativeDirectScope{Address:destination.Addr.String(),Network:network,Port:destination.Port});if lease==nil{return "",netip.Addr{},false,nil}}
- return rule.Route,destination.Addr,true,lease
+ if rule.Route=="direct"||rule.Route=="dpi"{lease=h.acquireDirectLocked(nativeDirectScope{Address:destination.Addr.String(),Network:network,Port:destination.Port});if lease==nil{
+  if rule.Forced{return "blocked",destination.Addr,true,nil,h.policy.revision,rule.Application}
+  d,valid:=nativeDomain(domain);if valid{if block,found:=h.policy.rules[nativePolicyKey(d,"",network,destination.Port)];found&&block.Route=="blocked"&&(block.Forced||time.Now().Before(block.deadline)){return "blocked",destination.Addr,true,nil,h.policy.revision,""}}
+  return "",netip.Addr{},false,nil,0,""
+ }}
+ return rule.Route,destination.Addr,true,lease,h.policy.revision,rule.Application
 }
 func (b *nativeBinding) dialContext(ctx context.Context, lease bool) (context.Context, func()) {
 	child, cancel := context.WithCancel(ctx)
@@ -330,9 +354,17 @@ func (h *CitaNativeBinding) DialContext(ctx context.Context, network string, des
 	metadata.Outbound = h.Tag()
 	metadata.Destination = destination
  if network=="tcp" {domain:=metadata.Domain;if domain==""&&destination.IsFqdn(){domain=destination.Fqdn};app:="";if metadata.ProcessInfo!=nil{app=metadata.ProcessInfo.ProcessPath};h.observe(nativeObservation{Domain:domain,Application:app,Address:destination.Addr.String(),Port:destination.Port})}
- if route,ip,selected,lease:=h.policyRoute(metadata.Domain,metadata.ProcessInfo,network,destination);selected {
+ if route,ip,selected,lease,revision,ruleApp:=h.policyRoute(metadata.Domain,metadata.ProcessInfo,network,destination);selected {
   if route=="blocked" {h.policyBlockedDials.Add(1);return nil,errNativePolicy}
-  if route=="direct"||route=="dpi" {outbound,ok:=h.outbounds.Outbound("native-"+route);if !ok{lease.release();return nil,errNativePolicy};destination.Addr=ip;destination.Fqdn="";conn,err:=outbound.DialContext(ctx,network,destination);if err==nil{h.policyDirectDials.Add(1);return &nativeDirectConn{Conn:conn,lease:lease},nil};lease.release();domain:=metadata.Domain;app:="";if metadata.ProcessInfo!=nil{app=metadata.ProcessInfo.ProcessPath};h.invalidatePolicy(domain,app,network,destination.Port)}
+  if route=="zapret"{
+   if network!="tcp"||destination.Port!=443{return nil,errNativePolicy}
+   h.mu.Lock();var config nativeConnectorConfig;if h.connector!=nil{config=*h.connector};h.mu.Unlock()
+   b,e:=h.capture();if e!=nil{return nil,e};child,done:=b.dialContext(ctx,false);defer done()
+   domain:=metadata.Domain;if domain==""&&destination.IsFqdn(){domain=destination.Fqdn};app:="";if metadata.ProcessInfo!=nil{app=metadata.ProcessInfo.ProcessPath}
+   conn,e:=nativeConnectorDial(child,config,domain,app,ip.String(),destination.Port);if e!=nil{h.invalidatePolicy(domain,app,ruleApp,network,destination.Port,ip,revision);return nil,e}
+   c:=&nativeBindingConn{Conn:conn,b:b};if !b.register(c,false){return nil,errNativeBinding};return &nativeConnectorBoundConn{c},nil
+  }
+  if route=="direct"||route=="dpi" {if route=="dpi"&&!nativeDPIAllowed(network,destination.Port){lease.release();return nil,errNativePolicy};outbound,ok:=h.outbounds.Outbound("native-"+route);if !ok{lease.release();return nil,errNativePolicy};domain:=metadata.Domain;if domain==""&&destination.IsFqdn(){domain=destination.Fqdn};destination.Addr=ip;destination.Fqdn="";conn,err:=outbound.DialContext(ctx,network,destination);if err==nil{if route=="dpi"{conn=nativeDPIConn(conn,ctx)};h.policyDirectDials.Add(1);return &nativeDirectConn{Conn:conn,lease:lease},nil};lease.release();app:="";if metadata.ProcessInfo!=nil{app=metadata.ProcessInfo.ProcessPath};if h.invalidatePolicy(domain,app,ruleApp,network,destination.Port,ip,revision){return nil,errNativePolicy}}
  }
 	b, e := h.capture()
 	if e != nil {
@@ -342,6 +374,7 @@ func (h *CitaNativeBinding) DialContext(ctx context.Context, network string, des
 	defer done()
 	name:=metadata.Domain;if name==""&&destination.IsFqdn(){name=destination.Fqdn}
 	destination,fakeRecovered,e:=nativeVpnDestination(network,destination,name);if e!=nil{h.fakeIpRefused.Add(1);return nil,e}
+	if fakeRecovered{h.fakeIpVpnAttempts.Add(1)}
 	conn, e := b.client.DialContext(child, network, destination)
 	if e != nil {
 		return nil, e
@@ -364,9 +397,9 @@ func (h *CitaNativeBinding) ListenPacket(ctx context.Context, destination M.Sock
 	ctx, metadata := adapter.ExtendContext(ctx)
 	metadata.Outbound = h.Tag()
 	metadata.Destination = destination
- if route,ip,selected,lease:=h.policyRoute(metadata.Domain,metadata.ProcessInfo,"udp",destination);selected {
+ if route,ip,selected,lease,_,_:=h.policyRoute(metadata.Domain,metadata.ProcessInfo,"udp",destination);selected {
   if route=="blocked" {h.policyBlockedDials.Add(1);return nil,errNativePolicy}
-  if route=="direct"||route=="dpi" {outbound,ok:=h.outbounds.Outbound("native-"+route);if !ok{lease.release();return nil,errNativePolicy};destination.Addr=ip;destination.Fqdn="";conn,err:=outbound.ListenPacket(ctx,destination);if err!=nil{lease.release();return nil,err};h.policyDirectDials.Add(1);return &nativeDirectPacket{PacketConn:conn,lease:lease},nil}
+  if route=="direct"||route=="dpi" {if route=="dpi"{lease.release();return nil,errNativePolicy};outbound,ok:=h.outbounds.Outbound("native-"+route);if !ok{lease.release();return nil,errNativePolicy};destination.Addr=ip;destination.Fqdn="";conn,err:=outbound.ListenPacket(ctx,destination);if err!=nil{lease.release();return nil,err};h.policyDirectDials.Add(1);return &nativeDirectPacket{PacketConn:conn,lease:lease},nil}
  }
 	b, e := h.capture()
 	if e != nil {

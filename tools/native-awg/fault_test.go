@@ -48,4 +48,7 @@ func TestBoundedTransportLoss(t *testing.T) {
 	if e != nil || n != 1 || sizes[0] != 0 || bind.droppedReceive.Load() != 2 {
 		t.Fatal("Incoming-only loss must suppress responses")
 	}
+	if bind.sendAttempts.Load() != 3 || bind.sendAccepted.Load() != 2 || bind.sendErrors.Load() != 0 || bind.receiveDatagrams.Load() != 3 || bind.receiveErrors.Load() != 0 {
+		t.Fatal("Transport counters must distinguish socket acceptance from injected drops")
+	}
 }

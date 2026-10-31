@@ -8,8 +8,11 @@ function Topology{
 }
 try{
  if(Get-Process native-awg-lab,native-core-lab,Cita.NativeAgentLab,smart-router,vpn-bridge -ErrorAction SilentlyContinue){throw 'Guest must be idle'}
- . C:\CitaLab\PlatformNext\WireSockCli.ps1
- if((Get-WireSockState (Read-HelperOutput 'C:\Program Files\WireSock Secure Connect\command-line\wiresock-connect-cli.exe' 'status') 'SmartRouting-AWG2') -ne 'Disconnected'){throw 'Guest WireSock must be disconnected'}
+ $wireSockCli='C:\Program Files\WireSock Secure Connect\command-line\wiresock-connect-cli.exe'
+ if(Test-Path -LiteralPath $wireSockCli){
+  . C:\CitaLab\PlatformNext\WireSockCli.ps1
+  if((Get-WireSockState (Read-HelperOutput $wireSockCli 'status') 'SmartRouting-AWG2') -ne 'Disconnected'){throw 'Guest WireSock must be disconnected'}
+ }
  $before=Topology;$report.nativeSha256=(Get-FileHash (Join-Path $root 'native-awg-lab.exe')).Hash;$report.agentBackendSha256=(Get-FileHash (Join-Path $root 'AgentBackend\Cita.NativeAgentLab.dll')).Hash
  $mode=if($RacesOnly){'--profiles-races-lab'}else{'--profiles-lab'}
  $info=[Diagnostics.ProcessStartInfo]::new((Join-Path $root 'AgentBackend\Cita.NativeAgentLab.exe'),($mode+' C:\CitaLab\NativeAwg'));$info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true

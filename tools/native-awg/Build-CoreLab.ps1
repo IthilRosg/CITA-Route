@@ -1,6 +1,9 @@
-param([switch]$PolicyOnly)
+param([switch]$PolicyOnly,[switch]$DpiLab)
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+$buildScriptSha=(Get-FileHash -LiteralPath $PSCommandPath).Hash
+function Get-CorePatchInventory { @(Get-ChildItem (Join-Path $PSScriptRoot 'core-patches') -File|Sort-Object Name|ForEach-Object {[pscustomobject]@{file=$_.Name;sha256=(Get-FileHash -LiteralPath $_.FullName).Hash}}) }
+$initialPatches=@(Get-CorePatchInventory)
 if((& go version) -notmatch 'go1\.26\.3 '){throw 'Reviewed Go 1.26.3 required'}
 $source=Join-Path $root 'distribution-licenses\cita-routing-core-1.14.3-cita.5-source.zip'
 if((Get-FileHash -LiteralPath $source).Hash -ne 'ECD1BC4D44C42BFD8D94148F47BA821C999DD1EDC13604324BEBE01785A9564D'){throw 'Pinned corresponding source differs'}
@@ -14,7 +17,7 @@ $core=Join-Path $stage 'sing-box-1.14.3'
 & (Join-Path $PSScriptRoot 'core-patches\Apply-NativeBinding.ps1') -Core $core
 foreach($test in @(@('lease_test.go','common\citaretain\lease_test.go'),@('route_retention_test.go','route\cita_retention_test.go'),@('socks_retention_test.go','protocol\socks\cita_retention_test.go'),@('socks_udp_lifetime_test.go','protocol\socks\cita_udp_lifetime_test.go'))){Copy-Item -LiteralPath (Join-Path $PSScriptRoot ('core-patches\'+$test[0])) -Destination (Join-Path $core $test[1])}
 $env:GOMODCACHE=Join-Path $root 'downloads\go-modcache';$env:GOCACHE=Join-Path $root 'downloads\go-buildcache';$env:GOTOOLCHAIN='local';$env:GOWORK='off';$env:CGO_ENABLED='0';$env:GOOS='windows';$env:GOARCH='amd64'
-$target=Join-Path $root 'runtime\native-core-lab.exe'
+$target=Join-Path $root $(if($DpiLab){'runtime\native-core-dpi-experimental.exe'}else{'runtime\native-core-lab.exe'})
 Push-Location (Join-Path $stage 'sing-cita')
 try{& gofmt -w protocol/socks/cita_udp_guard.go protocol/socks/cita_udp_guard_test.go protocol/socks/handshake.go protocol/socks/client.go protocol/socks/cita_udp_lifetime.go protocol/socks/cita_udp_lifetime_test.go;if(-not $PolicyOnly){& go test -mod=readonly -run '^TestCitaUDP' ./protocol/socks;if($LASTEXITCODE -ne 0){throw 'Core UDP guard tests failed'}};& go vet -mod=readonly ./protocol/socks;if($LASTEXITCODE -ne 0){throw 'Core UDP guard analysis failed'}}finally{Pop-Location}
 Push-Location $core
@@ -27,6 +30,8 @@ try{
  & go vet -mod=readonly ./common/citaretain ./route ./protocol/socks;if($LASTEXITCODE -ne 0){throw 'Core retention analysis failed'}
  & go build -mod=readonly -buildvcs=false -trimpath -tags 'with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0' -ldflags '-s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=1.14.3-cita-native-lab.5 -checklinkname=0' -o $target ./cmd/sing-box
  if($LASTEXITCODE -ne 0){throw 'Native retention lab core build failed'}
- $patches=@(Get-ChildItem (Join-Path $PSScriptRoot 'core-patches') -File|Sort-Object Name|ForEach-Object {@{file=$_.Name;sha256=(Get-FileHash -LiteralPath $_.FullName).Hash}})
- @{schema=1;sourceSha256=(Get-FileHash $source).Hash;binarySha256=(Get-FileHash $target).Hash;patches=$patches;stage=$stage;production=$false;policyOnlyTests=[bool]$PolicyOnly}|ConvertTo-Json -Depth 4|Set-Content (Join-Path $root 'runtime\native-core-lab-build.json')
+ $patches=@(Get-CorePatchInventory)
+ if(($initialPatches|ConvertTo-Json -Depth 4 -Compress) -cne ($patches|ConvertTo-Json -Depth 4 -Compress) -or (Get-FileHash -LiteralPath $PSCommandPath).Hash -cne $buildScriptSha){throw 'Native build inputs changed during compilation; no receipt will be issued.'}
+ $receipt=if($DpiLab){'runtime\native-core-dpi-experimental.receipt.json'}else{'runtime\native-core-lab-build.json'}
+ @{schema=1;sourceSha256=(Get-FileHash $source).Hash;binarySha256=(Get-FileHash $target).Hash;patches=$patches;stage=$stage;production=$false;policyOnlyTests=[bool]$PolicyOnly;dpiLab=[bool]$DpiLab}|ConvertTo-Json -Depth 4|Set-Content (Join-Path $root $receipt) -Encoding UTF8
 }finally{Pop-Location}

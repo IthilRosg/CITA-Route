@@ -8,7 +8,33 @@ public static class AgentTests
 {
     public static async Task Run()
     {
+        NativeMaintenanceGateTests.Run();
+        NativeMaintenanceValidationTests.Run();
+        NativeConnectionLineageTests.Run();
+        NativeTemplateIntentTests.Run();
+        NativeNetworkTelemetryTests.Run();
+        NativeNetworkEvidenceTests.Run();
         await NativeProfileImportTests.Run();
+        await NativeCalibrationTests.Run();
+        await NativeAutomaticPolicyTests.Run();
+        await NativeZapretTests.Run();
+        await NativeZapretAuthorizationTests.Run();
+        await NativeZapretManifestTests.Run();
+        await NativeZapretProbeTests.Run();
+        await NativeZapretPolicyGateTests.Run();
+        await NativeBoundTcpLeaseTests.Run();
+        await NativeCoreConnectorTests.Run();
+        await NativeCoreConnectorAuthorizationRaceTests.Run();
+        await NativeConnectorAdmissionTests.Run();
+        await NativeConnectorOwnershipTests.Run();
+        await NativeGuardedSocketTests.Run();
+        NativeDynamicSocketLeaseTests.Run();
+        await NativeAdmissionQueueTests.Run();
+        NativeForcedIntentTests.Run();
+        NativeForcedIntentStoreTests.Run();
+        await NativeProcessDiagnosticsTests.Run();
+        await NativeProcessJobTests.Run();
+        await NativeCoreRecoveryFailureTests.Run();
         StartupTests.Run();
         TcpListenerOwnership.Test();
         ResourceGuardTests.Run();

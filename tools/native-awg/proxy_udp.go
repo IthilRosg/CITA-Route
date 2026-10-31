@@ -20,6 +20,12 @@ var udpBudgetDrops atomic.Int64
 
 // A child-wide bound prevents opening more associations from multiplying load.
 var udpAggregateBudget = datagramBudget{rate: 8192, burst: 512}
+var udpRelayInput, udpRelayRejected, udpTunnelWrites, udpTunnelWriteErrors, udpTunnelReads, udpRelayReplies, udpRelayReplyErrors atomic.Int64
+var udpInputBudgetDrops, udpAggregateInputDrops, udpFlowLimitDrops, udpDialErrors, udpDeadlineErrors, udpReadErrors, udpReplySizeDrops, udpReplyBudgetDrops, udpReplyDeadlineErrors atomic.Int64
+
+func udpReasonSnapshot() map[string]int64 {
+	return map[string]int64{"inputBudgetDrops": udpInputBudgetDrops.Load(), "aggregateInputDrops": udpAggregateInputDrops.Load(), "flowLimitDrops": udpFlowLimitDrops.Load(), "dialErrors": udpDialErrors.Load(), "deadlineErrors": udpDeadlineErrors.Load(), "readErrors": udpReadErrors.Load(), "replySizeDrops": udpReplySizeDrops.Load(), "replyBudgetDrops": udpReplyBudgetDrops.Load(), "replyDeadlineErrors": udpReplyDeadlineErrors.Load()}
+}
 
 type udpTunnelDial func(netip.AddrPort) (net.Conn, error)
 type udpFlow struct{ socket net.Conn }
@@ -151,10 +157,12 @@ func relayUDP(parent context.Context, control net.Conn, relay net.PacketConn, so
 		if e != nil {
 			return
 		}
+		udpRelayInput.Add(1)
 		if ctx.Err() != nil {
 			return
 		}
 		if !budget.allow(time.Now()) {
+			udpInputBudgetDrops.Add(1)
 			invalid++
 			if invalid >= 128 {
 				return
@@ -163,6 +171,7 @@ func relayUDP(parent context.Context, control net.Conn, relay net.PacketConn, so
 		}
 		source, ok := from.(*net.UDPAddr)
 		if !ok || source.IP.To4() == nil || !source.IP.IsLoopback() || (sourcePort != 0 && source.Port != int(sourcePort)) {
+			udpRelayRejected.Add(1)
 			invalid++
 			if invalid >= 128 {
 				return
@@ -171,6 +180,7 @@ func relayUDP(parent context.Context, control net.Conn, relay net.PacketConn, so
 		}
 		target, payload, valid := parseUDPFrame(packet[:n])
 		if !valid {
+			udpRelayRejected.Add(1)
 			invalid++
 			if invalid >= 128 {
 				return
@@ -181,6 +191,7 @@ func relayUDP(parent context.Context, control net.Conn, relay net.PacketConn, so
 			sourcePort = uint16(source.Port)
 		}
 		if !udpAggregateBudget.allow(time.Now()) {
+			udpAggregateInputDrops.Add(1)
 			continue
 		}
 		// Copy before a reader goroutine can outlive the next ReadFrom iteration.
@@ -189,11 +200,13 @@ func relayUDP(parent context.Context, control net.Conn, relay net.PacketConn, so
 		flow := flows[target]
 		if flow == nil {
 			if len(flows) >= udpFlowLimit {
+				udpFlowLimitDrops.Add(1)
 				gate.Unlock()
 				continue
 			}
 			socket, err := dial(target)
 			if err != nil {
+				udpDialErrors.Add(1)
 				gate.Unlock()
 				continue
 			}
@@ -219,33 +232,44 @@ func relayUDP(parent context.Context, control net.Conn, relay net.PacketConn, so
 				for {
 					n, e := flow.socket.Read(data)
 					if e != nil {
+						udpReadErrors.Add(1)
 						return
 					}
+					udpTunnelReads.Add(1)
 					if n == 0 || n > udpPayloadLimit || ctx.Err() != nil {
 						if ctx.Err() != nil {
 							return
 						}
+						udpReplySizeDrops.Add(1)
 						continue
 					}
 					if !budget.allow(time.Now()) || !udpAggregateBudget.allow(time.Now()) {
+						udpReplyBudgetDrops.Add(1)
 						continue
 					}
 					if relay.SetWriteDeadline(time.Now().Add(time.Second)) != nil {
+						udpReplyDeadlineErrors.Add(1)
 						return
 					}
 					if _, e = relay.WriteTo(udpFrame(target, data[:n]), client); e != nil {
+						udpRelayReplyErrors.Add(1)
 						return
 					}
+					udpRelayReplies.Add(1)
 				}
 			}(target, flow, client)
 		}
 		gate.Unlock()
 		if flow.socket.SetDeadline(time.Now().Add(30*time.Second)) != nil {
+			udpDeadlineErrors.Add(1)
 			flow.socket.Close()
 			continue
 		}
 		if _, e = flow.socket.Write(payload); e != nil {
+			udpTunnelWriteErrors.Add(1)
 			flow.socket.Close()
+		} else {
+			udpTunnelWrites.Add(1)
 		}
 	}
 }

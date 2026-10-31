@@ -36,7 +36,7 @@ func tunnelLuid(index uint32) (uint64, error) {
 	}
 	name := windows.UTF16ToString(alias[:])
 	kind := luid >> 48
-	if name != "Cita-NativeLab" && name != "Cita-Route" && name!="Cita-Native" || kind != 53 && kind != 131 {
+	if name != "Cita-NativeLab" && name != "Cita-Route" && name != "Cita-Native" || kind != 53 && kind != 131 {
 		return 0, errors.New("not an owned tunnel")
 	}
 	return luid, nil
@@ -60,6 +60,12 @@ func describe(rules []*wf.Rule) (prefixes []netip.Prefix, luid uint64, permits i
 			}
 			prefixes = append(prefixes, p)
 		} else if f.Action == wf.ActionPermit {
+			if len(f.Conditions) == 7 {
+				if _, e := connectorRuleIdentity(f); e != nil {
+					return nil, 0, 0, e
+				}
+				continue
+			}
 			if len(f.Conditions) == 5 {
 				if _, e := directRuleIdentity(f); e != nil {
 					return nil, 0, 0, e
@@ -121,7 +127,7 @@ func describe(rules []*wf.Rule) (prefixes []netip.Prefix, luid uint64, permits i
 }
 func closeTunnel(s *wf.Session, rules []*wf.Rule) error {
 	for _, f := range rules {
-		if f.Action == wf.ActionPermit && (len(f.Conditions) == 2 || len(f.Conditions) == 5) {
+		if f.Action == wf.ActionPermit && (len(f.Conditions) == 2 || len(f.Conditions) == 5 || len(f.Conditions) == 7) {
 			if e := s.DeleteRule(f.ID); e != nil {
 				return e
 			}

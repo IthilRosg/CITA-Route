@@ -18,7 +18,18 @@ internal static class NativeProfileImport
 {
     internal sealed record Input(string Config,string Name,string Endpoint,string[] Allowed,int Mtu);
     internal sealed class HttpsProbeFailure:IOException { internal HttpsProbeFailure():base("Native HTTPS validation failed."){} }
-    sealed class ProbeFailure:IOException { internal ProbeFailure():base("Native import connectivity check failed."){} }
+    internal sealed class ProbeFailure:IOException { internal JsonElement Evidence{get;} internal ProbeFailure(JsonElement evidence):base("Native import connectivity check failed."){Evidence=evidence;} }
+    internal static async Task ProbeUdpWithRetry(Func<CancellationToken,Task> probe,Func<CancellationToken,Task<JsonElement>> snapshot,CancellationToken stop)
+    {
+        var owner=await snapshot(stop);
+        try{await probe(stop);}
+        catch(ProbeFailure failure)when(!stop.IsCancellationRequested&&NativeProbePolicy.RetryAnonymousUdp(failure.Evidence,owner,1))
+        {
+            var current=await snapshot(stop);
+            if(current.GetProperty("state").GetString()!="RunningUnverified"||current.GetProperty("epoch").GetInt32()!=owner.GetProperty("epoch").GetInt32())throw;
+            await Task.Delay(200,stop);await probe(stop);
+        }
+    }
     internal static Input LowerMtu(Input input)
     {
         if(input.Mtu<=1280)throw new InvalidOperationException("The profile MTU is already low.");
@@ -80,7 +91,7 @@ internal static class NativeProfileImport
     {
         var info=new ProcessStartInfo(image){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};info.ArgumentList.Add(mode);
         using var p=Process.Start(info)??throw new IOException("Native import probe unavailable.");job.Attach(p);_=p.StandardError.BaseStream.CopyToAsync(Stream.Null);
-        try{await p.StandardInput.WriteLineAsync(JsonSerializer.Serialize(spec).AsMemory(),stop);p.StandardInput.Close();var result=await NativeAwgBackend.ReadReply(p.StandardOutput,stop);await p.WaitForExitAsync(stop);if(p.ExitCode!=0||!result.GetProperty("success").GetBoolean())throw new ProbeFailure();return result;}
+        try{await p.StandardInput.WriteLineAsync(JsonSerializer.Serialize(spec).AsMemory(),stop);p.StandardInput.Close();var result=await NativeAwgBackend.ReadReply(p.StandardOutput,stop);await p.WaitForExitAsync(stop);if(p.ExitCode!=0||!result.GetProperty("success").GetBoolean())throw new ProbeFailure(result);return result;}
         finally{if(!p.HasExited){p.Kill(true);await p.WaitForExitAsync();}}
     }
     static async Task<string> ProbeProfile(string image,Input input,CancellationToken stop,Action<string>? progress)
@@ -101,7 +112,9 @@ internal static class NativeProfileImport
             }
             string exit=https.GetProperty("egressHash").GetString()??"";
             if(exit.Length!=64||!exit.All(Uri.IsHexDigit))throw new InvalidDataException("Native import exit proof missing.");
-            progress?.Invoke("ProbingUdp");await Probe(image,"--proxy-udp-client",new{Port=port,Token=token,Server="1.1.1.1"},job,stop);return exit;
+            progress?.Invoke("ProbingUdp");var snapshot=JsonSerializer.SerializeToElement(new{Session=session,Generation=1UL,Action="Snapshot"});
+            await ProbeUdpWithRetry(async ct=>{await Probe(image,"--proxy-udp-client",new{Port=port,Token=token,Server="1.1.1.1"},job,ct);},ct=>backend.SendAsync(snapshot,ct),stop);
+            return exit;
         }
         finally{using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(8));await job.TerminateAsync(cleanup.Token);}
     }
@@ -139,7 +152,7 @@ internal static class NativeProfileImport
             inbound["route_address"]=JsonSerializer.SerializeToNode(guard.Prefixes.Where(x=>!x.Contains(':')).ToArray());inbound["route_exclude_address"]=JsonSerializer.SerializeToNode(new[]{input.Endpoint[..input.Endpoint.LastIndexOf(':')]+"/32"});inbound["mtu"]=input.Mtu;
             core["outbounds"]!.AsArray().Single(x=>x?["type"]?.GetValue<string>()=="cita_native_lab")!["owner"]=Guid.NewGuid().ToString("N");
             string coreFile=Add("core-"+id+".json",core.ToJsonString());
-            var catalog=new NativeTrustedBundle.Catalog(1,Entry(Path.GetFileName(old.OwnerPath)),Entry(Path.GetFileName(old.CorePath)),Entry(Path.GetFileName(old.GuardPath)),Entry(policyFile),Entry(profile),Entry(coreFile),exit,input.Name);
+            var catalog=new NativeTrustedBundle.Catalog(1,Entry(Path.GetFileName(old.OwnerPath)),Entry(Path.GetFileName(old.CorePath)),Entry(Path.GetFileName(old.GuardPath)),Entry(policyFile),Entry(profile),Entry(coreFile),exit,input.Name,old.ZapretManifestEntry,old.ForcedIntentEntry);
             string catalogName=Add("catalog-"+id+".json",JsonSerializer.Serialize(catalog));string hash=Entry(catalogName).Sha256;
             candidate=NativeTrustedBundle.Open(root,hash,catalogName);return new(candidate,JsonSerializer.Serialize(new{Enabled=true,CatalogSha256=hash,CatalogName=catalogName}),files);
         }

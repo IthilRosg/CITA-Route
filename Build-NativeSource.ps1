@@ -1,8 +1,11 @@
 param([string]$Destination='runtime\native-corresponding-source.zip')
 $ErrorActionPreference='Stop';$root=$PSScriptRoot
+. (Join-Path $root 'NativeSourceProvenance.ps1')
+$inputs=@(Get-NativeWorkspaceInventory $root)
 $receipt=Get-Content (Join-Path $root 'runtime/native-core-lab-build.json') -Raw|ConvertFrom-Json
 if($receipt.binarySha256 -ne (Get-FileHash (Join-Path $root 'runtime/native-core-lab.exe')).Hash){throw 'Native binary receipt differs'}
-foreach($patch in $receipt.patches){if((Get-FileHash (Join-Path $root ('tools/native-awg/core-patches/'+$patch.file))).Hash -ne $patch.sha256){throw 'Source patches changed after the accepted build'}}
+$patches=@($receipt.patches|ForEach-Object {@{path=('tools/native-awg/core-patches/'+$_.file);sha256=$_.sha256}})
+Assert-NativeInventory $patches @($inputs|Where-Object {$_.path.StartsWith('tools/native-awg/core-patches/',[StringComparison]::OrdinalIgnoreCase)})
 $stage=Join-Path $root ('runtime/native-source-'+[guid]::NewGuid().ToString('N'));New-Item -ItemType Directory -Path $stage|Out-Null
 foreach($name in @('sing-box-1.14.3','sing-cita','sing-tun-cita')){Copy-Item -LiteralPath (Join-Path $receipt.stage $name) -Destination (Join-Path $stage $name) -Recurse}
 foreach($role in @('native-awg','native-guard-lab')){
@@ -38,6 +41,7 @@ foreach($role in @(@('native-awg','native-owner.exe'),@('native-guard-lab','nati
 $files=@(Get-ChildItem -LiteralPath $stage -File -Recurse|Sort-Object FullName|ForEach-Object {@{name=$_.FullName.Substring($stage.Length+1).Replace('\','/');sha256=(Get-FileHash -LiteralPath $_.FullName).Hash}})
 $inventory=@{schema=1;coreBinarySha256=$receipt.binarySha256;files=$files};$inventory|ConvertTo-Json -Depth 5|Set-Content (Join-Path $stage 'SOURCE-MANIFEST.json') -Encoding UTF8
 $output=[IO.Path]::GetFullPath((Join-Path $root $Destination));if(-not $output.StartsWith((Join-Path $root 'runtime\'),[StringComparison]::OrdinalIgnoreCase)){throw 'Source artifact must stay in runtime'}
-Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $output -Force
-@{schema=1;path=$output;stage=$stage;sha256=(Get-FileHash $output).Hash;bytes=(Get-Item $output).Length;coreBinarySha256=$receipt.binarySha256;rebuildVerified=$false;publicReleaseReady=$false}|ConvertTo-Json|Set-Content ($output+'.receipt.json') -Encoding UTF8
+$temporary=$output+'.'+[guid]::NewGuid().ToString('N')+'.tmp.zip'
+try{Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $temporary;Assert-NativeInventory $inputs @(Get-NativeWorkspaceInventory $root);if(Test-Path -LiteralPath $output){$backup=$output+'.'+[guid]::NewGuid().ToString('N')+'.bak';[IO.File]::Replace($temporary,$output,$backup);Remove-Item -LiteralPath $backup -Force}else{[IO.File]::Move($temporary,$output)}}finally{if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force}}
+@{schema=1;path=$output;stage=$stage;sha256=(Get-FileHash $output).Hash;bytes=(Get-Item $output).Length;coreBinarySha256=$receipt.binarySha256;workspaceInputs=$inputs;rebuildVerified=$false;publicReleaseReady=$false}|ConvertTo-Json -Depth 6|Set-Content ($output+'.receipt.json') -Encoding UTF8
 'Collected corresponding source candidate; reproducible rebuild verification is still required.'

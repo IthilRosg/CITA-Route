@@ -24,4 +24,5 @@
   <ItemGroup><Compile Include="..\agent\SessionEvidence.cs" Link="SessionEvidence.cs" /></ItemGroup>
   <ItemGroup><Compile Include="..\agent\SessionEvidence.Journals.cs" Link="SessionEvidence.Journals.cs" /></ItemGroup>
   <ItemGroup><Compile Include="..\agent\SessionEvidence.Web.cs" Link="SessionEvidence.Web.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="..\agent\NativeForcedIntent.cs" Link="NativeForcedIntent.cs" /></ItemGroup>
 </Project>

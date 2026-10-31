@@ -7,16 +7,34 @@ internal static class NativeCoverageLab
 {
     internal static async Task<object> MeasureDnsOutage(NativeGuardedSession runtime,string root,CancellationToken stop)
     {
-        int pid=runtime.Core.ProcessId,repairs=runtime.Core.Repairs;long fake=runtime.Core.FakeIpVpnDials;
-        var request=await Fetch("cloudflare-dns.com",1,stop);using var result=JsonDocument.Parse(JsonSerializer.Serialize(request));
-        if(result.RootElement.GetProperty("headersReceived").GetBoolean())throw new IOException("DNS outage unexpectedly connected.");
+        int pid=runtime.Core.ProcessId,repairs=runtime.Core.Repairs;long fake=runtime.Core.FakeIpVpnAttempts;
+        // Previous lab runs can populate the guest Windows DNS cache. Flush it
+        // only in the UUID-verified isolated guest, not on the host, before
+        // attributing an answer to the intentionally unavailable resolver.
+        var flushInfo=new ProcessStartInfo(@"C:\Windows\System32\ipconfig.exe"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};flushInfo.ArgumentList.Add("/flushdns");
+        using(var flush=Process.Start(flushInfo)??throw new IOException("DNS cache fixture unavailable.")){
+            var stdout=flush.StandardOutput.BaseStream.CopyToAsync(Stream.Null,stop);var stderr=flush.StandardError.BaseStream.CopyToAsync(Stream.Null,stop);
+            try{await flush.WaitForExitAsync(stop);await Task.WhenAll(stdout,stderr);if(flush.ExitCode!=0)throw new IOException("DNS cache fixture failed.");}finally{if(!flush.HasExited){flush.Kill();await flush.WaitForExitAsync();}}
+        }
+        var systemRequest=await Fetch("cloudflare-dns.com",1,stop);
+        // Remove any earlier automatic Direct decision so this probe must use
+        // the VPN owner's fake-IP recovery path, not the calibrated path.
+        await runtime.PublishPolicyAsync(new NativePolicyRequest(Guid.NewGuid().ToString("N"),[]),stop);
+        var request=await Fetch("cloudflare-dns.com",3,stop);using var result=JsonDocument.Parse(JsonSerializer.Serialize(request));
+        bool resolved=result.RootElement.GetProperty("headersReceived").GetBoolean();
+        for(int i=0;i<20&&runtime.Core.FakeIpVpnAttempts<=fake;i++)await Task.Delay(100,stop);
         var control=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop);
-        if(!control.GetProperty("success").GetBoolean()||runtime.Core.ProcessId!=pid||runtime.Core.Repairs!=repairs||runtime.Core.State!="Active"||runtime.Core.FakeIpVpnDials!=fake)throw new IOException("DNS outage restarted or bypassed the VPN.");
-        return new{success=true,request,knownAddressHttpsUdpStillWorks=true,sameCore=true,noCoreRepair=true,noFakeIpConnectionAdmitted=true,scope="Test profile DNS replaced by unreachable documentation address; no host DNS changes or application replay"};
+        bool controlSuccess=control.TryGetProperty("success",out var success)&&success.ValueKind==JsonValueKind.True;
+        bool sameCore=runtime.Core.ProcessId==pid&&runtime.Core.State=="Active",noRepair=runtime.Core.Repairs==repairs;
+        string dnsFailure=control.TryGetProperty("dnsFailure",out var failure)&&failure.ValueKind==JsonValueKind.String?failure.GetString()??"":"";
+        long fakeAttempts=runtime.Core.FakeIpVpnAttempts-fake;
+        return new{success=!resolved&&controlSuccess&&sameCore&&noRepair&&fakeAttempts>0,request,systemRequest,guestDnsCacheFlushed=true,knownAddressHttpsUdpStillWorks=controlSuccess,controlDnsFailure=dnsFailure,sameCore,noCoreRepair=noRepair,fakeIpAttempts=fakeAttempts,scope="Test profile DNS replaced by unreachable documentation address; fake-IP HTTPS requests are resolved by VPN owner; guest OS resolver is measured separately"};
     }
     internal static async Task<int> ServiceClient()
     {
-        using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(10));var result=await Fetch("cloudflare-dns.com",1,budget.Token);
+        // Exercise hostname recovery through the service rather than relying on
+        // the guest's independent, potentially cached system DNS resolver.
+        using var budget=new CancellationTokenSource(TimeSpan.FromSeconds(10));var result=await Fetch("cloudflare-dns.com",3,budget.Token);
         using var json=JsonDocument.Parse(JsonSerializer.Serialize(result));bool success=json.RootElement.GetProperty("headersReceived").GetBoolean();
         Console.WriteLine(JsonSerializer.Serialize(new{success,result}));return success?0:1;
     }
@@ -39,25 +57,26 @@ internal static class NativeCoverageLab
         throw new IOException("No public A answer.");
     }
     static readonly string[] Domains=["example.com","cloudflare-dns.com","www.deepl.com","www.ryuugames.com","srnky.com","windows64.net","telegram.org","github.com","api.github.com","learn.microsoft.com","www.wikipedia.org","upload.wikimedia.org","cdn.jsdelivr.net","www.mozilla.org","www.python.org","www.kernel.org"];
-    static async Task<object> Fetch(string domain,int round,CancellationToken stop)
+    internal static async Task<object> Fetch(string domain,int round,CancellationToken stop)
     {
-        var clock=Stopwatch.StartNew();int? status=null;long bytes=0;string outcome="Unknown";bool headers=false;var causes=new List<string>();
+        var clock=Stopwatch.StartNew();int? status=null;long bytes=0;string outcome="Unknown",phase="request";bool headers=false;var causes=new List<string>();
         using var budget=CancellationTokenSource.CreateLinkedTokenSource(stop);budget.CancelAfter(TimeSpan.FromSeconds(8));
         using var handler=new SocketsHttpHandler{AllowAutoRedirect=false,UseProxy=false,UseCookies=false,ConnectTimeout=TimeSpan.FromSeconds(4),AutomaticDecompression=DecompressionMethods.None};
         using var client=new HttpClient(handler){Timeout=Timeout.InfiniteTimeSpan};
         try
         {
-            if(round==2){var address=await ResolveIndependent(domain,budget.Token);handler.ConnectCallback=(_,ct)=>Connect(address,443,ct);}
+            if(round==2){phase="independent-dns";var address=await ResolveIndependent(domain,budget.Token);handler.ConnectCallback=(_,ct)=>Connect(address,443,ct);phase="request";}
+            if(round==3)handler.ConnectCallback=(_,ct)=>Connect(IPAddress.Parse("198.18.0.62"),443,ct);
             using var request=new HttpRequestMessage(HttpMethod.Get,"https://"+domain+"/");request.Headers.UserAgent.ParseAdd("CITA-Route-Lab/0.6");
             using var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,budget.Token);status=(int)response.StatusCode;headers=true;
-            using var stream=await response.Content.ReadAsStreamAsync(budget.Token);byte[] buffer=new byte[8192];bool eof=false;
+            phase="body";using var stream=await response.Content.ReadAsStreamAsync(budget.Token);byte[] buffer=new byte[8192];bool eof=false;
             while(bytes<65536){int read=await stream.ReadAsync(buffer.AsMemory(0,(int)Math.Min(buffer.Length,65536-bytes)),budget.Token);if(read==0){eof=true;break;}bytes+=read;}
             outcome=status>=300&&status<400?"RedirectNotFollowed":status>=400?"HttpErrorResponse":eof||response.Content.Headers.ContentLength==bytes?"BodyComplete":"BodySampleCapped";
         }
         catch(OperationCanceledException)when(!stop.IsCancellationRequested){outcome=headers?"BodyTimeout":"RequestTimeout";}
         catch(HttpRequestException e){outcome=e.HttpRequestError.ToString();for(Exception? cause=e;cause!=null&&causes.Count<5;cause=cause.InnerException)causes.Add(cause is System.Net.Sockets.SocketException socket?"Socket:"+socket.SocketErrorCode:cause.GetType().Name+":"+cause.HResult);}
         catch(IOException){outcome=headers?"BodyReadFailure":"ConnectionFailure";}
-        return new{domain,round,resolver=round==0?"LiteralFakeIP":round==1?"Windows":"BootstrappedDoH-IPv4",status,headersReceived=headers,bodyBytes=bytes,outcome,causes,elapsedMs=clock.ElapsedMilliseconds};
+        return new{domain,round,resolver=round==0?"LiteralFakeIP":round==1?"Windows":round==3?"VpnOwnerFakeIP":"BootstrappedDoH-IPv4",status,headersReceived=headers,bodyBytes=bytes,outcome,phase,causes,elapsedMs=clock.ElapsedMilliseconds};
     }
     internal static async Task<object> Measure(NativeGuardedSession runtime,string root,CancellationToken stop)
     {

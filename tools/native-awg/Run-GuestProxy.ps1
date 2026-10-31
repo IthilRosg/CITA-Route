@@ -74,9 +74,12 @@ try{
  if($Tun -and (Get-NetAdapter -Name 'Cita-NativeLab' -IncludeHidden -ErrorAction SilentlyContinue)){throw 'Lab TUN already exists'}
  if(Get-Process smart-router,vpn-bridge,RoutePilot,native-awg-lab,native-core-lab,Cita.NativeAgentLab -ErrorAction SilentlyContinue){throw 'Guest must be idle'}
  $report.nativeSha256=(Get-FileHash -LiteralPath $exe).Hash
- . C:\CitaLab\PlatformNext\WireSockCli.ps1
  $cli='C:\Program Files\WireSock Secure Connect\command-line\wiresock-connect-cli.exe'
- if((Get-WireSockState (Read-HelperOutput $cli 'status') 'SmartRouting-AWG2') -ne 'Disconnected'){throw 'WireSock must be disconnected'}
+ if(Test-Path -LiteralPath $cli){
+  . C:\CitaLab\PlatformNext\WireSockCli.ps1
+  if((Get-WireSockState (Read-HelperOutput $cli 'status') 'SmartRouting-AWG2') -ne 'Disconnected'){throw 'WireSock must be disconnected'}
+  $report.wireSockCheck='Disconnected'
+ }else{$report.wireSockCheck='NotInstalled'}
  $before=Topology
  New-Item -ItemType Directory -Path $private|Out-Null
  $rng=[Security.Cryptography.RandomNumberGenerator]::Create();$bytes=New-Object byte[] 32;try{$rng.GetBytes($bytes);$token=([BitConverter]::ToString($bytes)).Replace('-','').ToLowerInvariant()}finally{$rng.Dispose();[Array]::Clear($bytes,0,32)}

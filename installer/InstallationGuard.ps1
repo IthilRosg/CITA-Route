@@ -5,7 +5,7 @@ param([Parameter(Mandatory=$true)][string]$Root,
       [Parameter(Mandatory=$true)][string]$ReleaseFile,
       [Parameter(Mandatory=$true)][version]$Version,
       [ValidateSet('Install','Uninstall')][string]$Mode='Install',[string]$IncomingManifest='',
-      [string]$ConfirmedSameVersion='')
+      [string]$ConfirmedSameVersion='',[string]$ExpectedTransactionId='')
 $ErrorActionPreference='Stop'
 $held=New-Object 'System.Collections.Generic.List[System.IDisposable]'
 $owner=$null
@@ -125,7 +125,7 @@ try{
             New-Item -ItemType Directory -Path (Split-Path $dataOwnerFile) -Force|Out-Null
             [IO.File]::WriteAllText($dataOwnerFile,(@{schema=1;name='CITA Route';root=$rootPath;userSid=$userSid}|ConvertTo-Json),(New-Object Text.UTF8Encoding($false)))
         }
-        Start-InstallTransaction $rootPath $userSid $IncomingManifest $Version
+        Start-InstallTransaction $rootPath $userSid $IncomingManifest $Version $ExpectedTransactionId
         $transactionStarted=$true
     }
     if($Mode -eq 'Uninstall'){

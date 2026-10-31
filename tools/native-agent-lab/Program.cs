@@ -1,5 +1,14 @@
 using System.Text.Json;
 using RoutePilot.Agent;
+if(args.Length==2&&args[0]=="--media-browser-standalone"){
+ var root=Path.GetFullPath(args[1]);if(root!=@"C:\CitaLab\GoodbyeDpi")throw new InvalidDataException("Wrong browser fixture root.");
+ using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(42));Console.WriteLine(JsonSerializer.Serialize(await NativePageLab.Measure(null,root,deadline.Token,true)));return 0;
+}
+if(args.Length==3&&args[0]=="--native-policy-media-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],automatic:true,pages:true,mediaPages:true);
+if(args.Length==3&&args[0]=="--native-policy-live-tcp-dpi-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],dpi:true,livePaths:true,tcpSegments:true);
+if(args.Length==3&&args[0]=="--native-policy-live-dpi-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],dpi:true,livePaths:true);
+if(args.Length==3&&args[0]=="--native-policy-auto-dpi-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],automatic:true,dpi:true);
+if(args.Length==3&&args[0]=="--native-policy-dpi-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],dpi:true);
 if(args.Length==3&&args[0]=="--native-policy-dns-outage-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],automatic:true,dnsOutage:true);
 if(args.Length==3&&args[0]=="--native-policy-dns-fallback-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],automatic:true,coverage:true,dnsFailover:true);
 if(args.Length==3&&args[0]=="--native-policy-pages-lab")return await NativePolicySessionLab.Run(Path.GetFullPath(args[1]),args[2],automatic:true,pages:true);
@@ -33,13 +42,15 @@ if(args.Length==2 && args[0]=="--profiles-races-lab")return await ProfilesLab.Ru
 
 if(args.Length==1 && args[0]=="--self-test")
 {
+    await NativeProfileImportTests.Run();
     var partial=NativeTransportHealth.Read(JsonSerializer.SerializeToElement(new{health="HttpsDegraded",epoch=2,healthProbe=new{https=false,udp=true,completedUnixMilliseconds=123L},socketRepairs=1,restarts=0}));
     if(!partial.HasWorkingProtocol||partial.Https!=false||partial.Udp!=true||partial.Epoch!=2||partial.SocketRepairs!=1||partial.CompletedUnixMilliseconds!=123||partial.ObservedTickMilliseconds<=0)throw new Exception("Partial transport evidence lost identity or protocol outcome.");
     var unknown=NativeTransportHealth.Read(JsonSerializer.SerializeToElement(new{health="Starting",epoch=1}));if(unknown.HasWorkingProtocol||unknown.Https!=null||unknown.Udp!=null||unknown.CompletedUnixMilliseconds!=0)throw new Exception("Missing transport probe inferred as a success or failure.");
     if(!NativeBootIdentity.MayResume(true,"boot-a","boot-a")||NativeBootIdentity.MayResume(true,"boot-a","boot-b")||NativeBootIdentity.MayResume(true,"","")||NativeBootIdentity.MayResume(false,"boot-a","boot-a"))throw new Exception("Native boot ownership failed.");
     RepairBudgetTests.Run();
     var schedule=new NativeCalibrationSchedule();
-    NativeObservedDestination Seen(int i)=>new("h"+i+".example.com","","1.1.1.1",443);
+    NativeObservedDestination Seen(int i)=>new("h"+i+".example.com",@"C:\lab\browser.exe","1.1.1.1",443);
+    if(schedule.Select([new NativeObservedDestination("unidentified.example.com","","1.1.1.1",443)],1000)!=null)throw new Exception("Unidentified processes must not receive a domain-wide route.");
     var wakeup=new NativeObservationWakeup();
     var observedEvents=new List<NativeObservedDestination>();wakeup.Observe([Seen(0)],observedEvents.Add);wakeup.Observe([Seen(0)],observedEvents.Add);
     if(observedEvents.Count!=1||observedEvents[0]!=Seen(0))throw new Exception("Observation trace must identify new tuples exactly once.");wakeup.Reset();

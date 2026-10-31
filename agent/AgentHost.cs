@@ -23,6 +23,10 @@ public sealed class AgentHost
     BootRouting? _boot;
     NativeServiceRoute? _native;
     string? _nativeFailure;
+    Task _nativeTask=Task.CompletedTask;
+    CancellationToken _nativeStop;
+    FileStream? _maintenanceIntent;
+    string? _maintenanceId;
     [DllImport("kernel32.dll",SetLastError=true)]static extern bool GetNamedPipeClientProcessId(IntPtr handle,out uint pid);
     public AgentHost(AgentConfig config)
     {
@@ -34,7 +38,7 @@ public sealed class AgentHost
         if(File.Exists(operation))_operation=Storage.Read<ProcessIdentity>(operation);
     }
     public void RequestRecovery(string reason)=>_recoveryRequested=reason;
-    public void PrepareForShutdown(){_boot?.PrepareForShutdown();_native?.PrepareForShutdown();}
+    public void PrepareForShutdown(){_boot?.PrepareForShutdown();if(_maintenanceIntent==null)_native?.PrepareForShutdown();}
     public async Task Run(CancellationToken stop)
     {
         if(!ClientEdition.NativeOnly)SaveVpnusProof();
@@ -43,9 +47,8 @@ public sealed class AgentHost
             if(_store.State.Kind==TestKind.DryRun && _store.State.Active)_store.State.Results.Add(new("IndependentGuard",true,"The restarted service detected and recovered an unfinished dry run."));
             await Recover("Service restarted with an unfinished run.");
         }
-        var listener=Listen(stop);
-        Task native=Task.CompletedTask;
-        try{_native=NativeServiceRoute.TryLoad();if(_native!=null)native=_native.Run(stop);}catch(Exception e){_nativeFailure=e.GetType().Name;}
+        _nativeStop=stop;var listener=Listen(stop);
+        try{_native=NativeServiceRoute.TryLoad();if(_native!=null)_nativeTask=_native.Run(stop);}catch(Exception e){_nativeFailure=e.GetType().Name;}
         Task startup=Task.CompletedTask;
         if(!ClientEdition.NativeOnly&&_native==null&&_nativeFailure==null){_boot=new BootRouting(_config);startup=_boot.Run(stop);}
         using var resourceStop=CancellationTokenSource.CreateLinkedTokenSource(stop);
@@ -105,7 +108,7 @@ public sealed class AgentHost
             try{await listener;}catch(OperationCanceledException){}
             try{await resources;}catch(OperationCanceledException){}catch{}
             try{await startup;}catch(OperationCanceledException){}
-            try{await native;}catch(OperationCanceledException){}
+            try{await _nativeTask;}catch(OperationCanceledException){}finally{_maintenanceIntent?.Dispose();_maintenanceIntent=null;}
         }
     }
     async Task Listen(CancellationToken stop)
@@ -127,19 +130,76 @@ public sealed class AgentHost
                 var request=JsonSerializer.Deserialize<AgentRequest>(await PipeMessages.Read(pipe,timeout.Token),Storage.Json)??throw new InvalidDataException("Empty request.");
                 AgentReply reply;
                 await _gate.WaitAsync(timeout.Token);
-                try{reply=await Dispatch(request,process);}catch(Exception ex){reply=Reply(false,ex.Message);}finally{_gate.Release();}
+                try{reply=await Dispatch(request,process);}
+                catch(Exception ex){reply=request.Command is "native-maintenance-validate" or "native-maintenance-status"?new(false,"Native maintenance validation refused."):Reply(false,ex.Message);}
+                finally{_gate.Release();}
                 byte[] bytes=Encoding.UTF8.GetBytes(JsonSerializer.Serialize(reply,Storage.Wire)+"\n");
                 await pipe.WriteAsync(bytes,timeout.Token);await pipe.FlushAsync(timeout.Token);
             }
             catch(Exception ex)when(ex is IOException or OperationCanceledException or UnauthorizedAccessException or JsonException or ArgumentException or System.ComponentModel.Win32Exception){Log("IPC: "+ex.Message);}
         }
     }
-    AgentReply Reply(bool success,string message)=>new(success,message,JsonSerializer.Deserialize<RunState>(JsonSerializer.Serialize(_store.State,Storage.Json),Storage.Json),_native?.Snapshot??(_nativeFailure!=null?JsonSerializer.SerializeToElement(new{phase="Unavailable",errorCode=_nativeFailure}):null));
+    AgentReply Reply(bool success,string message)
+    {
+        JsonElement? snapshot=_native?.Snapshot??(_nativeFailure!=null?JsonSerializer.SerializeToElement(new{phase="Unavailable",errorCode=_nativeFailure}):null);
+        return new(success,message,JsonSerializer.Deserialize<RunState>(JsonSerializer.Serialize(_store.State,Storage.Json),Storage.Json),NativeMaintenanceGate.IsPending()?NativeMaintenanceGate.StatusOverlay(snapshot):snapshot);
+    }
     async Task<AgentReply> Dispatch(AgentRequest request,Process caller)
     {
-        if(request.Command=="native-capabilities")return new(true,"Native service capabilities.",Native:JsonSerializer.SerializeToElement(new{setupProtocol=1,importProtocol=1,policyProtocol=1}));
+        if(_maintenanceIntent!=null&&!NativeMaintenanceGate.IsPending()){_maintenanceIntent.Dispose();_maintenanceIntent=null;_maintenanceId=null;}
+        if((request.Command is "native-import" or "native-start" or "native-rules" or "native-forced-read" or "native-forced-init" or "native-forced-replace")&&NativeMaintenanceGate.IsPending())return Reply(false,nameof(NativeMaintenanceInProgress));
+        if(request.Command=="native-capabilities")return new(true,"Native service capabilities.",Native:JsonSerializer.SerializeToElement(new{setupProtocol=1,importProtocol=1,policyProtocol=1,forcedIntentProtocol=1,forcedIntentReplaceProtocol=1,maintenanceGateProtocol=1,maintenanceValidationProtocol=1,connectionProtocol=1}));
+        if(request.Command=="native-maintenance-validate")
+        {
+            NativeMaintenanceValidation.CheckMarker(request.RunId);
+            if(!NativeMaintenanceValidation.MayUseOperation(_operation,caller))throw new InvalidOperationException("Maintenance operation is owned by another process.");
+            if(_maintenanceIntent!=null){if(_maintenanceId!=request.RunId||_native==null||_nativeTask.IsCompleted)throw new InvalidOperationException("Maintenance session unavailable.");return new(true,"Maintenance validation active.",Native:NativeMaintenanceValidation.SafeStatus(_native.Snapshot));}
+            if(_native!=null||!_nativeTask.IsCompleted||_nativeFailure!=nameof(NativeMaintenanceInProgress)||_nativeStop.IsCancellationRequested||_store.State.Active||_store.State.Phase==RunPhase.RecoveryFailed||Process.GetProcessesByName("smart-router").Length>0||Process.GetProcessesByName("vpn-bridge").Length>0)throw new InvalidOperationException("Maintenance validation requires a stopped native session.");
+            var intent=NativeMaintenanceValidation.OpenProtected(Path.Combine(AppContext.BaseDirectory,"native","intent.json"));
+            try
+            {
+                var route=NativeMaintenanceValidation.LoadChecked(intent,()=>NativeServiceRoute.TryLoadForMaintenance()??throw new InvalidDataException("Maintenance native bundle unavailable."));
+                _native=route;_nativeFailure=null;_maintenanceIntent=intent;_maintenanceId=request.RunId;_nativeTask=route.Run(_nativeStop);
+                return new(true,"Maintenance validation started.",Native:NativeMaintenanceValidation.SafeStatus(route.Snapshot));
+            }
+            catch{if(!ReferenceEquals(_maintenanceIntent,intent))intent.Dispose();throw;}
+        }
+        if(request.Command=="native-maintenance-status")
+        {
+            NativeMaintenanceValidation.CheckMarker(request.RunId);
+            if(!NativeMaintenanceValidation.MayUseOperation(_operation,caller))throw new InvalidOperationException("Maintenance operation is owned by another process.");
+            if(_maintenanceIntent==null||_maintenanceId!=request.RunId||_native==null||_nativeTask.IsCompleted)throw new InvalidOperationException("Maintenance validation is unavailable.");
+            return new(true,"Maintenance validation status.",Native:NativeMaintenanceValidation.SafeStatus(_native.Snapshot));
+        }
         if(request.Command=="native-status")return Reply(_native!=null,"Native backend status.");
         if(request.Command=="native-resources")return new(_native!=null,"Read-only native resource snapshot.",Native:_native?.ReadResources(request.RunId));
+        if(request.Command is "native-trace-on" or "native-trace-off" or "native-trace-read")
+        {
+            if(_native==null)return Reply(false,"Decision trace is unavailable.");
+            try{return new(true,"Decision trace.",Native:_native.ReadDecisionTrace(request.RunId,request.Command=="native-trace-read"?null:request.Command=="native-trace-on"));}
+            catch{return Reply(false,"Decision trace is unavailable for this session.");}
+        }
+        if(request.Command=="native-forced-read")
+        {
+            if(_native==null)return Reply(false,"Native backend is unavailable.");
+            try{var document=_native.ReadForcedIntent(request.Forced?.ExpectedRevision??1);return new(true,"Forced intent read.",Native:JsonSerializer.SerializeToElement(new{document,service=_native.Snapshot}));}
+            catch(ArgumentOutOfRangeException){return Reply(false,"Forced intent revision floor is required.");}
+            catch(FileNotFoundException){return Reply(false,"Forced intent is not initialized.");}
+            catch{return Reply(false,"Forced intent read refused.");}
+        }
+        if(request.Command=="native-forced-init")
+        {
+            if(_native==null||_store.State.Active||_operation?.Matches()==true)return Reply(false,"Forced intent initialization is unavailable.");
+            try{var document=_native.InitializeForcedIntent();return new(true,"Forced intent initialized.",Native:JsonSerializer.SerializeToElement(new{document,service=_native.Snapshot}));}catch{return Reply(false,"Forced intent initialization refused.");}
+        }
+        if(request.Command=="native-forced-replace")
+        {
+            if(_native==null||request.Forced==null||_store.State.Active||_operation?.Matches()==true)return Reply(false,"Forced intent replacement is unavailable.");
+            try{var document=_native.ReplaceForcedIntent(request.Forced.ExpectedRevision,request.Forced.Rules);return new(true,"Forced intent replaced.",Native:JsonSerializer.SerializeToElement(new{document,service=_native.Snapshot}));}
+            catch(NativeForcedIntentConflictException){return Reply(false,"Forced intent revision conflict.");}
+            catch(NativeForcedIntentCommitUnknownException unknown){return new(false,"Forced intent commit requires reconciliation.",Native:JsonSerializer.SerializeToElement(new{reconciliationRequired=true,attemptedRevision=unknown.AttemptedRevision,service=_native.Snapshot}));}
+            catch{return Reply(false,"Forced intent replacement refused.");}
+        }
         if(request.Command=="native-rules")
         {
             if(_native==null||request.Policy==null||_store.State.Active||_operation?.Matches()==true)return Reply(false,"Native policy is unavailable.");
@@ -150,12 +210,19 @@ public sealed class AgentHost
             if(_native==null||request.Profile==null||_store.State.Active||_store.State.Phase==RunPhase.RecoveryFailed||_operation?.Matches()==true||Process.GetProcessesByName("smart-router").Length>0||Process.GetProcessesByName("vpn-bridge").Length>0)return Reply(false,"Native profile import is unavailable.");
             try{_native.RequestImport(request.Profile,request.RunId);return Reply(true,"Native profile validation started.");}catch{return Reply(false,"Native profile import refused. Disconnect and refresh before retrying.");}
         }
-        if(request.Command is "native-start" or "native-stop")
+        if(request.Command=="native-stop-session")
         {
             if(_native==null)return Reply(false,"Protected native backend is not configured.");
             if(_store.State.Active||_operation?.Matches()==true)return Reply(false,"Another network operation owns the coordinator.");
+            _native.StopByConnectionId(request.ConnectionId);return Reply(true,"Native connection stop accepted.");
+        }
+        if(request.Command is "native-start" or "native-stop")
+        {
+            if(request.Command=="native-stop"&&_maintenanceIntent!=null)return Reply(true,"Maintenance session is already disconnected.");
+            if(_native==null)return Reply(false,"Protected native backend is not configured.");
+            if(_store.State.Active||_operation?.Matches()==true)return Reply(false,"Another network operation owns the coordinator.");
             if(request.Command=="native-start"&&(Process.GetProcessesByName("smart-router").Length>0||Process.GetProcessesByName("vpn-bridge").Length>0))return Reply(false,"Disconnect the current legacy router before selecting the native backend.");
-            _native.Request(request.Command=="native-start",request.RunId);return Reply(true,"Native operation accepted.");
+            _native.Request(request.Command=="native-start",request.RunId,request.Command=="native-start"?request.ConnectionId:null);return Reply(true,"Native operation accepted.");
         }
         if(request.Command=="status")return Reply(true,"Local rescue service available.");
         if(request.Command is "boot-stop" or "boot-disable")

@@ -9,8 +9,11 @@ function Topology{
 try{
  if(Get-Process native-awg-lab,native-core-lab,Cita.NativeAgentLab,smart-router,vpn-bridge -ErrorAction SilentlyContinue){throw 'Guest must be idle'}
  if(Get-NetAdapter -Name Cita-NativeLab -IncludeHidden -ErrorAction SilentlyContinue){throw 'Existing lab TUN refused'}
- . C:\CitaLab\PlatformNext\WireSockCli.ps1
- if((Get-WireSockState (Read-HelperOutput 'C:\Program Files\WireSock Secure Connect\command-line\wiresock-connect-cli.exe' 'status') 'SmartRouting-AWG2') -ne 'Disconnected'){throw 'Guest WireSock must be disconnected'}
+ $wireSockCli='C:\Program Files\WireSock Secure Connect\command-line\wiresock-connect-cli.exe'
+ if(Test-Path -LiteralPath $wireSockCli){
+  . C:\CitaLab\PlatformNext\WireSockCli.ps1
+  if((Get-WireSockState (Read-HelperOutput $wireSockCli 'status') 'SmartRouting-AWG2') -ne 'Disconnected'){throw 'Guest WireSock must be disconnected'}
+ }
  $before=Topology;$physical=@(Get-NetIPConfiguration|Where-Object {$_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up'});if($physical.Count -ne 1){throw 'One physical gateway required'}
  $text=[IO.File]::ReadAllText((Join-Path $root 'private\peer.conf'));if($text -notmatch '(?m)^DNS\s*=\s*(\d+\.\d+\.\d+\.\d+)'){throw 'Literal DNS required'};$dns=$Matches[1];$text=$null
  $owner=[guid]::NewGuid().ToString('N')

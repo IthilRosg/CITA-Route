@@ -35,22 +35,35 @@ type request struct {
 	Endpoint         *endpointPermission
 	ExpectedEndpoint string
 	Direct           *directPermission
+	Connector        *connectorPermission
+	EvidencePort     uint16
+	Continuous       bool
+	SocketLease      string
 }
 type reply struct {
-	Run            string   `json:"run"`
-	Success        bool     `json:"success"`
-	Stage          string   `json:"stage"`
-	Rules          int      `json:"rules"`
-	ErrorType      string   `json:"errorType,omitempty"`
-	PolicyDigest   string   `json:"policyDigest,omitempty"`
-	Prefixes       []string `json:"prefixes,omitempty"`
-	TunnelLuid     uint64   `json:"tunnelLuid,omitempty"`
-	Permits        int      `json:"permits"`
-	Reason         string   `json:"reason,omitempty"`
-	Shape          []string `json:"shape,omitempty"`
-	EndpointDigest string   `json:"endpointDigest,omitempty"`
-	DirectPermits  int      `json:"directPermits"`
-	DirectDigest   string   `json:"directDigest,omitempty"`
+	Run                 string          `json:"run"`
+	Success             bool            `json:"success"`
+	Stage               string          `json:"stage"`
+	Rules               int             `json:"rules"`
+	ErrorType           string          `json:"errorType,omitempty"`
+	PolicyDigest        string          `json:"policyDigest,omitempty"`
+	Prefixes            []string        `json:"prefixes,omitempty"`
+	TunnelLuid          uint64          `json:"tunnelLuid,omitempty"`
+	Permits             int             `json:"permits"`
+	Reason              string          `json:"reason,omitempty"`
+	Shape               []string        `json:"shape,omitempty"`
+	EndpointDigest      string          `json:"endpointDigest,omitempty"`
+	DirectPermits       int             `json:"directPermits"`
+	DirectDigest        string          `json:"directDigest,omitempty"`
+	ConnectorPermits    int             `json:"connectorPermits"`
+	ConnectorDigest     string          `json:"connectorDigest,omitempty"`
+	ConnectorProtocol   int             `json:"connectorProtocol,omitempty"`
+	InjectorProtocol    int             `json:"injectorProtocol,omitempty"`
+	ConnectorDrops      []*wf.DropEvent `json:"connectorDrops,omitempty"`
+	SocketLease         string          `json:"socketLease,omitempty"`
+	SocketLeaseProtocol int             `json:"socketLeaseProtocol,omitempty"`
+	SystemPermits       int             `json:"systemPermits"`
+	SocketAgentPermits  int             `json:"socketAgentPermits"`
 }
 
 func identity(run, role string) windows.GUID {
@@ -63,6 +76,26 @@ func identity(run, role string) windows.GUID {
 	return g
 }
 func validate(r request) ([]netip.Prefix, error) {
+	if r.Continuous || r.SocketLease != "" {
+		return nil, errors.New("unexpected continuous lease scope")
+	}
+	if r.Action == "InspectDrops" {
+		if r.EvidencePort < 1024 {
+			return nil, errors.New("exact evidence socket required")
+		}
+	} else if r.EvidencePort != 0 {
+		return nil, errors.New("unexpected evidence scope")
+	}
+	if r.Action == "GrantConnector" || r.Action == "RevokeConnector" {
+		if _, _, e := connectorTarget(r.Connector); e != nil {
+			return nil, e
+		}
+		if len(r.ExpectedPolicy) != 64 || len(r.ExpectedEndpoint) != 64 {
+			return nil, errors.New("connector guard identity")
+		}
+	} else if r.Connector != nil {
+		return nil, errors.New("unexpected connector scope")
+	}
 	if r.Action == "GrantDirect" || r.Action == "RevokeDirect" {
 		if _, _, e := directTarget(r.Direct); e != nil {
 			return nil, e
@@ -77,7 +110,7 @@ func validate(r request) ([]netip.Prefix, error) {
 		return nil, errors.New("unexpected endpoint")
 	}
 	b, e := hex.DecodeString(r.Run)
-	if e != nil || len(b) != 16 || r.Run != strings.ToLower(r.Run) || r.Action != "Arm" && r.Action != "Inspect" && r.Action != "Cleanup" && r.Action != "Plan" && r.Action != "BindTunnel" && r.Action != "CloseTunnel" && r.Action != "GrantDirect" && r.Action != "RevokeDirect" {
+	if e != nil || len(b) != 16 || r.Run != strings.ToLower(r.Run) || r.Action != "Arm" && r.Action != "Inspect" && r.Action != "InspectDrops" && r.Action != "Cleanup" && r.Action != "Plan" && r.Action != "BindTunnel" && r.Action != "CloseTunnel" && r.Action != "GrantDirect" && r.Action != "RevokeDirect" && r.Action != "GrantConnector" && r.Action != "RevokeConnector" {
 		return nil, errors.New("identity")
 	}
 	if r.Action == "BindTunnel" {
@@ -129,24 +162,35 @@ func validate(r request) ([]netip.Prefix, error) {
 func guestOnly() error {
 	// Production invocation is confined to LocalSystem in the protected agent
 	// location. The service independently verifies/leases the component catalog.
-	if user, e := windows.GetCurrentProcessToken().GetTokenUser(); e == nil && user.User.Sid.String() == "S-1-5-18" {
-		if image, e := os.Executable(); e == nil {
-			expected := filepath.Join(os.Getenv("ProgramFiles"), "RoutePilot", "Agent", "native", "native-guard.exe")
-			if strings.EqualFold(filepath.Clean(image), filepath.Clean(expected)) {
-				return nil
-			}
-		}
+	if productionSocketGuard() {
+		return nil
 	}
- if id,e:=nativeGuestUUID();e==nil{if strings.EqualFold(id,"E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83"){return nil};return errors.New("wrong isolated guest")}
+	if id, e := nativeGuestUUID(); e == nil {
+		if allowedLabIdentity(id) {
+			return nil
+		}
+		return errors.New("wrong isolated guest")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance Win32_ComputerSystemProduct).UUID")
 	c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, e := c.Output()
-	if e != nil || !strings.EqualFold(strings.TrimSpace(string(out)), "E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83") {
+	if e != nil || !allowedLabIdentity(strings.TrimSpace(string(out))) {
 		return errors.New("wrong isolated guest")
 	}
 	return nil
+}
+func allowedLabIdentity(id string) bool {
+	if strings.EqualFold(id, "E24A4D56-C1D9-21AA-DE2E-8572C9F7FE83") {
+		return true
+	}
+	if !strings.EqualFold(id, "F8798200-12FB-11F1-8F47-A104BEE59100") || os.Getenv("CITA_PHYSICAL_GUARD_LAB") != "1" {
+		return false
+	}
+	image, e := os.Executable()
+	expected := filepath.Join(os.Getenv("ProgramFiles"), "RoutePilot", "Agent", "zapret-live-lab", "native", "native-guard.exe")
+	return e == nil && strings.EqualFold(filepath.Clean(image), filepath.Clean(expected))
 }
 func owned(s *wf.Session, r request) ([]*wf.Rule, error) {
 	providers, e := s.Providers()
@@ -170,6 +214,9 @@ func owned(s *wf.Session, r request) ([]*wf.Rule, error) {
 	var ours []*wf.Rule
 	for _, f := range rules {
 		if f.Provider == id || f.Sublayer == wf.SublayerID(identity(r.Run, "sublayer")) {
+			if found && (isSystemCompanion(r.Run, f) || isDynamicSocketAgent(r.Run, f)) {
+				continue
+			}
 			if !found || f.Provider != id || f.Sublayer != wf.SublayerID(identity(r.Run, "sublayer")) || f.Name != marker+r.Run || !bytes.Equal(f.ProviderData, []byte(marker+r.Run)) || !f.Persistent {
 				return nil, errors.New("filter ownership")
 			}
@@ -186,7 +233,7 @@ func execute(r request, out io.Writer) (res reply) {
 		return
 	}
 	if r.Action == "Plan" {
-		res = reply{Success: true, Stage: "Planned", PolicyDigest: policyDigest(prefixes)}
+		res = reply{Success: true, Stage: "Planned", PolicyDigest: policyDigest(prefixes), ConnectorProtocol: 1, InjectorProtocol: 1, SocketLeaseProtocol: dynamicSocketProtocol()}
 		if r.Endpoint != nil {
 			app, addr, e := endpointIdentity(r.Endpoint)
 			if e != nil {
@@ -256,6 +303,32 @@ func execute(r request, out io.Writer) (res reply) {
 		}
 	}
 	switch r.Action {
+	case "InspectDrops":
+		events, e := s.DropEvents()
+		if e != nil {
+			return fail("ReadConnectorDrops", e)
+		}
+		var selected []*wf.DropEvent
+		for _, event := range events {
+			if len(selected) >= 16 {
+				break
+			}
+			// Include other providers too: an injected packet may be rejected by
+			// a different WFP sublayer. Keep this read-only evidence confined to
+			// our ephemeral port and the currently protected destination.
+			contained := false
+			for _, prefix := range protected {
+				if prefix.Contains(event.RemoteAddr.Addr()) {
+					contained = true
+					break
+				}
+			}
+			age := time.Since(event.Timestamp)
+			if contained && event.LocalAddr.Port() == r.EvidencePort && event.IPProtocol == 6 && event.RemoteAddr.Port() == 443 && age >= 0 && age < 30*time.Second {
+				selected = append(selected, event)
+			}
+		}
+		return reply{Success: true, Stage: "ConnectorDrops", PolicyDigest: policyDigest(protected), EndpointDigest: endpointDigest, ConnectorDrops: selected}
 	case "Arm":
 		for _, p := range protected {
 			found := false
@@ -325,7 +398,16 @@ func execute(r request, out io.Writer) (res reply) {
 		}
 		existing, e = owned(s, r)
 		expectedCount := len(prefixes) + permits
-  directCount,_,directError:=describeDirect(existing);if directError!=nil{return fail("ArmDirectShape",directError)};expectedCount+=directCount
+		directCount, _, directError := describeDirect(existing)
+		if directError != nil {
+			return fail("ArmDirectShape", directError)
+		}
+		expectedCount += directCount
+		connectorCount, _, connectorError := describeConnectors(existing)
+		if connectorError != nil {
+			return fail("ArmConnectorShape", connectorError)
+		}
+		expectedCount += connectorCount
 		if r.Endpoint != nil {
 			expectedCount++
 		}
@@ -347,7 +429,27 @@ func execute(r request, out io.Writer) (res reply) {
 		if e != nil {
 			return fail("InspectDirect", e)
 		}
-		return reply{Success: true, Stage: "Inspected", Rules: len(existing), PolicyDigest: policyDigest(protected), TunnelLuid: luid, Permits: permits, EndpointDigest: endpointDigest, DirectPermits: count, DirectDigest: digest}
+		connectorCount, connectorDigest, e := describeConnectors(existing)
+		if e != nil {
+			return fail("InspectConnector", e)
+		}
+		return reply{Success: true, Stage: "Inspected", Rules: len(existing), PolicyDigest: policyDigest(protected), TunnelLuid: luid, Permits: permits, EndpointDigest: endpointDigest, DirectPermits: count, DirectDigest: digest, ConnectorPermits: connectorCount, ConnectorDigest: connectorDigest}
+	case "GrantConnector", "RevokeConnector":
+		if len(protected) == 0 {
+			return fail("ConnectorRequiresProtection", errors.New("empty guard"))
+		}
+		if e := updateConnector(s, r, existing, protected, r.Action == "GrantConnector"); e != nil {
+			return fail("UpdateConnector", e)
+		}
+		now, e := owned(s, r)
+		if e != nil {
+			return fail("VerifyConnectorOwnership", e)
+		}
+		count, digest, e := describeConnectors(now)
+		if e != nil {
+			return fail("VerifyConnector", e)
+		}
+		return reply{Success: true, Stage: r.Action, Rules: len(now), PolicyDigest: policyDigest(protected), TunnelLuid: luid, Permits: permits, EndpointDigest: endpointDigest, ConnectorPermits: count, ConnectorDigest: digest}
 	case "GrantDirect", "RevokeDirect":
 		if len(protected) == 0 {
 			return fail("DirectRequiresProtection", errors.New("empty guard"))
@@ -456,6 +558,16 @@ func main() {
 	if d.Decode(&r) != nil {
 		json.NewEncoder(os.Stdout).Encode(reply{Stage: "Decode", ErrorType: "InvalidRequest"})
 		os.Exit(1)
+	}
+	if r.Action == "HoldSystemConnector" || r.Action == "CheckSystemConnector" {
+		res := holdSystemConnector(r, d, os.Stdout)
+		res.Run = r.Run
+		res.SocketLease = r.SocketLease
+		json.NewEncoder(os.Stdout).Encode(res)
+		if !res.Success {
+			os.Exit(1)
+		}
+		return
 	}
 	res := execute(r, os.Stdout)
 	res.Run = r.Run

@@ -5,7 +5,7 @@ internal static class NativePerformanceLab
 {
     sealed record ProcessUsage(string Role,int Id,long StartedTicks,long CpuTicks,long PrivateBytes,long WorkingSetBytes,int Handles,int Threads);
     sealed record Sample(string Phase,long ElapsedMs,double IntervalMs,double NativeMachineCpuPercent,double? PersistentMachineCpuPercent,double ControllerMachineCpuPercent,uint ProcessesStarted,uint ActiveProcesses,ulong PeakJobCommittedBytes,ProcessUsage[] Processes,long? ProbeMs);
-    internal static async Task<object> Measure(NativeGuardedSession runtime,string root,CancellationToken stop)
+    internal static async Task<object> Measure(NativeGuardedSession runtime,string root,CancellationToken stop,Dictionary<string,object?> report)
     {
         var samples=new List<Sample>();int cpus=Environment.ProcessorCount;var clock=Stopwatch.StartNew();
         var prior=runtime.ResourceUsage;using var controller=Process.GetCurrentProcess();double lastCpu=controller.TotalProcessorTime.TotalMilliseconds;long last=0;
@@ -24,12 +24,15 @@ internal static class NativePerformanceLab
         async Task Take(string phase,bool probe)
         {
             long? probeMs=null;
-            if(probe){var timer=Stopwatch.StartNew();var result=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true);if(!result.GetProperty("success").GetBoolean())throw new IOException("Performance control probe failed.");probeMs=timer.ElapsedMilliseconds;}
+            if(probe){var timer=Stopwatch.StartNew();var result=await CoreSafetyLab.Tun(Path.Combine(root,"native-owner.exe"),"1.1.1.1",stop,domain:true);if(!result.GetProperty("success").GetBoolean()){
+                string dns=result.TryGetProperty("dnsFailure",out var failure)&&failure.ValueKind==System.Text.Json.JsonValueKind.String?failure.GetString()??"":"";
+                string stage=result.TryGetProperty("stage",out var stageValue)&&stageValue.ValueKind==System.Text.Json.JsonValueKind.String?stageValue.GetString()??"":"";
+                report["performanceControlFailure"]=new{sample=samples.Count,phase,stage,dnsFailure=dns,udpBefore=result.TryGetProperty("udpBefore",out var before)&&before.TryGetInt32(out int n)?n:0,udpAfter=result.TryGetProperty("udpAfter",out var after)&&after.TryGetInt32(out int m)?m:0};throw new IOException("Performance control probe failed.");}probeMs=timer.ElapsedMilliseconds;}
             else await Task.Delay(1000,stop);
             var usage=runtime.ResourceUsage;controller.Refresh();double cpu=controller.TotalProcessorTime.TotalMilliseconds;long now=clock.ElapsedMilliseconds;double interval=now-last;
             if(interval<=0||usage.CpuTicks<prior.CpuTicks||usage.ProcessesStarted<prior.ProcessesStarted||usage.PeakCommittedBytes==0)throw new IOException("Native resource accounting invalid.");
             var processes=Processes();var persistent=processes.Where(p=>p.Role is "core" or "transport").ToArray();
-            double? persistentCpu=persistent.Length>=3&&persistent.All(p=>previousProcesses.TryGetValue((p.Id,p.StartedTicks),out long ticks)&&p.CpuTicks>=ticks)?100*persistent.Sum(p=>p.CpuTicks-previousProcesses[(p.Id,p.StartedTicks)])/10000.0/interval/cpus:null;
+            double? persistentCpu=persistent.Length>=2&&persistent.Select(p=>p.Role).ToHashSet().SetEquals(["core","transport"])&&persistent.All(p=>previousProcesses.TryGetValue((p.Id,p.StartedTicks),out long ticks)&&p.CpuTicks>=ticks)?100*persistent.Sum(p=>p.CpuTicks-previousProcesses[(p.Id,p.StartedTicks)])/10000.0/interval/cpus:null;
             samples.Add(new(phase,now,interval,100*(usage.CpuTicks-prior.CpuTicks)/10000.0/interval/cpus,persistentCpu,100*(cpu-lastCpu)/interval/cpus,usage.ProcessesStarted,usage.ActiveProcesses,usage.PeakCommittedBytes,processes,probeMs));prior=usage;last=now;lastCpu=cpu;
             previousProcesses=persistent.ToDictionary(p=>(p.Id,p.StartedTicks),p=>p.CpuTicks);
         }

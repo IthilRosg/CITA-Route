@@ -65,7 +65,9 @@ function Restore-InstallTransaction([string]$RootPath,[string]$Sid) {
         throw 'Не удалось полностью восстановить предыдущую установку. Резервная копия сохранена. Закрой программы, использующие её файлы, и повтори установщик.'
     }
 }
-function Start-InstallTransaction([string]$RootPath,[string]$Sid,[string]$IncomingManifest,[version]$Version) {
+function Start-InstallTransaction([string]$RootPath,[string]$Sid,[string]$IncomingManifest,[version]$Version,[string]$TransactionId='') {
+    if($TransactionId -and $TransactionId -cnotmatch '^[a-f0-9]{32}$'){throw 'Недопустимый идентификатор операции установки.'}
+    if($TransactionId){$existing=Read-InstallJournal $RootPath $Sid;if($existing -and $existing.id -ceq $TransactionId){throw 'Идентификатор операции уже использован.'}}
     Clear-InstallBackup $RootPath $Sid
     if(-not $IncomingManifest -or (Get-Item -LiteralPath $IncomingManifest).Length -gt 4MB){throw 'Отсутствует проверяемый список файлов новой установки.'}
     $incoming=[IO.File]::ReadAllText($IncomingManifest)|ConvertFrom-Json
@@ -77,7 +79,8 @@ function Start-InstallTransaction([string]$RootPath,[string]$Sid,[string]$Incomi
     if(Test-Path -LiteralPath $oldManifest){if((Get-Item -LiteralPath $oldManifest).Length -gt 4MB){throw 'Список предыдущей установки слишком велик.'};$manifests+=([IO.File]::ReadAllText($oldManifest)|ConvertFrom-Json)}
     foreach($manifest in $manifests){foreach($file in $manifest.files){if($file.path -in @('force-direct.txt','force-vpn.txt')){continue};$null=Get-InstallPublicPath $RootPath $file.path;$null=$names.Add($file.path.Replace('/','\'))}}
     if($names.Count -gt 4096){throw 'Слишком много публичных файлов установки.'}
-    $id=[guid]::NewGuid().ToString('N');$backup=Join-Path $RootPath ('runtime\installation-backup-'+$id)
+    $id=if($TransactionId){$TransactionId}else{[guid]::NewGuid().ToString('N')};$backup=Join-Path $RootPath ('runtime\installation-backup-'+$id)
+    if(Test-Path -LiteralPath $backup){throw 'Резервная копия операции уже существует.'}
     [void][IO.Directory]::CreateDirectory($backup);$entries=@()
     foreach($name in $names){
         $target=Get-InstallPublicPath $RootPath $name;$exists=Test-Path -LiteralPath $target;$entry=@{name=$name;existed=[bool]$exists;sha256=''}

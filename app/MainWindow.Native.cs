@@ -15,6 +15,7 @@ public partial class MainWindow
     ComboBox _nativeMode=new();ComboBoxItem _nativeItem=new();TextBlock _nativeHint=new();
     Button _nativeImportButton=new();
     Button _nativeSetupButton=new();
+    readonly TextBlock _nativeRoutingStats=new(){Text="Статистика проверок появится после подключения.",TextWrapping=TextWrapping.Wrap};
     bool _nativeModeChanging;DateTime _nativeReadUtc;DateTime _nativeRetryUtc;Border? _nativeWireSockCard;
     bool UseNativeBackend=>ClientEdition.NativeOnly||_nativeChoice.Selected||_nativeView?.Desired==true||_nativeView?.Phase=="Importing";
     string NativeChoicePath=>Path.Combine(_root,"data","transport-choice.json");
@@ -59,12 +60,22 @@ public partial class MainWindow
         _nativeHint.Text=_nativeView?.Available==true?"Импортируй свой IPv4-профиль с одним сервером. Новые HTTPS-домены сначала используют VPN, затем проверяется прямой путь. IPv6 и команды запуска из профиля пока не поддерживаются.":"Нажми «Подключить»: CITA подготовит собственный движок и предложит импортировать .conf. Отдельный VPN-клиент не требуется.";
         if(!UseNativeBackend)return false;
         if((_nativeView?.Desired==true||_nativeView?.Phase=="Importing")&&!_nativeChoice.Selected){_nativeChoice.Selected=true;AppPaths.Write(NativeChoicePath,_nativeChoice);_nativeModeChanging=true;_nativeMode.SelectedIndex=1;_nativeModeChanging=false;}
-        ApplyNativeView(_nativeView);return true;
+        ApplyNativeView(_nativeView);
+        if(ClientEdition.NativeOnly)
+        {
+            _nativeTraceToggle.IsEnabled=_nativeView?.Connected==true||(_nativeTraceToggle.IsChecked==true&&_nativeView?.Desired==true);
+            if(_nativeView?.Desired!=true){_nativeTraceToggle.IsChecked=false;_nativeTraceText.Text="";_nativeTraceText.Visibility=Visibility.Collapsed;}
+            else if(_nativeTraceToggle.IsChecked==true&&_nativeView.Connected&&DateTime.UtcNow>=_nativeTraceNext)await RefreshNativeTraceAsync();
+        }
+        return true;
     }
     internal void ApplyNativeView(NativeRouteView? state)
     {
+        if(_nativeSetupInstalling){_engineRunning=false;_engineAvailable=false;_vpnConnected=false;SetStatus("Устанавливаем модуль",false);FooterStatus.Text="Применяем обновление и проверяем компоненты…";SyncCompact();return;}
         bool previousDesired=_nativeView?.Desired==true||_nativeView?.Phase=="Importing";if(state!=null)_nativeView=state;_engineRunning=state!=null?state.Desired||state.Phase=="Importing":previousDesired;_engineAvailable=state?.Available==true;_vpnConnected=state?.Connected==true;
         SetStatus(NativeRoutePresentation.Title(state),state?.Connected==true);FooterStatus.Text=NativeRoutePresentation.Detail(state);
+        if(ClientEdition.NativeOnly){var r=state?.Runtime;_nativeRoutingStats.Text=r==null?"Статистика проверок появится после подключения.":$"За эту сессию: проверок прямого пути — {r.CalibrationChecks}, подтверждено — {r.CalibrationPassed}, не подтверждено — {r.CalibrationFailed}, ошибок проверки — {r.CalibrationErrors}. Активных прямых решений — {r.CalibratedDomains}. Прямых соединений с последнего запуска двигателя — {r.PolicyDirectDials}.\nСреди недавно замеченных HTTPS-направлений: {r.ObservedDestinations}, приложение определено для {r.IdentifiedDestinations}.";}
+        if(ClientEdition.NativeOnly)ProfileLabel.Text=string.IsNullOrWhiteSpace(state?.ProfileName)?"Профиль: выбери .conf":"Профиль: "+state.ProfileName;
         DownloadRateLabel.Text=UploadRateLabel.Text=ConnectionCountLabel.Text=VpnCountLabel.Text=DirectCountLabel.Text=UptimeLabel.Text="—";VpnShareBar.Value=0;
         CompactVpnRtt.Text="Задержка: —";CompactVpnLoss.Text="Потери: —";
         SyncCompact();
@@ -76,7 +87,7 @@ public partial class MainWindow
         if(!UseNativeBackend)return;
         CompactTraffic.Text="—";SetNativeQualityCaption(true);
         CompactProfile.Text=_nativeView?.ProfileName??"Профиль встроенного VPN";CompactProfile.ToolTip=CompactProfile.Text;
-        if(!_updateInstalling&&!_updateDownloading&&!_lastNoticeError){CompactStage.Text=FooterStatus.Text;CompactStage.ToolTip=FooterStatus.Text;}
+        if(!_updateInstalling&&!_updateDownloading&&!_busy&&!_lastNoticeError&&(DateTime.UtcNow-_lastNoticeAt).TotalSeconds>=8){CompactStage.Text=FooterStatus.Text;CompactStage.ToolTip=FooterStatus.Text;}
     }
     void SetNativeQualityCaption(bool native)
     {
@@ -99,24 +110,55 @@ public partial class MainWindow
     {
         if(start&&_nativeView?.Phase=="Unconfigured")
         {if(startOnly){Notice("Автоподключение: сначала импортируй профиль встроенного режима.");return false;}await ImportNativeProfileAsync();if(_nativeView?.Phase!="Disconnected"||string.IsNullOrEmpty(_nativeView.ProfileId))return false;}
-        if(_render)return false;if(_busy){_connectionCancellation?.Cancel();return false;}
-        _busy=true;_connectionCancellation=new();SyncConnectionButtons();string? operation=null;bool requestedStart=false;
+        if(_render)return false;if(_busy){if(!startOnly)_connectionCancellation?.Cancel();return false;}
+        _busy=true;_connectionCancellation=new();SyncConnectionButtons();string? operation=null;string? connectionId=null;string? stoppingId=null;string? startOperation=null;bool requestedStart=false;
         try
         {
-            var state=(await _nativeClient.Command("status")).Native;if(state==null||!state.Available)throw new IOException("Встроенный режим не подготовлен.");_nativeView=state;
+            var state=(await _nativeClient.Command("status",cancellation:_connectionCancellation.Token)).Native;if(state==null||!state.Available)throw new IOException("Встроенный режим не подготовлен.");_nativeView=state;
+            if(startOnly&&state.Phase=="Unconfigured"){Notice("Автоподключение: сначала импортируй профиль встроенного режима.");return false;}
             if(start&&state.Phase=="Stopping"&&!state.Desired){using var cleanup=CancellationTokenSource.CreateLinkedTokenSource(_connectionCancellation.Token);cleanup.CancelAfter(TimeSpan.FromSeconds(35));state=await _nativeClient.Wait(state.Operation,false,new Progress<NativeRouteView>(ApplyNativeView),cleanup.Token);_nativeView=state;}
             if(startOnly&&(state.Desired||state.Phase=="Importing"))return true;
             if(state.Phase=="Importing")start=false;
-            if(start&&!state.Desired&&!ConfirmNativeProfile())return false;
-            var reply=await _nativeClient.Command(start?"native-start":"native-stop",start?null:state.Operation);
-            if(!reply.Success||reply.Native==null)throw new IOException("Служба не приняла запрос. Проверь журнал подключения.");operation=reply.Native.Operation;requestedStart=start;
+            if(start&&!state.Desired)
+            {
+                if(startOnly&&!NativeLaunchPolicy.ConfirmedProfileMatches(_nativeChoice.ConfirmedProfile,state.ProfileId)){Notice("Автоподключение: подтверди выбранный профиль кнопкой «Подключить».",true);return false;}
+                if(!startOnly&&!ConfirmNativeProfile())return false;
+            }
+            NativeControlReply reply;
+            if(start)
+            {
+                var capabilities=await _nativeClient.Command("native-capabilities",cancellation:_connectionCancellation.Token);
+                if(!NativeConnectionPolicy.SupportsProtocol(capabilities))throw new IOException("Обнови встроенный модуль CITA Route: установленная служба не поддерживает безопасное подключение.");
+                connectionId=Guid.NewGuid().ToString("N");startOperation=state.Operation;
+                if(startOnly)NativeLaunchRequest.Save(_root,state,connectionId);
+                requestedStart=true;
+                reply=await _nativeClient.StartConnection(state.Operation,connectionId,_connectionCancellation.Token);
+                if(!reply.Success||reply.Native==null)throw new IOException("Служба не приняла запрос. Проверь журнал подключения.");
+                NativeConnectionPolicy.RequireOwned(reply.Native,connectionId);
+                if(!string.Equals(reply.Native.ProfileId,state.ProfileId,StringComparison.Ordinal))throw new IOException("Выбранный профиль изменился. Проверь подключение.");
+            }
+            else if(NativeConnectionPolicy.StopIdentity(state) is string ownStopId)
+            {
+                stoppingId=ownStopId;reply=await _nativeClient.StopConnection(stoppingId,_connectionCancellation.Token);
+            }
+            else reply=await _nativeClient.Command("native-stop",state.Operation,_connectionCancellation.Token);
+            if(!reply.Success||reply.Native==null)throw new IOException("Служба не приняла запрос. Проверь журнал подключения.");operation=reply.Native.Operation;
             using var limit=CancellationTokenSource.CreateLinkedTokenSource(_connectionCancellation.Token);limit.CancelAfter(TimeSpan.FromSeconds(60));
-            await _nativeClient.Wait(operation,start,new Progress<NativeRouteView>(ApplyNativeView),limit.Token);Notice(start?"Подключено. Выход VPN проверен.":"Подключение отключено.");return true;
+            if(start)await _nativeClient.WaitConnection(connectionId!,true,new Progress<NativeRouteView>(ApplyNativeView),limit.Token);
+            else if(stoppingId!=null)await _nativeClient.WaitConnection(stoppingId,false,new Progress<NativeRouteView>(ApplyNativeView),limit.Token);
+            else await _nativeClient.Wait(operation,false,new Progress<NativeRouteView>(ApplyNativeView),limit.Token);
+            Notice(start?"Подключено. Выход VPN проверен.":"Подключение отключено.");return true;
         }
         catch(Exception ex)
         {
             bool cleanupConfirmed=!requestedStart;
-            if(requestedStart&&operation!=null)try{using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(25));var stopped=await _nativeClient.Command("native-stop",operation,cleanup.Token);if(stopped.Success){await _nativeClient.Wait(operation,false,new Progress<NativeRouteView>(ApplyNativeView),cleanup.Token);cleanupConfirmed=true;}}catch{}
+            if(requestedStart&&connectionId!=null)try{
+                using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(25));
+                cleanupConfirmed=await NativeConnectionPolicy.CleanupOwnAsync(connectionId,startOperation??"",
+                    ()=>_nativeClient.Command("status",cancellation:cleanup.Token),
+                    id=>_nativeClient.StopConnection(id,cleanup.Token),
+                    async id=>{await _nativeClient.WaitConnection(id,false,new Progress<NativeRouteView>(ApplyNativeView),cleanup.Token);});
+            }catch{}
             if(!cleanupConfirmed){Notice("Не удалось подтвердить остановку. Проверь состояние службы; защищённые адреса остаются закрыты.",true);return false;}
             Notice(ex is OperationCanceledException?"Операция отменена. Проверяем завершение подключения…":Backend.FriendlyError(ex.Message),ex is not OperationCanceledException);return false;
         }

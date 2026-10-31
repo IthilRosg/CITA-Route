@@ -1,0 +1,40 @@
+name: Native managed components
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  managed:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish agent and run its self-tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item runtime -ItemType Directory -Force | Out-Null
+          $env:CITA_DOTNET_EXE=(Get-Command dotnet).Source
+          ./Build-Agent.ps1 *> runtime/native-managed-tests.log
+      - name: Compile native UI and updater
+        shell: pwsh
+        run: |
+          dotnet build app/RoutePilot.csproj -c Release -p:NuGetAudit=false
+          if($LASTEXITCODE){throw 'UI build failed'}
+          dotnet build installer/native-updater/Cita.NativeUpdater.csproj -c Release -p:NuGetAudit=false
+          if($LASTEXITCODE){throw 'Updater build failed'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-managed-test-log
+          path: runtime/native-managed-tests.log
+          if-no-files-found: ignore
+# Deliberately no release/publishing. This job proves managed build/tests only.
+# Native source reproduction, full package and physical acceptance are separate gates.

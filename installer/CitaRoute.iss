@@ -5,14 +5,24 @@
   #error ProductVersion is required
 #endif
 #ifdef TestBuild
+ #ifdef IsolatedTest
+  #define ProductName "CITA Route Installer Test Isolated"
+  #define ProductId "CITA.Route.InstallerFixture.Isolated"
+  #define OutputName "CITA-Route-" + ProductVersion + "-win-x64-isolated-test-setup"
+ #else
   #define ProductName "CITA Route Installer Test"
   #define ProductId "CITA.Route.InstallerFixture"
   #define OutputName "CITA-Route-" + ProductVersion + "-win-x64-test-setup"
+ #endif
   #define CopyHook "; AfterInstall: FixtureCopyFault"
 #else
   #define ProductName "CITA Route"
   #define ProductId "CITA.Route.Client"
-  #define OutputName "CITA-Route-" + ProductVersion + "-win-x64-setup"
+  #ifdef PhysicalAcceptance
+   #define OutputName "CITA-Route-" + ProductVersion + "-win-x64-PRIVATE-PREVIEW-physical-acceptance-setup"
+  #else
+   #define OutputName "CITA-Route-" + ProductVersion + "-win-x64-setup"
+  #endif
   #define CopyHook ""
 #endif
 
@@ -105,6 +115,47 @@ Name: "{userprograms}\{#ProductName}"; Filename: "{app}\client\RoutePilot.exe"; 
 Filename: "{app}\client\RoutePilot.exe"; WorkingDir: "{app}\client"; Description: "Запустить CITA Route"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: InstallationCommitted
 
 [Code]
+#ifdef PhysicalAcceptance
+function InitializeSetup(): Boolean;
+var
+  Locator, Service, Results, Machine: Variant;
+  MachineId: String;
+  TransactionId: String;
+  I: Integer;
+  CheckOnly: Boolean;
+begin
+  Result := False;
+  CheckOnly := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/CHECKPHYSICALTARGET') = 0 then CheckOnly := True;
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Service := Locator.ConnectServer('.', 'root\cimv2');
+    Results := Service.ExecQuery('SELECT UUID FROM Win32_ComputerSystemProduct');
+    if Results.Count = 1 then begin
+      Machine := Results.ItemIndex(0);
+      MachineId := Machine.UUID;
+      Result := CompareText(Trim(MachineId), 'F8798200-12FB-11F1-8F47-A104BEE59100') = 0;
+    end;
+  except
+    Result := False;
+  end;
+  if CheckOnly then begin
+    if Result then Log('CITA_PHYSICAL_TARGET_VERIFIED_NO_INSTALL')
+    else Log('CITA_PHYSICAL_TARGET_REFUSED_NO_INSTALL');
+    Result := False;
+    exit;
+  end;
+  if Result then begin
+    TransactionId := ExpandConstant('{param:TRANSACTIONID|}');
+    if Length(TransactionId) <> 32 then Result := False
+    else for I := 1 to 32 do
+      if not (((TransactionId[I] >= '0') and (TransactionId[I] <= '9')) or
+              ((TransactionId[I] >= 'a') and (TransactionId[I] <= 'f'))) then Result := False;
+  end;
+  if not Result then MsgBox('Эта закрытая тестовая сборка предназначена только для тестовой станции CITA.', mbError, MB_OK);
+end;
+#endif
 var
   GuardReady, GuardRelease: String;
   GuardActive: Boolean;
@@ -250,6 +301,9 @@ begin
     ' -Version "{#ProductVersion}" -ReadyFile "' + GuardReady + '" -ReleaseFile "' + GuardRelease + '"';
   if Removing then Args := Args + ' -Mode Uninstall';
   if (not Removing) and (SameVersionConfirmed <> '') then Args := Args + ' -ConfirmedSameVersion "' + SameVersionConfirmed + '"';
+ #ifdef PhysicalAcceptance
+  if not Removing then Args := Args + ' -ExpectedTransactionId "' + ExpandConstant('{param:TRANSACTIONID|}') + '"';
+ #endif
   if not Removing then Args := Args + ' -IncomingManifest "' + ExpandConstant('{tmp}\cita-install-manifest.json') + '"';
   if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Args, '', SW_HIDE, ewNoWait, Code) then begin
     Result := 'Не удалось проверить установку. ' + SysErrorMessage(Code);
@@ -317,6 +371,11 @@ begin
 #ifdef TestBuild
     { Explicit fixture consent only; production silent installs cannot bypass the warning. }
     Confirmed := ExpandConstant('{param:CONFIRMVERSION|}') = SameVersion;
+#else
+ #ifdef PhysicalAcceptance
+    { Explicit consent is restricted to the UUID-gated physical acceptance build. }
+    Confirmed := ExpandConstant('{param:CONFIRMVERSION|}') = SameVersion;
+ #endif
 #endif
     if not Confirmed then
       Confirmed := SuppressibleMsgBox('CITA Route ' + SameVersion + ' уже установлена. Повторить установку для восстановления файлов? Личные настройки и профили сохранятся.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES;

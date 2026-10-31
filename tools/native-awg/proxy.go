@@ -39,6 +39,9 @@ type tunnelDial func(context.Context, string, string) (net.Conn, error)
 
 var errProxy = errors.New("proxy request refused")
 
+// Compile-time laboratory switch for an otherwise identical transport control.
+var nativeBindExperiment = "default"
+
 func validHex(text string, size int) bool {
 	b, e := hex.DecodeString(text)
 	return e == nil && len(b) == size
@@ -73,14 +76,36 @@ func safeDomain(name string) bool {
 
 // Addresses are resolved and validated inside the netstack, then pinned for the
 // dial. No host resolver, implicit proxy, private-address access or IPv6 fallback.
-func validatedIPv4Answer(ips []string)(string,error){
- if len(ips)==0||len(ips)>32{return "",errProxy};first:=""
- for _,text:=range ips{ip,e:=netip.ParseAddr(text);if e!=nil{return "",errProxy};if ip.Is6(){continue};if !publicTarget(ip){return "",errProxy};if first==""{first=ip.String()}}
- if first==""{return "",errProxy};return first,nil
+func validatedIPv4Answer(ips []string) (string, error) {
+	if len(ips) == 0 || len(ips) > 32 {
+		return "", errProxy
+	}
+	first := ""
+	for _, text := range ips {
+		ip, e := netip.ParseAddr(text)
+		if e != nil {
+			return "", errProxy
+		}
+		if ip.Is6() {
+			continue
+		}
+		if !publicTarget(ip) {
+			return "", errProxy
+		}
+		if first == "" {
+			first = ip.String()
+		}
+	}
+	if first == "" {
+		return "", errProxy
+	}
+	return first, nil
 }
-func restrictedDial(network *netstack.Net,ctx context.Context,servers []netip.Addr) tunnelDial {
- resolver:=newDnsBroker(ctx,dnsNetworkIdentity,func(query context.Context,name string)(string,time.Duration,error){return queryProfileServers(query,network.DialContext,servers,name)})
- go resolver.watch()
+func restrictedDial(network *netstack.Net, ctx context.Context, servers []netip.Addr) tunnelDial {
+	resolver := newDnsBroker(ctx, dnsNetworkIdentity, func(query context.Context, name string) (string, time.Duration, error) {
+		return queryProfileServers(query, network.DialContext, servers, name)
+	})
+	go resolver.watch()
 	return func(ctx context.Context, kind, address string) (net.Conn, error) {
 		host, port, e := net.SplitHostPort(address)
 		if e != nil || kind != "tcp" {
@@ -91,12 +116,17 @@ func restrictedDial(network *netstack.Net,ctx context.Context,servers []netip.Ad
 			if !safeDomain(host) {
 				return nil, errProxy
 			}
-			address,err:=resolver.resolve(ctx,host);e=err;ips=[]string{address}
+			address, err := resolver.resolve(ctx, host)
+			e = err
+			ips = []string{address}
 			if e != nil {
 				return nil, errProxy
 			}
 		}
-		selected,e:=validatedIPv4Answer(ips);if e!=nil{return nil,e}
+		selected, e := validatedIPv4Answer(ips)
+		if e != nil {
+			return nil, e
+		}
 		// One validated address per CONNECT. Never replay a stream on another route.
 		return network.DialContext(ctx, "tcp", net.JoinHostPort(selected, port))
 	}
@@ -133,6 +163,9 @@ func proxyTransport(input io.Reader, output io.Writer, lossLab, udpLab, recovery
 		return 1
 	}
 	bind := conn.NewDefaultBind()
+	if nativeBindExperiment == "stdnet" {
+		bind = conn.NewStdNetBind()
+	}
 	fault := newFaultBind(bind)
 	fault.ownedControl = len(owned) == 1 && owned[0]
 	var outer conn.Bind = bind
@@ -160,7 +193,7 @@ func proxyTransport(input io.Reader, output io.Writer, lossLab, udpLab, recovery
 	if json.NewEncoder(output).Encode(ready) != nil {
 		return 1
 	}
-	dial := restrictedDial(network,ctx,c.dns)
+	dial := restrictedDial(network, ctx, c.dns)
 	if recoveryLab {
 		fault.recovery = newTransportRecovery()
 		healthTransport := &http.Transport{DialContext: dial, Proxy: nil, DisableKeepAlives: true, TLSHandshakeTimeout: time.Second, ResponseHeaderTimeout: time.Second}

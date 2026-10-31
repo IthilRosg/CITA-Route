@@ -38,10 +38,16 @@ function Finish-Guard($Guard){
 }
 function New-Fixture([string]$Name){
     $folder=Join-Path $base ($Name+'\client');New-Item -ItemType Directory -Path $folder -Force | Out-Null
-    [IO.File]::WriteAllText((Join-Path $folder 'product.json'),'{"name":"CITA Route","version":"0.5.3"}')
+    # The incoming version is newer; unrelated guard checks must not be
+    # short-circuited by the equal-version confirmation requirement.
+    [IO.File]::WriteAllText((Join-Path $folder 'product.json'),'{"name":"CITA Route","version":"0.5.2"}')
     return $folder
 }
 try{
+    $equal=New-Fixture 'equal-version'
+    [IO.File]::WriteAllText((Join-Path $equal 'product.json'),'{"name":"CITA Route","version":"0.5.3"}')
+    $guard=Begin-Guard $equal
+    try{Assert ($guard.State -eq 'VERSION_SAME|0.5.3.0') 'Equal version must require explicit confirmation.'}finally{Finish-Guard $guard}
     $folder=New-Fixture 'Новая папка с пробелами'
     $guard=Begin-Guard $folder
     try{

@@ -1,18 +1,19 @@
 ﻿[CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Setup,[switch]$NativeStandalone)
+param([Parameter(Mandatory=$true)][string]$Setup,[switch]$NativeStandalone,[switch]$IsolatedTest)
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 $setupPath=[IO.Path]::GetFullPath($Setup)
 # Real OS integration is tested with a separate AppId and shortcut names only.
-if((Get-Item -LiteralPath $setupPath).VersionInfo.ProductName.Trim() -ne 'CITA Route Installer Test' -or -not $setupPath.EndsWith('-test-setup.exe',[StringComparison]::OrdinalIgnoreCase)){throw 'Only the dedicated test installer is allowed in integration fixtures.'}
-$label='CITA Route Installer Test'
+$label=if($IsolatedTest){'CITA Route Installer Test Isolated'}else{'CITA Route Installer Test'}
+if((Get-Item -LiteralPath $setupPath).VersionInfo.ProductName.Trim() -ne $label -or -not $setupPath.EndsWith('-test-setup.exe',[StringComparison]::OrdinalIgnoreCase)){throw 'Only the dedicated test installer is allowed in integration fixtures.'}
 $links=@((Join-Path ([Environment]::GetFolderPath('Desktop')) ($label+'.lnk')),(Join-Path ([Environment]::GetFolderPath('Programs')) ($label+'.lnk')))
-$registry='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\CITA.Route.InstallerFixture_is1'
+$registry='HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\'+$(if($IsolatedTest){'CITA.Route.InstallerFixture.Isolated_is1'}else{'CITA.Route.InstallerFixture_is1'})
 if((Test-Path -LiteralPath $registry) -or @($links | Where-Object {Test-Path -LiteralPath $_}).Count){throw 'Previous installer test still exists. Refusing to replace it.'}
 $base=Join-Path $root ('runtime\installer-integration-'+[guid]::NewGuid().ToString('N'))
 $target=Join-Path $base 'Клиент с пробелами'
 $client=Join-Path $target 'client'
 $uninstaller=Join-Path $target 'unins000.exe'
+$testSucceeded=$false
 New-Item -ItemType Directory -Path $base -Force | Out-Null
 function Assert($Value,[string]$Message){if(-not $Value){throw $Message}}
 # Read the actual Unicode Shell Link interface. WScript.Shell may expose ANSI
@@ -176,11 +177,12 @@ try{
     Assert ((Uninstall 'final-uninstall.log') -eq 0) 'Final fixture uninstall failed.'
     Assert (-not(Test-Path -LiteralPath $registry)) 'Final uninstall left its registry entry.'
     foreach($link in $links){Assert (-not(Test-Path -LiteralPath $link)) 'Final uninstall left a shortcut.'}
+    $testSucceeded=$true
     Write-Output 'PASS: actual installer, clean install, older installed version upgraded, equal version declined/confirmed, downgrade refused, invalid version refused, Desktop/Start shortcuts, Windows Apps registration, active-route refusal, interrupted-copy rollback, upgraded uninstall, install after uninstall and personal-data preservation. No VPN/services changed.'
 }finally{
     # Do not remove the fixture on failure: keep logs and the test uninstaller
     # available for diagnosis, rather than orphaning OS integration entries.
-    if(-not(Test-Path -LiteralPath $registry) -and -not @($links | Where-Object {Test-Path -LiteralPath $_}).Count){
+    if($testSucceeded -and -not(Test-Path -LiteralPath $registry) -and -not @($links | Where-Object {Test-Path -LiteralPath $_}).Count){
         $prefix=[IO.Path]::GetFullPath((Join-Path $root 'runtime\installer-integration-'))
         if(-not [IO.Path]::GetFullPath($base).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe installer fixture cleanup.'}
         Remove-Item -LiteralPath $base -Recurse -Force

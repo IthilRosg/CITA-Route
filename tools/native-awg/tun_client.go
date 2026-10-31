@@ -32,14 +32,16 @@ func tunClient(input io.Reader, output io.Writer) int {
 	var spec struct {
 		DnsServer    string
 		HoldForFinal bool
-  Domain string
+		Domain       string
 	}
 	decoder := json.NewDecoder(io.LimitReader(input, 2048))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&spec) != nil {
 		return 1
 	}
- if spec.Domain!=""&&spec.Domain!="cloudflare-dns.com"{return 1}
+	if spec.Domain != "" && spec.Domain != "cloudflare-dns.com" {
+		return 1
+	}
 	server, e := netip.ParseAddr(spec.DnsServer)
 	if e != nil || !publicTarget(server) {
 		return 1
@@ -69,7 +71,10 @@ func tunClient(input io.Reader, output io.Writer) int {
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	get := func(ctx context.Context) string {
-  host:="1.1.1.1";if spec.Domain!=""{host=spec.Domain}
+		host := "1.1.1.1"
+		if spec.Domain != "" {
+			host = spec.Domain
+		}
 		request, e := http.NewRequestWithContext(ctx, "GET", "https://"+host+"/cdn-cgi/trace", nil)
 		if e != nil {
 			return ""
@@ -100,12 +105,18 @@ func tunClient(input io.Reader, output io.Writer) int {
 		r.DNSFailure = reason
 		return ok
 	}
+	r.Stage = "InitialHTTPS"
 	r.EgressHash = get(ctx)
 	r.TcpFromTun = source.Load()
 	r.DialsBefore = calls.Load()
-	if r.EgressHash == "" || !r.TcpFromTun || !r.UdpFromTun || r.DialsBefore != 1 {
+	if r.EgressHash == "" {
 		return 1
 	}
+	r.Stage = "InitialTunIdentity"
+	if !r.TcpFromTun || !r.UdpFromTun || r.DialsBefore != 1 {
+		return 1
+	}
+	r.Stage = "InitialUDP"
 	for i := 0; i < 3; i++ {
 		if !dns() {
 			return 1
@@ -122,12 +133,14 @@ func tunClient(input io.Reader, output io.Writer) int {
 		return 1
 	}
 	var reused atomic.Bool
+	r.Stage = "RetainedHTTPS"
 	trace := &httptrace.ClientTrace{GotConn: func(c httptrace.GotConnInfo) { reused.Store(c.Reused) }}
 	began := time.Now()
 	after := get(httptrace.WithClientTrace(ctx, trace))
 	r.RequestMilliseconds = time.Since(began).Milliseconds()
 	r.SameExit = after != "" && after == r.EgressHash
 	r.ReusedTCP = reused.Load()
+	r.Stage = "RetainedUDP"
 	for i := 0; i < 3; i++ {
 		if !dns() {
 			return 1

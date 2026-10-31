@@ -22,17 +22,30 @@ type lossCommand struct {
 	IncomingOnly bool
 }
 type lossSnapshot struct {
-	Stage           string          `json:"stage"`
-	Session         string          `json:"session"`
-	Generation      uint64          `json:"generation"`
-	Dials           int64           `json:"dials"`
-	BindOpens       int64           `json:"bindOpens"`
-	DroppedOutgoing int64           `json:"droppedOutgoing"`
-	DroppedIncoming int64           `json:"droppedIncoming"`
-	OuterPort       int64           `json:"outerPort"`
-	UdpDials        int64           `json:"udpDials"`
-	UdpBudgetDrops  int64           `json:"udpBudgetDrops"`
-	Recovery        *recoveryStatus `json:"recovery,omitempty"`
+	Stage                 string           `json:"stage"`
+	Session               string           `json:"session"`
+	Generation            uint64           `json:"generation"`
+	Dials                 int64            `json:"dials"`
+	BindOpens             int64            `json:"bindOpens"`
+	DroppedOutgoing       int64            `json:"droppedOutgoing"`
+	DroppedIncoming       int64            `json:"droppedIncoming"`
+	OuterPort             int64            `json:"outerPort"`
+	UdpDials              int64            `json:"udpDials"`
+	UdpBudgetDrops        int64            `json:"udpBudgetDrops"`
+	OuterSendAttempts     int64            `json:"outerSendAttempts"`
+	OuterSendAccepted     int64            `json:"outerSendAccepted"`
+	OuterSendErrors       int64            `json:"outerSendErrors"`
+	OuterReceiveDatagrams int64            `json:"outerReceiveDatagrams"`
+	OuterReceiveErrors    int64            `json:"outerReceiveErrors"`
+	UdpRelayInput         int64            `json:"udpRelayInput"`
+	UdpRelayRejected      int64            `json:"udpRelayRejected"`
+	UdpTunnelWrites       int64            `json:"udpTunnelWrites"`
+	UdpTunnelWriteErrors  int64            `json:"udpTunnelWriteErrors"`
+	UdpTunnelReads        int64            `json:"udpTunnelReads"`
+	UdpRelayReplies       int64            `json:"udpRelayReplies"`
+	UdpRelayReplyErrors   int64            `json:"udpRelayReplyErrors"`
+	UdpReasons            map[string]int64 `json:"udpReasons"`
+	Recovery              *recoveryStatus  `json:"recovery,omitempty"`
 }
 
 func validLossCommand(c lossCommand, session string, generation uint64, used bool) bool {
@@ -52,9 +65,11 @@ func validLossCommand(c lossCommand, session string, generation uint64, used boo
 }
 
 // Explicit VM fixture only; installed persistent control never accepts Pause.
-func shortLossLab() bool { return os.Getenv("CITA_NATIVE_SHORT_LOSS_LAB") == "1" && !persistentControl() }
+func shortLossLab() bool {
+	return os.Getenv("CITA_NATIVE_SHORT_LOSS_LAB") == "1" && !persistentControl()
+}
 func validOwnerPause(c lossCommand, coordinated bool) bool {
- return coordinated && shortLossLab() && c.Action == "PauseChild" && validLossDuration(c.Milliseconds)
+	return coordinated && shortLossLab() && c.Action == "PauseChild" && validLossDuration(c.Milliseconds)
 }
 
 func validLossDuration(milliseconds int) bool {
@@ -118,6 +133,20 @@ func proxyLossControl(input io.Reader, output io.Writer, session string, generat
 		r.OuterPort = bind.port.Load()
 		r.UdpDials = bind.udpDials.Load()
 		r.UdpBudgetDrops = udpBudgetDrops.Load()
+		r.OuterSendAttempts = bind.sendAttempts.Load()
+		r.OuterSendAccepted = bind.sendAccepted.Load()
+		r.OuterSendErrors = bind.sendErrors.Load()
+		r.OuterReceiveDatagrams = bind.receiveDatagrams.Load()
+		r.OuterReceiveErrors = bind.receiveErrors.Load()
+		r.UdpRelayInput = udpRelayInput.Load()
+		r.UdpRelayRejected = udpRelayRejected.Load()
+		r.UdpTunnelWrites = udpTunnelWrites.Load()
+		r.UdpTunnelWriteErrors = udpTunnelWriteErrors.Load()
+		r.UdpTunnelReads = udpTunnelReads.Load()
+		r.UdpRelayReplies = udpRelayReplies.Load()
+		r.UdpRelayReplyErrors = udpRelayReplyErrors.Load()
+		r.UdpReasons = udpReasonSnapshot()
+		saveUDPDiagnostic(r)
 		if bind.recovery != nil {
 			status := bind.recovery.snapshot()
 			r.Recovery = &status

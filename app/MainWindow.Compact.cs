@@ -214,13 +214,14 @@ public partial class MainWindow
     private async Task ToggleAsync(bool startOnly=false)
     {
         if(UseNativeBackend){
+            if(!NativeLaunchPolicy.MayProceed(startOnly,_busy))return;
             if(ClientEdition.NativeOnly&&!_render&&!_busy&&_nativeView?.Desired!=true&&(_nativeView?.Available!=true||!StandaloneAgentMatchesPackage())){
                 if(startOnly){Notice("Для автоподключения сначала нажми «Подключить» и импортируй .conf.");return;}
                 if(string.IsNullOrEmpty(_nativeView?.ProfileId)&&string.IsNullOrEmpty(_nativeChoice.ConfirmedProfile))await ImportNativeProfileAsync();
                 else{await PrepareNativeComponentsAsync();await RefreshNativeAsync(true);}
                 if(_nativeView?.Available!=true)return;
             }
-            await NativeActionAsync(_nativeView?.Desired!=true,startOnly);return;
+            await NativeActionAsync(NativeLaunchPolicy.WantsStart(startOnly,_nativeView?.Desired==true),startOnly);return;
         }
         if(_render)return;
         // Automatic startup must never turn an existing connection into Stop,

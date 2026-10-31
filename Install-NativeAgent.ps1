@@ -1,5 +1,16 @@
 param([Parameter(Mandatory)][string]$UserSid,[Parameter(Mandatory)][string]$UserProfile)
 $ErrorActionPreference='Stop'
+function Invoke-NativeAgentReplace([string]$Incoming,[string]$Target,[string]$Backup) {
+ $incomingFull=[IO.Path]::GetFullPath($Incoming);$targetFull=[IO.Path]::GetFullPath($Target);$backupFull=[IO.Path]::GetFullPath($Backup)
+ $parent=[IO.Path]::GetDirectoryName($targetFull)
+ if([IO.Path]::GetDirectoryName($incomingFull) -ine $parent -or [IO.Path]::GetDirectoryName($backupFull) -ine $parent -or $incomingFull -ieq $targetFull -or $backupFull -ieq $targetFull -or $backupFull -ieq $incomingFull){throw 'Agent replacement paths differ.'}
+ foreach($path in @($incomingFull,$targetFull)){
+  if(-not(Test-Path -LiteralPath $path -PathType Leaf)){throw 'Agent replacement requires both existing files.'}
+  if((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Agent replacement file is linked.'}
+ }
+ if(Test-Path -LiteralPath $backupFull){throw 'Agent replacement backup already exists.'}
+ [IO.File]::Replace($incomingFull,$targetFull,$backupFull)
+}
 if(-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'Protected agent setup needs Windows administrator approval'}
 $null=[Security.Principal.SecurityIdentifier]::new($UserSid)
 . (Join-Path $PSScriptRoot 'FileStorage.ps1');. (Join-Path $PSScriptRoot 'AgentPackage.ps1');. (Join-Path $PSScriptRoot 'AgentLease.ps1');. (Join-Path $PSScriptRoot 'NativeMaintenance.ps1')
@@ -18,15 +29,27 @@ if($service){
   if(-not $retired.Success -or (Read-JsonFile $boot).Enabled){throw 'Disconnect the previous boot route before native setup; the active route was not stopped.'}
  }
  Stop-NativeForMaintenance (Join-Path $root 'native')
- Invoke-AgentCoordinator 'begin-operation';$backup=Join-Path $root ('agent-native-backup-'+[guid]::NewGuid().ToString('N')+'.exe');$temporary=Join-Path $root ('agent-native-stage-'+[guid]::NewGuid().ToString('N')+'.exe');$saved=$false;$promoted=$false
+ Invoke-AgentCoordinator 'begin-operation';$backup=Join-Path $root ('agent-native-backup-'+[guid]::NewGuid().ToString('N')+'.exe');$temporary=Join-Path $root ('agent-native-stage-'+[guid]::NewGuid().ToString('N')+'.exe');$saved=$false
  try{
   Copy-Item -LiteralPath $source -Destination $temporary;if((Get-FileHash $temporary).Hash -ne (Get-FileHash $source).Hash){throw 'Agent staging digest mismatch'}
   Stop-Service RoutePilotRescue;(Get-Service RoutePilotRescue).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(45))
   $previous=Get-Process -Id $service.ProcessId -ErrorAction SilentlyContinue;if($previous){try{if($previous.Path -ine (Join-Path $root 'RoutePilot.Agent.exe') -or -not $previous.WaitForExit(10000)){throw 'Previous protected agent has not exited'}}finally{$previous.Dispose()}}
   foreach($path in @($backup,$temporary,(Join-Path $root 'RoutePilot.Agent.exe'))){if([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($path)) -ine $root){throw 'Agent transaction path escaped root'}}
-  Move-Item -LiteralPath (Join-Path $root 'RoutePilot.Agent.exe') -Destination $backup;$saved=$true;Move-Item -LiteralPath $temporary -Destination (Join-Path $root 'RoutePilot.Agent.exe');$promoted=$true
+  Invoke-NativeAgentReplace $temporary (Join-Path $root 'RoutePilot.Agent.exe') $backup;$saved=$true
   Start-Service RoutePilotRescue;(Get-Service RoutePilotRescue).WaitForStatus('Running',[TimeSpan]::FromSeconds(20));$cap=Invoke-NativeMaintenanceRpc 'native-capabilities';if($cap.Native.setupProtocol -ne 1){throw 'Updated agent does not advertise native setup'}
- }catch{if($saved){Stop-Service RoutePilotRescue -ErrorAction SilentlyContinue;(Get-Service RoutePilotRescue).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(30));if($promoted){Remove-Item -LiteralPath (Join-Path $root 'RoutePilot.Agent.exe') -Force};Move-Item -LiteralPath $backup -Destination (Join-Path $root 'RoutePilot.Agent.exe')};if((Get-Service RoutePilotRescue).Status -eq 'Stopped'){Start-Service RoutePilotRescue};throw}
+ }catch{
+  if($saved){
+   $running=Get-CimInstance Win32_Service -Filter "Name='RoutePilotRescue'";$runningProcess=$null
+   if($running -and $running.ProcessId){$runningProcess=Get-Process -Id $running.ProcessId -ErrorAction SilentlyContinue}
+   try{
+    if($runningProcess -and $runningProcess.Path -ine (Join-Path $root 'RoutePilot.Agent.exe')){throw 'Updated protected agent identity differs'}
+    Stop-Service RoutePilotRescue -ErrorAction SilentlyContinue;(Get-Service RoutePilotRescue).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(30))
+    if($runningProcess -and -not $runningProcess.WaitForExit(10000)){throw 'Updated protected agent has not exited'}
+    Invoke-NativeAgentReplace $backup (Join-Path $root 'RoutePilot.Agent.exe') $temporary
+   }finally{if($runningProcess){$runningProcess.Dispose()}}
+  }
+  if((Get-Service RoutePilotRescue).Status -eq 'Stopped'){Start-Service RoutePilotRescue};throw
+ }
  finally{try{Invoke-AgentCoordinator 'end-operation'}catch{}}
  return
 }
