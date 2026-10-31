@@ -195,3 +195,9 @@ A02 теперь PASS для текущего кандидата, этап A —
 D02 прошёл на этом кандидате: core PID `3316` → `9764`, same connection, generation 60, recovery 3229 ms, exact cleanup. D03 прошёл на этом кандидате: service PID `1712` → `7732`, native start refusal при deny intent, jobActiveAfter=0, intent/agent/manifest unchanged, exact cleanup. Evidence сохранён в соответствующих runtime receipts.
 
 Для ускорения дальнейших прогонов physical-service harness теперь принимает AgentSha/ManifestSha/HelperPath/HelperSha параметрами; C# helper больше не содержит hash старой сборки. Подробный порядок пачек: `docs/ACCELERATED-ACCEPTANCE-20261031.md`. Общая приёмка остаётся 7/44 (15,91%): следующий приоритет — B и C.
+
+### G2/G3 ускоренная пачка
+
+На canonical stage `235f7600` закрыты B04/B05: обычный GUI launch/autoconnect, relaunch в той же сессии, сохранение профиля, отсутствие второго управляющего процесса и exact cleanup. ConnectMs=7081, RelaunchMs=1392, generation 61. Evidence: `runtime/native-client-cycle-inspection-4ceab39280bd471887b3268b307d6141.json` и cleanup receipt.
+
+Физический forced-store lab также прошёл на свежем linked source build: revision 3, pre-rename и post-rename crash recovery, concurrent writer winner=1, stale writer refusal, weak ACL refusal; cleanup подтверждён. Это закрывает файловую/ACL часть C, но не засчитывает live forced publisher и CalibrationId до сквозного service-path теста. Общая приёмка: 9/44 (20,45%).

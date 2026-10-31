@@ -8,6 +8,8 @@
     <Compile Include="../../agent/NativeForcedIntent.cs" Link="NativeForcedIntent.cs" />
     <Compile Include="../../agent/NativeForcedIntentStore.cs" Link="NativeForcedIntentStore.cs" />
     <Compile Include="../../agent/NativeTrustedBundle.cs" Link="NativeTrustedBundle.cs" />
+    <Compile Include="../../agent/NativeZapret.cs" Link="NativeZapret.cs" />
+    <Compile Include="../../agent/NativeZapretTrust.cs" Link="NativeZapretTrust.cs" />
     <Compile Include="../../agent/NativeProcessJob.cs" Link="NativeProcessJob.cs" />
   </ItemGroup>
 </Project>

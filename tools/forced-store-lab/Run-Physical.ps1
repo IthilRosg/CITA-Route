@@ -1,8 +1,10 @@
+[CmdletBinding()]
+param([string]$ImagePath='runtime/forced-store-lab-build/Cita.ForcedStoreLab.exe')
 $ErrorActionPreference='Stop'
 $workspace=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 . (Join-Path $workspace 'runtime/invoke-rm-lab.ps1')
 $id=[guid]::NewGuid().ToString('N')
-$image=Join-Path $workspace 'runtime/forced-store-lab-build/Cita.ForcedStoreLab.exe'
+$image=Join-Path $workspace $ImagePath
 $hash=(Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash
 $stage="C:/CITA-Lab/forced-store-$id.exe"
 & scp -q -i "$env:USERPROFILE\.ssh\cita_test_station_ed25519" -o "UserKnownHostsFile=$env:USERPROFILE\.ssh\cita_test_station_known_hosts" -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 $image "citastation@26.68.227.253:$stage"
