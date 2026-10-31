@@ -227,3 +227,5 @@ Installer integration для stage `fd2490f6` прошла на dedicated native
 После параметризации physical-service harness текущий canonical candidate `235f7600` принял D02 и D03. Старые hardcoded hash агента/manifest удалены из helper; candidate-specific pins передаются в plan. Для дальнейшей работы используется ускоренный восьми-gate порядок из `docs/ACCELERATED-ACCEPTANCE-20261031.md`; public release по-прежнему закрыт до B–H acceptance.
 
 G2 на canonical candidate закрыла B04/B05; G3 file/ACL lab прошёл, но live forced publisher/CalibrationId ещё открыт. Forced-store harness теперь собирается с актуальными linked Zapret sources и принимает ImagePath параметром. Следующий ускоренный шаг — B01/B02/B03 и затем сквозной C01–C06.
+
+После G2 profile import harness переведён на Radmin/current AgentSha. Три case-а malformed/valid/malformed прошли на generation 62–64 с сохранением выбранного профиля и cleanup. B01/B02 остаются частичными: нужен реальный file picker и второй независимый валидный профиль.

@@ -201,3 +201,5 @@ D02 прошёл на этом кандидате: core PID `3316` → `9764`, s
 На canonical stage `235f7600` закрыты B04/B05: обычный GUI launch/autoconnect, relaunch в той же сессии, сохранение профиля, отсутствие второго управляющего процесса и exact cleanup. ConnectMs=7081, RelaunchMs=1392, generation 61. Evidence: `runtime/native-client-cycle-inspection-4ceab39280bd471887b3268b307d6141.json` и cleanup receipt.
 
 Физический forced-store lab также прошёл на свежем linked source build: revision 3, pre-rename и post-rename crash recovery, concurrent writer winner=1, stale writer refusal, weak ACL refusal; cleanup подтверждён. Это закрывает файловую/ACL часть C, но не засчитывает live forced publisher и CalibrationId до сквозного service-path теста. Общая приёмка: 9/44 (20,45%).
+
+Профильный import gate на canonical stage также прошёл: malformed-before, valid-same-profile и malformed-after — PASS, исходный профиль и содержимое сохранены, Desired=false, final phase Disconnected, cleanup подтверждён. Реальный file picker и смена на второй валидный профиль ещё не засчитываются.

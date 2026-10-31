@@ -57,7 +57,7 @@ try{
     if($config.UserSid -cne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value){throw 'Import owner differs.'}
     foreach($name in @('connection-operation.lock','setup.lock','upgrade.lock','network-control.lock','installation-maintenance.lock')){$path=Join-Path (Join-Path $config.AppRoot 'runtime') $name;Assert-NativeUpgradePath $path;$locks.Add([IO.File]::Open($path,'OpenOrCreate','ReadWrite','None'))}
     $lease=Open-NativeUpgradeLease $agent;$image=[IO.File]::Open((Join-Path $agent 'RoutePilot.Agent.exe'),'Open','Read','Read')
-    if((Get-NativeUpgradeHash (Join-Path $agent 'RoutePilot.Agent.exe')) -cne '97506113A245233BB7310DDCDF6CB80B5FD4C62AEC39AF9D0EA49A5FC1E3E764'){throw 'Import agent differs.'}
+    if((Get-NativeUpgradeHash (Join-Path $agent 'RoutePilot.Agent.exe')) -cne '__AGENT__'){throw 'Import agent differs.'}
     $s=Get-NativeUpgradeServiceSnapshot $lease;$held=Get-Process -Id $s.ProcessId;$null=$held.Handle
     if($s.State -cne 'Running' -or $held.HasExited -or $held.Path -ine (Join-Path $agent 'RoutePilot.Agent.exe')){throw 'Import service unavailable.'}
     Initialize-NativeUpgradePipe;$initial=State
