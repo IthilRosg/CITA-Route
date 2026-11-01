@@ -16,7 +16,7 @@
  #endif
   #define CopyHook "; AfterInstall: FixtureCopyFault"
 #else
-  #define ProductName "CITA Route"
+  #define ProductName "CITA Vector"
   #define ProductId "CITA.Route.Client"
   #ifdef PhysicalAcceptance
    #define OutputName "CITA-Route-" + ProductVersion + "-win-x64-PRIVATE-PREVIEW-physical-acceptance-setup"
@@ -74,7 +74,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "{#ProductName}"; Tasks: not autostart; Flags: deletevalue
 
 [Messages]
-russian.WelcomeLabel1=УСТАНОВКА CITA ROUTE
+russian.WelcomeLabel1=УСТАНОВКА CITA VECTOR
 russian.WelcomeLabel2=Прямой доступ. Обход DPI. VPN.%n%nВыбери папку установки. В настройках CITA Route можно отдельно включить запуск программы при входе в Windows и подключение при запуске программы.%n%nВерсия {#ProductVersion}
 russian.SelectDirLabel3=Выбери папку для CITA Route. Профили и настройки будут храниться внутри неё.
 

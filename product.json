@@ -1,5 +1,6 @@
 {
   "name": "CITA Route",
+  "displayName": "CITA Vector",
   "version": "0.6.9",
   "edition": "native",
   "channel": "standalone-preview",

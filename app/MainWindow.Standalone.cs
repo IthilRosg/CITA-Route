@@ -58,7 +58,7 @@ public partial class MainWindow
         OverviewBackendLabel.Text="ВСТРОЕННЫЙ VPN";TodayLabel.Text="—";TodayLabel.ToolTip=null;LifetimeLabel.Text="Статистика пока недоступна";
         EmptyConnectionsLabel.Text="Подробная статистика соединений пока недоступна.";
         if(AutoUpdateWireSockBox.Parent is Panel autoPanel)autoPanel.Children.Remove(AutoUpdateWireSockBox);
-        var about=new StackPanel();about.Children.Add(new TextBlock{Text="CITA Route",FontSize=18});
+        var about=new StackPanel();about.Children.Add(new TextBlock{Text="CITA Vector",FontSize=18});
         about.Children.Add(new TextBlock{Text="Импортируй .conf и подключайся без отдельного VPN-клиента.",TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,12,0,0)});
         var releases=new Button{Content="Выпуски на GitHub",Margin=new Thickness(0,12,0,0)};releases.Click+=OpenReleases_Click;about.Children.Add(releases);
         settings.Children.Add(new Border{Style=(Style)FindResource("Card"),Child=about});
