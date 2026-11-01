@@ -19,7 +19,7 @@ function Run-SelfTest([string]$Path,[string]$Label){
 
 $manifest=Get-Content -LiteralPath (Join-Path $package 'manifest.json') -Raw|ConvertFrom-Json
 $product=Get-Content -LiteralPath (Join-Path $package 'product.json') -Raw|ConvertFrom-Json
-Assert ($product.channel -eq 'native-preview') 'Fast-release gate accepts native-preview only.'
+Assert ($product.channel -in @('native-preview','standalone-preview')) 'Fast-release gate accepts native-preview or standalone-preview only.'
 Assert ($manifest.edition -eq 'native') 'Fast-release package must be native.'
 Assert ($manifest.version -eq $product.version) 'Manifest and product versions differ.'
 
