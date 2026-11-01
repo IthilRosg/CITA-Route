@@ -60,8 +60,16 @@ $owner=New-ScheduledTaskPrincipal -UserId $sid -LogonType S4U -RunLevel Highest
 $controllerAction=New-ScheduledTaskAction -Execute $image -Argument ('--controller "'+$root+'"')
 Register-ScheduledTask -TaskName ($task+'-Controller') -Action $controllerAction -Principal $owner -Settings $settings|Out-Null
 Start-ScheduledTask -TaskName ($task+'-Controller')
-for($i=0;$i -lt 200 -and ![IO.File]::Exists((Join-Path $root 'controller.json'));$i++){Start-Sleep -Milliseconds 100}
-if(![IO.File]::Exists((Join-Path $root 'controller.json'))){throw 'Upgrade supervisor admission deadline.'}
+# S4U tasks can take several seconds to be admitted on a busy Windows host
+# (especially immediately after an interactive logon or service restart).
+# Keep the launcher alive long enough for Task Scheduler, while still failing
+# deterministically before the normal upgrade worker deadline.
+for($i=0;$i -lt 600 -and ![IO.File]::Exists((Join-Path $root 'controller.json'));$i++){Start-Sleep -Milliseconds 100}
+if(![IO.File]::Exists((Join-Path $root 'controller.json'))){
+    $info=Get-ScheduledTaskInfo -TaskName ($task+'-Controller') -ErrorAction SilentlyContinue
+    $result=if($info){[string]$info.LastTaskResult}else{'unknown'}
+    throw ('Upgrade supervisor admission deadline (task result '+$result+').')
+}
 $proof=[IO.File]::ReadAllText((Join-Path $root 'controller.json'))|ConvertFrom-Json
 $controller=Get-Process -Id $proof.Process.Pid -ErrorAction Stop;$null=$controller.Handle
 if($proof.Run -cne $id -or $proof.Process.Pid -ne $controller.Id -or $proof.Process.StartedUtcTicks -ne $controller.StartTime.ToUniversalTime().Ticks -or $controller.Path -ine $image){throw 'Upgrade supervisor identity differs.'}
