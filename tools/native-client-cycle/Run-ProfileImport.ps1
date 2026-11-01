@@ -14,7 +14,9 @@ $entry=@{Run=$id;Root=$remote;Pins=$pins;State='MayCreate';Utc=[datetime]::UtcNo
 $f=[IO.File]::Open($journal,'CreateNew','Write','Read');try{$b=[Text.Encoding]::UTF8.GetBytes(($entry|ConvertTo-Json -Depth 5 -Compress));$f.Write($b,0,$b.Length);$f.Flush($true)}finally{$f.Dispose()}
 $recipe=Join-Path $workspace 'tools/native-control-probe/Test-PhysicalTransfer.ps1'
 if((Get-FileHash -LiteralPath $recipe).Hash -cne '42CB3AA03261C76905617CAE5EBFAFE3F927229E5672B3278B4EFC9A6758BECE'){throw 'Protected directory recipe changed.'}
-$create=[regex]::Match([IO.File]::ReadAllText($recipe),'(?s)\$create=@''\r?\n(.*?)\r?\n''@').Groups[1].Value
+$createMatch=[regex]::Match([IO.File]::ReadAllText($recipe),'(?s)\$create\s*=\s*@''\s*(.*?)\s*''@')
+if(!$createMatch.Success){throw 'Protected directory recipe create block not found.'}
+$create=$createMatch.Groups[1].Value
 if((Invoke-PhysicalRm $create.Replace('__DIR__',$remote)).Trim() -cne 'ready'){throw 'Import test directory unconfirmed.'}
 foreach($name in $paths.Keys){Invoke-PhysicalScp $paths[$name] ('citastation@26.68.227.253:'+($remote.Replace('\','/')+'/'+$name));if((Get-FileHash -LiteralPath $paths[$name]).Hash -cne $pins[$name]){throw 'Import source changed during transfer.'}}
 $bootstrap=@'
