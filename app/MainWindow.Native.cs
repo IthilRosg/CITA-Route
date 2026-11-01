@@ -27,7 +27,7 @@ public partial class MainWindow
         if(wireSockCard?.Parent is not StackPanel settings)return;
         if(ClientEdition.NativeOnly)ConfigureStandaloneSettings(settings);
         var content=new StackPanel();content.Children.Add(new TextBlock{Text=ClientEdition.NativeOnly?"Подключение · WireGuard / AmneziaWG":"Способ подключения",FontSize=18,FontWeight=FontWeights.SemiBold});
-        _nativeMode.Margin=new Thickness(0,12,0,0);_nativeMode.Items.Add(new ComboBoxItem{Content="Авто · WireSock"});_nativeItem=new ComboBoxItem{Content="Встроенный Авто · предварительный",IsEnabled=false};_nativeMode.Items.Add(_nativeItem);_nativeMode.SelectedIndex=_nativeChoice.Selected?1:0;
+        _nativeMode.Margin=new Thickness(0,12,0,0);_nativeMode.Items.Add(new ComboBoxItem{Content="Авто · WireSock"});_nativeItem=new ComboBoxItem{Content="Автоматический режим",IsEnabled=false};_nativeMode.Items.Add(_nativeItem);_nativeMode.SelectedIndex=_nativeChoice.Selected?1:0;
         _nativeMode.SelectionChanged+=async(_,_)=>
         {
             if(_nativeModeChanging)return;

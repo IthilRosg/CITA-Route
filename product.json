@@ -2,7 +2,7 @@
   "name": "CITA Route",
   "version": "0.6.9",
   "edition": "native",
-  "channel": "native-preview",
+  "channel": "standalone-preview",
   "repository": "IthilRosg/CITA-Route",
   "panelRepository": "IthilRosg/AWG-CITA"
 }
