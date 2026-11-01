@@ -13,6 +13,7 @@
 и native archive пересобраны из той же цепочки. `Verify-FastRelease.ps1` вернул
 `PASS` для stage `3279a92b` с теми же исходниками и receipt.
 Managed CI run `41257404364` для коммита `a2cf59b` завершился успешно.
+Последующий runner physical-gates `a8bff25` также прошёл CI: run `41257846640`.
 
 ## Что закрыто
 
