@@ -221,3 +221,17 @@ E03 закрыт свежим receipt `runtime/native-queue-stress-current-235f7
 Свежий deterministic receipt для stage `235f7600` теперь включает три application scopes (`app-a/app-b/app-c`) и виртуальные queue `p50/p95/max`: для 200 направлений 91/201/211 ms, для 1000 — 118/231/239 ms, для 10000 — 119/233/239 ms. Dedup/fairness/churn и bounded state сохранены. Это измерение планировщика без сети; E02 остаётся OPEN до подтверждения first/repeat access в живом сеансе.
 
 Routing sample run `4d0b402d...` не дал controller receipt из-за обрыва SSH; он не влияет на PASS-счёт. Manual cleanup receipt подтверждает tasks/root/processes=0 и `Desired=false`.
+
+### 1 ноября 2026 — кандидат 3279a92b
+
+Из закреплённого source receipt пересобраны native core, preview ZIP и установщик.
+Verify-NativeSource, Verify-NativePackaging и Verify-FastRelease прошли;
+managed CI для канонической ветки завершился успешно (runs 41257404364,
+41258069698). Ветка содержит unified preview-gates runner 9c16d6a.
+
+Эти результаты закрывают provenance/package evidence для кандидата, но не меняют
+PASS старого физического baseline автоматически. Для 3279a92b остаются OPEN:
+физический file picker/lifecycle/autoconnect, повтор D02/D03 на свежем core,
+десятиминутный real-profile smoke, forced publisher/CalibrationId, fault matrix,
+resource/media/UDP/QUIC и полный G/H release cycle. Текущий общий счёт не
+пересчитывается до появления receipts, привязанных к этому кандидату.
