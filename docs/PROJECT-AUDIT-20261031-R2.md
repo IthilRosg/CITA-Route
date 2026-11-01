@@ -229,3 +229,11 @@ Installer integration для stage `fd2490f6` прошла на dedicated native
 G2 на canonical candidate закрыла B04/B05; G3 file/ACL lab прошёл, но live forced publisher/CalibrationId ещё открыт. Forced-store harness теперь собирается с актуальными linked Zapret sources и принимает ImagePath параметром. Следующий ускоренный шаг — B01/B02/B03 и затем сквозной C01–C06.
 
 После G2 profile import harness переведён на Radmin/current AgentSha. Три case-а malformed/valid/malformed прошли на generation 62–64 с сохранением выбранного профиля и cleanup. B01/B02 остаются частичными: нужен реальный file picker и второй независимый валидный профиль.
+
+### Срез после ускоренного прогона
+
+Control probe на РМ прошёл 28/28 с точным cleanup. При восстановлении queue lab выявлена stale csproj-зависимость: проект собирался из ручного неполного списка Native* и больше не видел новые Zapret/connector/forced-intent типы. Состав NativeAgentLab переведён на wildcard Native* с явным исключением service-host файлов, после чего build и full agent compilation завершились без ошибок (остались прежние nullable/analyzer warnings). Queue receipt на stage 235f7600 подтвердил bounded 128, dedup, fairness и churn budget; принят только E03. Live forced publisher/CalibrationId, сетевые fault-и, ресурсы и страницы остаются открыты.
+
+Live forced publisher пока не принят: pipe из SSH session 0 закрывается сервисом, а bounded Interactive task не выдал receipt; временные task/script удалены, маршрут не включался. Следующий шаг — отдельный пользовательский-session harness с явным подтверждением интерактивного SID, затем E01/E02/E04/E05.
+
+Queue receipt расширен p50/p95/max и несколькими приложениями; live E02 остаётся OPEN, потому что физический routing sample 4d0b402d не дал controller receipt после SSH-обрыва. Cleanup вручную подтверждён, маршрут не оставлен включённым.

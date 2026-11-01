@@ -1,3 +1,5 @@
+[CmdletBinding()]
+param([switch]$ViaRadmin,[string]$StationAddress='')
 $ErrorActionPreference='Stop'
 if($PSVersionTable.PSVersion.Major -lt 7){throw 'PowerShell 7 is required for bounded SSH process arguments.'}
 # Limited stdio-only test: child exits on EOF; on uncertain SSH outcome inspect
@@ -5,7 +7,9 @@ if($PSVersionTable.PSVersion.Major -lt 7){throw 'PowerShell 7 is required for bo
 $workspace=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 & (Join-Path $PSScriptRoot 'Verify-PhysicalProbeBuild.ps1')
 . (Join-Path $PSScriptRoot 'Invoke-BoundedRm.ps1')
-$uuid=(Invoke-BoundedRm '(Get-CimInstance Win32_ComputerSystemProduct).UUID').Trim()
+function Invoke-PhysicalRm([string]$Code,[int]$TimeoutSeconds=30){Invoke-BoundedRm -Code $Code -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin -StationAddress $StationAddress}
+function Invoke-PhysicalScp([string]$Source,[string]$Destination,[int]$TimeoutSeconds=45){Invoke-BoundedScp -Source $Source -Destination $Destination -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin -StationAddress $StationAddress}
+$uuid=(Invoke-PhysicalRm '(Get-CimInstance Win32_ComputerSystemProduct).UUID').Trim()
 if($uuid -ne 'F8798200-12FB-11F1-8F47-A104BEE59100'){throw 'Physical station identity mismatch'}
 $id=[guid]::NewGuid().ToString('N')
 $image=Join-Path $workspace 'runtime/control-probe-publish/NativeControlProbe.exe'
@@ -25,9 +29,9 @@ if((Get-FileHash -LiteralPath $recipePath -Algorithm SHA256).Hash -cne '42CB3AA0
 $transferSource=Get-Content -LiteralPath $recipePath -Raw
 $create=[regex]::Match($transferSource,"(?s)\`$create=@'\r?\n(.*?)\r?\n'@").Groups[1].Value
 if(!$create){throw 'Protected folder recipe unavailable'}
-$ready=(Invoke-BoundedRm $create.Replace('__DIR__',$remoteFolder)).Trim();if($ready -ne 'ready'){throw "Protected directory unconfirmed: $id"}
+$ready=(Invoke-PhysicalRm $create.Replace('__DIR__',$remoteFolder)).Trim();if($ready -ne 'ready'){throw "Protected directory unconfirmed: $id"}
 foreach($item in @(@($image,"$base.exe"),@($agent,"$base.agent.dll"))){
- Invoke-BoundedScp $item[0] "citastation@26.68.227.253:C:/Program Files/RoutePilot/Agent/$folder/$($item[1])"
+ Invoke-PhysicalScp $item[0] "citastation@26.68.227.253:C:/Program Files/RoutePilot/Agent/$folder/$($item[1])"
 }
 $code=@'
 $ErrorActionPreference='Stop'
@@ -58,13 +62,13 @@ $result=@{run='__ID__';imageHash='__IMAGE__';agentHash='__AGENT__';success=$succ
 '@
 $local=Join-Path $workspace "runtime/$base.ps1"
 [IO.File]::WriteAllText($local,$code.Replace('__ID__',$id).Replace('__IMAGE__',$imageHash).Replace('__AGENT__',$agentHash),[Text.UTF8Encoding]::new($true))
-Invoke-BoundedScp $local "citastation@26.68.227.253:C:/Program Files/RoutePilot/Agent/$folder/$base.ps1"
-$result=(Invoke-BoundedRm "& ([ScriptBlock]::Create([IO.File]::ReadAllText('$remoteFolder\$base.ps1'))) " 100)|ConvertFrom-Json
+Invoke-PhysicalScp $local "citastation@26.68.227.253:C:/Program Files/RoutePilot/Agent/$folder/$base.ps1"
+$result=(Invoke-PhysicalRm "& ([ScriptBlock]::Create([IO.File]::ReadAllText('$remoteFolder\$base.ps1'))) " 100)|ConvertFrom-Json
 Remove-Item -LiteralPath $local -Force
 if($result.run -cne $id -or $result.imageHash -cne $imageHash -or $result.agentHash -cne $agentHash){throw 'Probe receipt mismatch'}
 $result|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $workspace 'runtime/goal2-control-physical-result.json') -Encoding utf8
 if(!$result.success -or !$result.cleanup){throw 'Probe or cleanup unconfirmed; receipt retained'}
 & (Join-Path $PSScriptRoot 'Verify-PhysicalProbeBuild.ps1')
-Invoke-BoundedRm "`$p='$remoteFolder\$base.json';`$f=Get-Item -LiteralPath `$p -Force;if(`$f.PSIsContainer -or (`$f.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Unexpected receipt'};`$d=Get-Item -LiteralPath '$remoteFolder' -Force;if(!`$d.PSIsContainer -or (`$d.Attributes -band [IO.FileAttributes]::ReparsePoint) -or @(Get-ChildItem -LiteralPath `$d.FullName -Force).Count -ne 1){throw 'Unexpected folder contents'};Remove-Item -LiteralPath `$p -Force;Remove-Item -LiteralPath `$d.FullName -ErrorAction Stop"|Out-Null
+Invoke-PhysicalRm "`$p='$remoteFolder\$base.json';`$f=Get-Item -LiteralPath `$p -Force;if(`$f.PSIsContainer -or (`$f.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Unexpected receipt'};`$d=Get-Item -LiteralPath '$remoteFolder' -Force;if(!`$d.PSIsContainer -or (`$d.Attributes -band [IO.FileAttributes]::ReparsePoint) -or @(Get-ChildItem -LiteralPath `$d.FullName -Force).Count -ne 1){throw 'Unexpected folder contents'};Remove-Item -LiteralPath `$p -Force;Remove-Item -LiteralPath `$d.FullName -ErrorAction Stop"|Out-Null
 Remove-Item -LiteralPath $journal -Force
 $result

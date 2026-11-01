@@ -1,10 +1,10 @@
-param([switch]$ArmOnly,[switch]$RoutingSample,[switch]$GuiAutoconnect,[switch]$CoreCrash,[switch]$ViaRadmin,[ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedAgentSha='97506113A245233BB7310DDCDF6CB80B5FD4C62AEC39AF9D0EA49A5FC1E3E764',[ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedAppSha='5350FAEED66D2A4AA0E709FCC2D9C197C38CFE1E3A161BC28CE9A814D3208795',[ValidatePattern('^$|^[A-F0-9]{64}$')][string]$ExpectedCoreSha='')
+param([switch]$ArmOnly,[switch]$RoutingSample,[switch]$GuiAutoconnect,[switch]$CoreCrash,[switch]$ViaRadmin,[string]$StationAddress='',[ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedAgentSha='1328BF7FF72F6DCF5E6A0872392A1E618D884C05B0AF2E480AC7080C4FBFD811',[ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedAppSha='FDA356DB841E580A977CA7F323410AA9E851BDD1CDD21FD0DBEE306A45337A99',[ValidatePattern('^$|^[A-F0-9]{64}$')][string]$ExpectedCoreSha='')
 $ErrorActionPreference='Stop';$workspace=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 if($GuiAutoconnect -and ($ArmOnly -or $RoutingSample)){throw 'GUI acceptance must run separately.'}
 if($CoreCrash -and ($ArmOnly -or $RoutingSample -or $GuiAutoconnect -or !$ExpectedCoreSha)){throw 'Core crash requires a separate cycle and an explicit core pin.'}
 . (Join-Path $workspace 'tools/native-control-probe/Invoke-BoundedRm.ps1')
-function Invoke-PhysicalRm([string]$Code,[int]$TimeoutSeconds=30){Invoke-BoundedRm -Code $Code -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin}
-function Invoke-PhysicalScp([string]$Source,[string]$Destination,[int]$TimeoutSeconds=45){Invoke-BoundedScp -Source $Source -Destination $Destination -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin}
+function Invoke-PhysicalRm([string]$Code,[int]$TimeoutSeconds=30){Invoke-BoundedRm -Code $Code -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin -StationAddress $StationAddress}
+function Invoke-PhysicalScp([string]$Source,[string]$Destination,[int]$TimeoutSeconds=45){Invoke-BoundedScp -Source $Source -Destination $Destination -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin -StationAddress $StationAddress}
 $journal=Join-Path $workspace 'runtime/native-client-cycle-active.json';if(Test-Path -LiteralPath $journal){throw 'Existing client cycle needs reconciliation.'}
 $paths=[ordered]@{'Controller.ps1'=(Join-Path $PSScriptRoot 'Controller.ps1');'Rescue.ps1'=(Join-Path $PSScriptRoot 'Rescue.ps1');'NativeUpgradeTransaction.ps1'=(Join-Path $workspace 'installer/NativeUpgradeTransaction.ps1');'NativeUpgradeService.ps1'=(Join-Path $workspace 'installer/NativeUpgradeService.ps1')}
 if($GuiAutoconnect){$paths['Gui.ps1']=Join-Path $PSScriptRoot 'Gui.ps1'}

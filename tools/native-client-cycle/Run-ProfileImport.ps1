@@ -1,9 +1,9 @@
 [CmdletBinding()]
-param([switch]$ViaRadmin,[ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedAgentSha='97506113A245233BB7310DDCDF6CB80B5FD4C62AEC39AF9D0EA49A5FC1E3E764')
+param([switch]$ViaRadmin,[string]$StationAddress='',[ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedAgentSha='1328BF7FF72F6DCF5E6A0872392A1E618D884C05B0AF2E480AC7080C4FBFD811')
 $ErrorActionPreference='Stop';$workspace=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 . (Join-Path $workspace 'tools/native-control-probe/Invoke-BoundedRm.ps1')
-function Invoke-PhysicalRm([string]$Code,[int]$TimeoutSeconds=30){Invoke-BoundedRm -Code $Code -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin}
-function Invoke-PhysicalScp([string]$Source,[string]$Destination,[int]$TimeoutSeconds=45){Invoke-BoundedScp -Source $Source -Destination $Destination -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin}
+function Invoke-PhysicalRm([string]$Code,[int]$TimeoutSeconds=30){Invoke-BoundedRm -Code $Code -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin -StationAddress $StationAddress}
+function Invoke-PhysicalScp([string]$Source,[string]$Destination,[int]$TimeoutSeconds=45){Invoke-BoundedScp -Source $Source -Destination $Destination -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin -StationAddress $StationAddress}
 $journal=Join-Path $workspace 'runtime/native-profile-import-active.json'
 if(Test-Path -LiteralPath $journal){throw 'Reconcile the existing import test before another run.'}
 $id=[guid]::NewGuid().ToString('N');$remote='C:\Program Files\RoutePilot\Agent\native-profile-test-'+$id

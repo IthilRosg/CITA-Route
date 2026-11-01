@@ -4,28 +4,37 @@ using RoutePilot.Agent;
 
 internal static class NativeQueueStressLab
 {
+    static long Percentile(List<long> values,double fraction)
+    {
+        if(values.Count==0)throw new InvalidDataException("Queue timing sample missing.");
+        var ordered=values.OrderBy(x=>x).ToArray();int index=Math.Min(ordered.Length-1,(int)Math.Ceiling(fraction*ordered.Length)-1);return ordered[index];
+    }
     internal static object Run()
     {
         var clock=Stopwatch.StartNew();var results=new List<object>();
-        NativeObservedDestination Seen(int i)=>new("h"+i.ToString("D5")+".example",i%2==0?"":@"C:\Fixture\app.exe","1.1.1.1",443);
+        // Queue acceptance is an application-scoped calibration test. Keep
+        // the main population addressable; domain-only observations are
+        // covered separately below and must never be selected.
+        NativeObservedDestination Seen(int i)=>new("h"+i.ToString("D5")+".example",(i%3) switch{0=>@"C:\Fixture\app-a.exe",1=>@"C:\Fixture\app-b.exe",_=>@"C:\Fixture\app-c.exe"},"1.1.1.1",443);
         foreach(int count in new[]{200,1000,10000})
         {
-            var schedule=new NativeCalibrationSchedule();var budget=new NativeCalibrationBudget();var selected=new HashSet<NativeObservedDestination>();int attempts=0,maxState=0;long now=1000;
+            var schedule=new NativeCalibrationSchedule();var budget=new NativeCalibrationBudget();var selected=new HashSet<NativeObservedDestination>();var firstSeen=new Dictionary<NativeObservedDestination,long>();var waits=new List<long>();int attempts=0,maxState=0;long now=1000;
             // Each stable window is drained before rotation: virtual time only.
             foreach(var window in Enumerable.Range(0,count).Select(Seen).Chunk(128))
             {
+                foreach(var observation in window)if(!firstSeen.ContainsKey(observation))firstSeen[observation]=now;
                 for(int tick=0;tick<60000&&window.Any(o=>!selected.Contains(o));tick++,now+=1000)
                 {
                     var next=schedule.Select(window,now);maxState=Math.Max(maxState,schedule.Count);
                     if(next==null||!budget.TryAcquire(now))continue;
-                    schedule.Mark(next,now);selected.Add(next);attempts++;maxState=Math.Max(maxState,schedule.Count);
+                    schedule.Mark(next,now);selected.Add(next);waits.Add(now-firstSeen[next]);attempts++;maxState=Math.Max(maxState,schedule.Count);
                     // Scheduling tracks attempts, not successful reachability.
                     // A failed probe has the same cooldown as any other attempt.
                 }
             }
             if(selected.Count!=count||maxState>128)throw new Exception("Stable queue coverage or bound failed.");
             schedule.Clear();if(schedule.Count!=0)throw new Exception("Network epoch retained queue state.");
-            results.Add(new{count,selected=selected.Count,attempts,maxState,virtualSeconds=(now-1000)/1000});
+            results.Add(new{count,selected=selected.Count,attempts,maxState,queueP50Ms=Percentile(waits,.50),queueP95Ms=Percentile(waits,.95),queueMaxMs=waits.Max(),virtualSeconds=(now-1000)/1000});
         }
         var churn=new NativeCalibrationSchedule();var churnBudget=new NativeCalibrationBudget();int churnAttempts=0,churnMax=0;
         for(int tick=0;tick<10000;tick++)
@@ -34,6 +43,12 @@ internal static class NativeQueueStressLab
             var next=churn.Select(window,now);if(next!=null&&churnBudget.TryAcquire(now)){churn.Mark(next,now);churnAttempts++;}churnMax=Math.Max(churnMax,churn.Count);
         }
         if(churnAttempts!=32||churnMax>128)throw new Exception("Churn exceeded global budget or window bound.");
+        var domainOnly=new NativeCalibrationSchedule();
+        if(domainOnly.Select([new NativeObservedDestination("domain-only.example","","1.1.1.1",443)],0)!=null)throw new Exception("Domain-only observation was selected.");
+        var dedup=new NativeCalibrationSchedule();var duplicate=Seen(70000);
+        if(dedup.Select([duplicate,duplicate],0)!=duplicate)throw new Exception("Duplicate observation was not selected deterministically.");
+        dedup.Mark(duplicate,0);if(dedup.Select([duplicate,duplicate],1)!=null)throw new Exception("Duplicate observation bypassed cooldown.");
+        var fair=new NativeCalibrationSchedule();var fairWindow=new[]{Seen(70001),Seen(70002)};var first=fair.Select(fairWindow,0)??throw new Exception("Fairness first selection missing.");fair.Mark(first,0);var second=fair.Select(fairWindow,1)??throw new Exception("Fairness second selection missing.");if(second==first)throw new Exception("Fairness repeated a destination before serving the window.");
         var repeat=new NativeCalibrationSchedule();var due=Seen(0);repeat.Mark(due,1000);
         if(repeat.Select([due],60999)!=null||repeat.Select([due],61000)!=due)throw new Exception("Failed probe cooldown broken.");
         bool oversize=false;try{repeat.Select(Enumerable.Range(0,129).Select(Seen).ToArray(),0);}catch(InvalidDataException){oversize=true;}if(!oversize)throw new Exception("Oversize queue accepted.");
@@ -44,7 +59,7 @@ internal static class NativeQueueStressLab
         int retryCases=0;var owner=JsonSerializer.SerializeToElement(new{state="RunningUnverified"});
         foreach(int status in new[]{200,301,400,401,403,404,408,429,500,501,502,503,504})foreach(int attempt in new[]{1,2})
         {var probe=JsonSerializer.SerializeToElement(new{success=false,failureCode="HttpStatus",httpStatus=status});bool expected=attempt==1&&status is 500 or 502 or 503 or 504;if(NativeProbePolicy.RetryAnonymousHttps(probe,owner,attempt)!=expected)throw new Exception("HTTP status misclassified for retry.");retryCases++;}
-        return new{success=true,stable=results,invalidPolicyCasesRefused=refused,httpRetryCases=retryCases,churn=new{ticks=10000,virtualMilliseconds=10000,attempts=churnAttempts,maxState=churnMax},elapsedMs=clock.ElapsedMilliseconds,
+        return new{success=true,stable=results,dedup=true,fairness=new{first=first.Domain,second=second.Domain},invalidPolicyCasesRefused=refused,httpRetryCases=retryCases,churn=new{ticks=10000,virtualMilliseconds=10000,attempts=churnAttempts,maxState=churnMax},elapsedMs=clock.ElapsedMilliseconds,
             scope="Deterministic scheduling only, virtual time, no network. Rotating window intentionally retains 128 entries; evicted destinations remain on default VPN, not guaranteed calibrated."};
     }
 }

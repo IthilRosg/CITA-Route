@@ -1,4 +1,4 @@
-param([string]$NativeSourceReceipt='runtime/native-corresponding-source.zip.receipt.json',[switch]$StageOnly,[switch]$IncludeZapretInternal)
+param([string]$NativeSourceReceipt='runtime/native-corresponding-source-current.zip.receipt.json',[switch]$StageOnly,[switch]$IncludeZapretInternal)
 $ErrorActionPreference='Stop';$root=$PSScriptRoot
 if($IncludeZapretInternal -and -not $StageOnly){throw 'Zapret internal components are limited to unpublished staging.'}
 . (Join-Path $root 'Build-Dotnet.ps1');. (Join-Path $root 'FileStorage.ps1')

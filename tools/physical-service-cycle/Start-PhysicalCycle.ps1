@@ -1,4 +1,4 @@
-$ErrorActionPreference='Stop';$root='__ROOT__';$id='__ID__';$task='__TASK__';$backup=$task+'-Backup';$agent='C:\Program Files\RoutePilot\Agent';$image=Join-Path $root 'Cita.PhysicalServiceCycle.exe'
+$ErrorActionPreference='Stop';$root='__ROOT__';$id='__ID__';$task='__TASK__';$backup=$task+'-Backup';$forcedTask=$task+'-Forced';$agent='C:\Program Files\RoutePilot\Agent';$image=Join-Path $root 'Cita.PhysicalServiceCycle.exe';$forcedProbe='__FORCED__' -eq 'true'
 if((Get-CimInstance Win32_ComputerSystemProduct).UUID -ne 'F8798200-12FB-11F1-8F47-A104BEE59100'){throw 'Wrong station'}
 if((Get-FileHash -LiteralPath $image).Hash -cne '__HELPER__'){throw 'Helper differs'}
 function Protect($path){
@@ -18,7 +18,7 @@ $baseline=@{servicePid=[int]$svc.ProcessId;intentSha=(Get-FileHash -LiteralPath 
 if($baseline.agentSha -cne '__AGENT__' -or $baseline.manifestSha -cne '__MANIFEST__'){throw 'Initial version differs'}
 $baselineFile=Join-Path $root 'baseline.json';[IO.File]::WriteAllText($baselineFile,($baseline|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));Protect $baselineFile
 $plan=@{Schema=1;Run=$id;UserSid=$sid;AgentSha256=$baseline.agentSha;ManifestSha256=$baseline.manifestSha;HelperSha256='__HELPER__';DeadlineUtc=[DateTimeOffset]::UtcNow.AddSeconds(115).ToString('o')};$planPath=Join-Path $root 'plan.json';[IO.File]::WriteAllText($planPath,($plan|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));Protect $planPath
-foreach($name in @($task,$backup)){$existing=@(Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue|Where-Object TaskName -ceq $name);if($existing.Count){throw 'Task name already exists'}}
+foreach($name in @($task,$backup)+$(if($forcedProbe){@($forcedTask)}else{@()})){$existing=@(Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue|Where-Object TaskName -ceq $name);if($existing.Count){throw 'Task name already exists'}}
 $info=New-Object Diagnostics.ProcessStartInfo;$info.FileName=$image;$info.Arguments='--controller "'+$root+'"';$info.UseShellExecute=$false;$info.CreateNoWindow=$true
 $controller=[Diagnostics.Process]::Start($info);if(!$controller){throw 'Controller start failed'}
 for($i=0;$i -lt 100 -and !(Test-Path -LiteralPath "$root\controller.json");$i++){if($controller.HasExited){throw 'Controller exited before readiness'};Start-Sleep -Milliseconds 100}
@@ -26,6 +26,17 @@ $descriptor=Join-Path $root 'controller.json';Protect $descriptor;$identity=[IO.
 if($identity.run -cne $id -or $identity.pid -ne $controller.Id -or $identity.start -ne $controller.StartTime.ToUniversalTime().Ticks -or $identity.tokenSid -cne 'S-1-5-18' -or $identity.servicePid -ne $baseline.servicePid -or $controller.MainModule.FileName -ine $image){throw 'Controller identity differs'}
 $principal=New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest;$settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries;$trigger=New-ScheduledTaskTrigger -AtStartup
 foreach($role in @('primary','backup')){$name=if($role -eq 'primary'){$task}else{$backup};$action=New-ScheduledTaskAction -Execute $image -Argument ('--'+$role+' "'+$root+'"');Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Trigger $trigger|Out-Null}
+$forcedEvidence=$null
+if($forcedProbe){
+ $forcedAction=New-ScheduledTaskAction -Execute $image -Argument ('--forced-probe "'+$root+'"')
+ Register-ScheduledTask -TaskName $forcedTask -Action $forcedAction -Principal $principal -Settings $settings -Trigger $trigger|Out-Null
+ Start-ScheduledTask -TaskName $forcedTask
+ for($i=0;$i -lt 120 -and !(Test-Path -LiteralPath (Join-Path $root 'forced-probe-result.json'));$i++){if($controller.HasExited){throw 'Controller exited before forced probe evidence'};Start-Sleep -Milliseconds 100}
+ if(!(Test-Path -LiteralPath (Join-Path $root 'forced-probe-result.json'))){throw 'Forced probe evidence unavailable'}
+ $forcedEvidence=Get-Content -LiteralPath (Join-Path $root 'forced-probe-result.json') -Raw|ConvertFrom-Json
+ if(!$forcedEvidence.success){throw 'Forced probe failed'}
+ Unregister-ScheduledTask -TaskName $forcedTask -Confirm:$false|Out-Null
+}
 Start-ScheduledTask -TaskName $task;Start-ScheduledTask -TaskName $backup
 for($i=0;$i -lt 550 -and !(Test-Path -LiteralPath "$root\stopped.json");$i++){if($controller.HasExited){throw 'Controller exited before stop evidence'};Start-Sleep -Milliseconds 100}
 if(!(Test-Path -LiteralPath "$root\stopped.json")){throw 'Stop evidence unavailable'}
@@ -36,4 +47,4 @@ $held=@();try{
  $held[0].Kill();if(!$held[0].WaitForExit(5000)){throw 'Primary exit unconfirmed'}
  $why='InjectedKill';if($controller.HasExited){$why='WatcherLoss'}else{try{$controller.Kill()}catch{if(!$controller.HasExited){throw};$why='WatcherLoss'}};if(!$controller.WaitForExit(5000)){throw 'Controller exit unconfirmed'}
 }finally{foreach($p in $held){$p.Dispose()}}
-[pscustomobject]@{run=$id;primaryStopped=$true;controllerStopped=$true;controllerTermination=$why;baseline=$baseline}|ConvertTo-Json -Depth 5 -Compress
+[pscustomobject]@{run=$id;primaryStopped=$true;controllerStopped=$true;controllerTermination=$why;baseline=$baseline;forcedProbe=$forcedEvidence}|ConvertTo-Json -Depth 8 -Compress

@@ -10,6 +10,7 @@ using System.Runtime.InteropServices;
 using RoutePilot.Agent;
 
 if(args.Length==1&&args[0]=="--job-fixture"){await Task.Delay(Timeout.Infinite);return;}
+if(args.Length==2&&args[0]=="--forced-probe"){await RunForcedProbe(args[1]);return;}
 if(args.Length==1&&args[0]=="--self-test"){
     if(RefusalEvidence.Classify("The process cannot access the file because it is being used by another process.",@"C:\x\intent.json")!="KnownSharingViolationNoFileName"||
        RefusalEvidence.Classify("Процесс не может получить доступ к файлу, так как этот файл используется другим процессом.",@"C:\x\intent.json")!="KnownSharingViolationNoFileName"||
@@ -140,6 +141,51 @@ if(!confirmed||readyProcess.HasExited||Service.QueryRunningPid()!=readyPid)throw
 Save(Path.Combine(root,"result-"+roleName+".json"),new{run=id,role=roleName,success=true,jobActiveAfter=active,servicePid=readyPid,scope="Service restart only; no upgrade, TUN or power-loss proof"});
 }
 
+static async Task RunForcedProbe(string root)
+{
+    CheckMachine();
+    string parent=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"RoutePilot","Agent");
+    root=Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));string name=Path.GetFileName(root);
+    if(!string.Equals(Path.GetDirectoryName(root),parent,StringComparison.OrdinalIgnoreCase)||name.Length!=43||!name.StartsWith("cita-cycle-",StringComparison.Ordinal)||name[11..].Any(c=>!char.IsAsciiHexDigit(c)||char.IsUpper(c)))throw new IOException("Forced probe root refused.");
+    if((WindowsIdentity.GetCurrent().User?.Value??"")!="S-1-5-18")throw new UnauthorizedAccessException("Forced probe requires LocalSystem.");
+    Check(root);for(var p=Directory.GetParent(root);p!=null;p=p.Parent)Check(p.FullName,true);
+    string intentPath=Path.Combine(parent,"native","intent.json");Check(intentPath);using var intent=Locked(intentPath);
+    var result=new Dictionary<string,object?>{{"success",false},{"run",name[11..]},{"scope","live service forced intent RPC; no route enabled"}};
+    try
+    {
+        using(var status=await ReadRpc("native-status",null))
+        {
+            var state=status.RootElement.GetProperty("Native");if(!status.RootElement.GetProperty("Success").GetBoolean()||state.GetProperty("phase").GetString()!="Disconnected"||state.GetProperty("desired").GetBoolean())throw new IOException("Forced probe requires disconnected native service.");
+            result["initialService"]=state.Clone();
+        }
+        ulong initialRevision;JsonElement initialRules;bool initialExists;
+        using(var read=await ReadRpc("native-forced-read",null,new{ExpectedRevision=1UL}))
+        {
+            initialExists=read.RootElement.GetProperty("Success").GetBoolean();result["initialRead"]=read.RootElement.Clone();
+            if(initialExists){var document=read.RootElement.GetProperty("Native").GetProperty("document");initialRevision=document.GetProperty("Revision").GetUInt64();initialRules=document.GetProperty("Rules").Clone();}
+            else
+            {
+                using var initialized=await ReadRpc("native-forced-init",null);if(!initialized.RootElement.GetProperty("Success").GetBoolean())throw new IOException("Forced intent initialization refused.");var document=initialized.RootElement.GetProperty("Native").GetProperty("document");initialRevision=document.GetProperty("Revision").GetUInt64();initialRules=JsonSerializer.SerializeToElement(Array.Empty<object>());result["initialize"]=initialized.RootElement.Clone();
+            }
+        }
+        result["initialExists"]=initialExists;result["initialRevision"]=initialRevision;
+        var rule=new[]{new{Domain="forced-live.example",Application=@"C:\Windows\System32\notepad.exe",Network="tcp",Route="blocked",Port=(ushort)443,Addresses=Array.Empty<string>()}};
+        ulong replacedRevision;
+        using(var replace=await ReadRpc("native-forced-replace",null,new{ExpectedRevision=initialRevision,Rules=rule}))
+        {result["replace"]=replace.RootElement.Clone();if(!replace.RootElement.GetProperty("Success").GetBoolean())throw new IOException("Forced intent replacement refused.");replacedRevision=replace.RootElement.GetProperty("Native").GetProperty("document").GetProperty("Revision").GetUInt64();}
+        using(var readAfter=await ReadRpc("native-forced-read",null,new{ExpectedRevision=replacedRevision}))result["readAfterReplace"]=readAfter.RootElement.Clone();
+        using(var stale=await ReadRpc("native-forced-replace",null,new{ExpectedRevision=initialRevision,Rules=Array.Empty<object>()})){result["stale"]=stale.RootElement.Clone();if(stale.RootElement.GetProperty("Success").GetBoolean())throw new IOException("Stale forced revision was accepted.");}
+        ulong restoredRevision;
+        using(var restore=await ReadRpc("native-forced-replace",null,new{ExpectedRevision=replacedRevision,Rules=JsonSerializer.Deserialize<object[]>(initialRules.GetRawText())??Array.Empty<object>()})){result["restore"]=restore.RootElement.Clone();if(!restore.RootElement.GetProperty("Success").GetBoolean())throw new IOException("Forced intent restoration refused.");restoredRevision=restore.RootElement.GetProperty("Native").GetProperty("document").GetProperty("Revision").GetUInt64();}
+        using(var finalRead=await ReadRpc("native-forced-read",null,new{ExpectedRevision=restoredRevision}))
+        {
+            result["finalRead"]=finalRead.RootElement.Clone();if(!finalRead.RootElement.GetProperty("Success").GetBoolean())throw new IOException("Final forced intent read refused.");int expectedCount=JsonDocument.Parse(initialRules.GetRawText()).RootElement.GetArrayLength();int finalCount=finalRead.RootElement.GetProperty("Native").GetProperty("document").GetProperty("Rules").GetArrayLength();if(expectedCount!=finalCount)throw new IOException("Forced intent restoration count differs.");
+        }
+        result["success"]=true;Save(Path.Combine(root,"forced-probe-result.json"),result);
+    }
+    catch(Exception error){result["errorType"]=error.GetType().Name;result["error"]=error.Message;Save(Path.Combine(root,"forced-probe-result.json"),result);throw;}
+}
+
 static async Task TestStartRefusal(string intentPath,string root,string run)
 {
     int writeCode=0;try{using var blocked=new FileStream(intentPath,FileMode.Open,FileAccess.Write,FileShare.ReadWrite|FileShare.Delete);}catch(IOException e){writeCode=e.HResult&0xffff;}
@@ -158,10 +204,10 @@ static async Task TestStartRefusal(string intentPath,string root,string run)
     Save(Path.Combine(root,"refusal-evidence.json"),new{run,writeCode,deleteCode,beforePhaseValid,replySuccess=success,phaseMatches=phase,operationMatches=op,generationMatches=gen,desiredMatches=desired,messageClassificationOnly=classification,causalFileUnproven=classification!="IntentPath"});
     if(writeCode is not (32 or 33)||deleteCode is not (32 or 33)||!beforePhaseValid||success||!phase||!desired||!op||!gen)throw new IOException("Protected intent refusal unconfirmed.");
 }
-static async Task<JsonDocument> ReadRpc(string name,string? operation)
+static async Task<JsonDocument> ReadRpc(string name,string? operation,object? forced=null)
 {
     using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(8));using var pipe=new NamedPipeClientStream(".","RoutePilot.Rescue.v1",PipeDirection.InOut,PipeOptions.Asynchronous,TokenImpersonationLevel.Identification);
-    await pipe.ConnectAsync(timeout.Token);Service.VerifyPipeServer(pipe);byte[] command=Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new{Command=name,RunId=operation})+"\n");await pipe.WriteAsync(command,timeout.Token);await pipe.FlushAsync(timeout.Token);
+    await pipe.ConnectAsync(timeout.Token);Service.VerifyPipeServer(pipe);object request=forced==null?new{Command=name,RunId=operation}:new{Command=name,RunId=operation,Forced=forced};byte[] command=Encoding.UTF8.GetBytes(JsonSerializer.Serialize(request)+"\n");await pipe.WriteAsync(command,timeout.Token);await pipe.FlushAsync(timeout.Token);
     var bytes=new List<byte>();byte[] one=new byte[1];while(true){int count=await pipe.ReadAsync(one,timeout.Token);if(count==0)throw new IOException("Start response missing.");if(one[0]==10)break;if(bytes.Count>=65536)throw new IOException("Start response too large.");bytes.Add(one[0]);}
     return JsonDocument.Parse(bytes.ToArray());
 }

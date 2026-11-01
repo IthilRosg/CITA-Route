@@ -1,7 +1,7 @@
 [CmdletBinding()]
-param([switch]$ViaRadmin,
-      [ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedAgentSha='69AADD1AD109B67FC43360E655CE01BF21D34635DFD793A281CAF03F797DE217',
-      [ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedManifestSha='BC8E46DD1D8FE4E93F2F8E8B4273AF102F76D22D632C902786DA15F24703606A',
+param([switch]$ViaRadmin,[string]$StationAddress='',[switch]$ForcedProbe,
+      [ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedAgentSha='1328BF7FF72F6DCF5E6A0872392A1E618D884C05B0AF2E480AC7080C4FBFD811',
+      [ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedManifestSha='846085A1A329C6373E842FAC09FEA4C69851A445F1743A3A3C1506827E96463B',
       [string]$HelperPath='runtime/physical-service-cycle-candidate-v11/Cita.PhysicalServiceCycle.exe',
       [ValidatePattern('^[A-F0-9]{64}$')][string]$ExpectedHelperSha='5466FCD2E410997601F006F8B19C9E1EFE3D2512D974AF16648F6B63755729F1')
 $ErrorActionPreference='Stop'
@@ -9,10 +9,10 @@ $workspace=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 . (Join-Path $workspace 'tools/native-control-probe/Invoke-BoundedRm.ps1')
 
 function Invoke-PhysicalRm([string]$Code,[int]$TimeoutSeconds=30){
-    Invoke-BoundedRm -Code $Code -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin
+    Invoke-BoundedRm -Code $Code -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin -StationAddress $StationAddress
 }
 function Invoke-PhysicalScp([string]$Source,[string]$Destination,[int]$TimeoutSeconds=45){
-    Invoke-BoundedScp -Source $Source -Destination $Destination -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin
+    Invoke-BoundedScp -Source $Source -Destination $Destination -TimeoutSeconds $TimeoutSeconds -ViaRadmin:$ViaRadmin -StationAddress $StationAddress
 }
 function Write-SystemWrapper([string]$Path,[string]$RemoteRoot,[string]$ScriptName,[string]$ResultName){
     $text=@'
@@ -80,12 +80,13 @@ $create=[regex]::Match([IO.File]::ReadAllText($recipe),$pattern).Groups[1].Value
 if(!$create){throw 'Protected directory recipe missing.'}
 $id=[guid]::NewGuid().ToString('N');$folder='cita-cycle-'+$id;$remote='C:\Program Files\RoutePilot\Agent\'+$folder;$task='CitaServiceCycle-'+$id;$backup=$task+'-Backup'
 $transport='LAN';if($ViaRadmin){$transport='RadminVPN'}
-$entry=[ordered]@{schema=1;run=$id;root=$remote;primaryTask=$task;backupTask=$backup;helperSha256=$hash;transport=$transport;state='MayCreate';utc=[DateTimeOffset]::UtcNow.ToString('o')}
+$entry=[ordered]@{schema=1;run=$id;root=$remote;primaryTask=$task;backupTask=$backup;forcedProbe=[bool]$ForcedProbe;helperSha256=$hash;transport=$transport;state='MayCreate';utc=[DateTimeOffset]::UtcNow.ToString('o')}
 $f=[IO.File]::Open($journal,'CreateNew','Write','Read');try{$bytes=[Text.Encoding]::UTF8.GetBytes(($entry|ConvertTo-Json -Compress));$f.Write($bytes,0,$bytes.Length);$f.Flush($true)}finally{$f.Dispose()}
 if((Invoke-PhysicalRm $create.Replace('__DIR__',$remote)).Trim() -ne 'ready'){throw 'Protected cycle directory is unconfirmed.'}
 Invoke-PhysicalScp $helper ("citastation@26.68.227.253:C:/Program Files/RoutePilot/Agent/$folder/Cita.PhysicalServiceCycle.exe")
 $startPath=Join-Path $workspace ("runtime/service-cycle-start-"+$id+'.ps1')
-$start=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Start-PhysicalCycle.ps1')).Replace('__ROOT__',$remote).Replace('__ID__',$id).Replace('__TASK__',$task).Replace('__HELPER__',$hash).Replace('__AGENT__',$ExpectedAgentSha).Replace('__MANIFEST__',$ExpectedManifestSha)
+$forcedLiteral=if($ForcedProbe){'true'}else{'false'}
+$start=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Start-PhysicalCycle.ps1')).Replace('__ROOT__',$remote).Replace('__ID__',$id).Replace('__TASK__',$task).Replace('__HELPER__',$hash).Replace('__AGENT__',$ExpectedAgentSha).Replace('__MANIFEST__',$ExpectedManifestSha).Replace('__FORCED__',$forcedLiteral)
 [IO.File]::WriteAllText($startPath,$start,[Text.UTF8Encoding]::new($true));$startHash=(Get-FileHash -LiteralPath $startPath).Hash
 Invoke-PhysicalScp $startPath ("citastation@26.68.227.253:C:/Program Files/RoutePilot/Agent/$folder/start.ps1")
 $startWrapperPath=Join-Path $workspace ("runtime/service-cycle-system-start-"+$id+'.ps1');Write-SystemWrapper $startWrapperPath $remote 'start.ps1' 'system-start-result.json';$startWrapperHash=(Get-FileHash -LiteralPath $startWrapperPath).Hash
@@ -94,6 +95,7 @@ $startEnvelope=Invoke-SystemScript $remote 'system-start.ps1' 'system-start-resu
 if((Invoke-PhysicalRm "if((Get-FileHash -LiteralPath '$remote\start.ps1').Hash -ne '$startHash'){throw 'Start script differs'};if((Get-FileHash -LiteralPath '$remote\system-start.ps1').Hash -ne '$startWrapperHash'){throw 'SYSTEM wrapper differs'};'confirmed'" 40).Trim() -ne 'confirmed'){throw 'Start scripts differ.'}
 $started=([string]$startEnvelope.output).Trim()|ConvertFrom-Json
 if($started.run -cne $id -or !$started.primaryStopped -or !$started.controllerStopped){throw 'Injected fault unconfirmed; journal retained.'}
+if($ForcedProbe){if(!$started.forcedProbe -or !$started.forcedProbe.success){throw 'Forced probe receipt missing.'};$forcedPath=Join-Path $workspace ('runtime/forced-probe-live-'+$id+'.json');$started.forcedProbe|ConvertTo-Json -Depth 20|Set-Content -LiteralPath $forcedPath -Encoding UTF8}
 $collectPath=Join-Path $workspace ("runtime/service-cycle-collect-"+$id+'.ps1')
 $collect=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Collect-PhysicalCycle.ps1')).Replace('__ROOT__',$remote).Replace('__ID__',$id).Replace('__TASK__',$task).Replace('__HELPER__',$hash)
 [IO.File]::WriteAllText($collectPath,$collect,[Text.UTF8Encoding]::new($true));$collectHash=(Get-FileHash -LiteralPath $collectPath).Hash

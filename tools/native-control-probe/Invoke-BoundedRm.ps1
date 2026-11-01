@@ -1,4 +1,10 @@
-function Invoke-BoundedRm([string]$Code,[int]$TimeoutSeconds=30,[switch]$ViaRadmin){
+function Resolve-CitaStationAddress([string]$StationAddress,[switch]$ViaRadmin){
+    if($ViaRadmin){return '26.68.227.253'}
+    $candidate=if($StationAddress){$StationAddress}elseif($env:CITA_STATION_ADDRESS){$env:CITA_STATION_ADDRESS}else{'192.168.1.124'}
+    if($candidate -notmatch '^[A-Za-z0-9][A-Za-z0-9.:-]{0,253}$'){throw 'Invalid CITA_STATION_ADDRESS.'}
+    return $candidate
+}
+function Invoke-BoundedRm([string]$Code,[int]$TimeoutSeconds=30,[switch]$ViaRadmin,[string]$StationAddress=''){
     if($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 180){throw 'Invalid SSH deadline'}
     $Code="$"+'ProgressPreference=''SilentlyContinue'';'+$Code
     $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Code))
@@ -17,7 +23,7 @@ function Invoke-BoundedRm([string]$Code,[int]$TimeoutSeconds=30,[switch]$ViaRadm
     if($encoded.Length -gt 7000){throw 'Remote script exceeds bounded command transport; transfer a verified script file instead'}
     $info=[Diagnostics.ProcessStartInfo]::new();$info.FileName=(Get-Command ssh -ErrorAction Stop).Source
     $info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
-    $destination=if($ViaRadmin){'citastation@26.68.227.253'}else{'citastation@192.168.1.124'}
+    $destination='citastation@'+(Resolve-CitaStationAddress -StationAddress $StationAddress -ViaRadmin:$ViaRadmin)
     foreach($arg in @('-i',"$env:USERPROFILE\.ssh\cita_test_station_ed25519",'-o',"UserKnownHostsFile=$env:USERPROFILE\.ssh\cita_test_station_known_hosts",'-o','HostKeyAlias=26.68.227.253','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10','-o','ServerAliveInterval=5','-o','ServerAliveCountMax=3','-o','BatchMode=yes',$destination,"powershell -NoProfile -NonInteractive -EncodedCommand $encoded")){$info.ArgumentList.Add($arg)}
     $p=[Diagnostics.Process]::Start($info);if(!$p){throw 'SSH start failed'}
     try{
@@ -28,13 +34,14 @@ function Invoke-BoundedRm([string]$Code,[int]$TimeoutSeconds=30,[switch]$ViaRadm
         return $out.Result
     }finally{$p.Dispose()}
 }
-function Invoke-BoundedScp([string]$Source,[string]$Destination,[int]$TimeoutSeconds=45,[switch]$ViaRadmin){
+function Invoke-BoundedScp([string]$Source,[string]$Destination,[int]$TimeoutSeconds=45,[switch]$ViaRadmin,[string]$StationAddress=''){
     if($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 180){throw 'Invalid SCP deadline'}
     $info=[Diagnostics.ProcessStartInfo]::new();$info.FileName=(Get-Command scp -ErrorAction Stop).Source
     $info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
     if(!$ViaRadmin){
-        if($Source.StartsWith('citastation@26.68.227.253:',[StringComparison]::OrdinalIgnoreCase)){$Source='citastation@192.168.1.124:'+$Source.Substring('citastation@26.68.227.253:'.Length)}
-        if($Destination.StartsWith('citastation@26.68.227.253:',[StringComparison]::OrdinalIgnoreCase)){$Destination='citastation@192.168.1.124:'+$Destination.Substring('citastation@26.68.227.253:'.Length)}
+        $lan=(Resolve-CitaStationAddress -StationAddress $StationAddress)
+        if($Source.StartsWith('citastation@26.68.227.253:',[StringComparison]::OrdinalIgnoreCase)){$Source='citastation@'+$lan+':'+$Source.Substring('citastation@26.68.227.253:'.Length)}
+        if($Destination.StartsWith('citastation@26.68.227.253:',[StringComparison]::OrdinalIgnoreCase)){$Destination='citastation@'+$lan+':'+$Destination.Substring('citastation@26.68.227.253:'.Length)}
     }
     foreach($arg in @('-q','-i',"$env:USERPROFILE\.ssh\cita_test_station_ed25519",'-o',"UserKnownHostsFile=$env:USERPROFILE\.ssh\cita_test_station_known_hosts",'-o','HostKeyAlias=26.68.227.253','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10','-o','ServerAliveInterval=5','-o','ServerAliveCountMax=3','-o','BatchMode=yes',$Source,$Destination)){$info.ArgumentList.Add($arg)}
     $p=[Diagnostics.Process]::Start($info);if(!$p){throw 'SCP start failed'}

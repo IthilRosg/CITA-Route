@@ -20,7 +20,7 @@ foreach(string mode in new[]{"bad-policy","late-policy","rejected","bad-scope","
     var stderr=Task.Run(async()=>{while(await child.StandardError.ReadLineAsync() is string line){if(line.StartsWith("got:"))received.Enqueue(line[4..]);if(line=="got:Snapshot")snapshotReceived.TrySetResult();if(line=="received")ready.TrySetResult();}});field.SetValue(binding,child);
     async Task<JsonElement> Send(string action,ulong? expected=null,string? digest=null,object? expectedScope=null,CancellationToken stop=default)
     {
-        object?[] parameters={action,"session",1UL,0,"",true,stop,null,null,null,0UL,null,expected,digest,expectedScope,null};
+        object?[] parameters={action,"session",1UL,0,"",true,stop,null,null,null,0UL,null,expected,digest,null,expectedScope,null};
         return await (Task<JsonElement>)command.Invoke(binding,parameters)!;
     }
     try

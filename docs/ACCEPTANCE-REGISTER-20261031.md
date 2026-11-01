@@ -203,3 +203,21 @@ D02 прошёл на этом кандидате: core PID `3316` → `9764`, s
 Физический forced-store lab также прошёл на свежем linked source build: revision 3, pre-rename и post-rename crash recovery, concurrent writer winner=1, stale writer refusal, weak ACL refusal; cleanup подтверждён. Это закрывает файловую/ACL часть C, но не засчитывает live forced publisher и CalibrationId до сквозного service-path теста. Общая приёмка: 9/44 (20,45%).
 
 Профильный import gate на canonical stage также прошёл: malformed-before, valid-same-profile и malformed-after — PASS, исходный профиль и содержимое сохранены, Desired=false, final phase Disconnected, cleanup подтверждён. Реальный file picker и смена на второй валидный профиль ещё не засчитываются.
+
+### Актуальный canonical stage и ускоренная пачка
+
+Canonical private-preview stage: `235f7600`, lineage `df7c36b7`. На рабочей станции через Radmin повторён current-agent control probe: 28/28 сценариев, `success=true`, `cleanup=true`; это source/control evidence с fake core и не заменяет live C01–C06 forced publisher/CalibrationId.
+
+G2 закрывает B04/B05; profile-import receipt закрыл malformed-before/valid-same-profile/malformed-after. Реальный file picker, второй независимый профиль и полный cancel/stop matrix остаются OPEN.
+
+E03 закрыт свежим receipt `runtime/native-queue-stress-current-235f7600.receipt.json`: 200/1000/10000 application-scoped направлений, bounded state 128, dedup, fairness, churn budget 32 попытки/мин и 23 отказанных недопустимых policy cases. Это детерминированное виртуальное время без сети; E01/E02/E04/E05 не засчитаны.
+
+Общая приёмка: 10/44 = 22,73%. Public release remains blocked до live G3, D/E/F/G/H.
+
+Дополнительная live-попытка forced publisher через интерактивную сессию не дала receipt: SSH-сессия 0 получила штатный разрыв named pipe, а временный Interactive task не вернул результат в ограниченный срок. Task и скрипты удалены, RoutePilotRescue осталась Running, native intent не переводился в Desired=true. Это диагностическое ограничение harness, не PASS/FAIL продукта; live C01–C06 остаются OPEN.
+
+### E02 queue timing receipt
+
+Свежий deterministic receipt для stage `235f7600` теперь включает три application scopes (`app-a/app-b/app-c`) и виртуальные queue `p50/p95/max`: для 200 направлений 91/201/211 ms, для 1000 — 118/231/239 ms, для 10000 — 119/233/239 ms. Dedup/fairness/churn и bounded state сохранены. Это измерение планировщика без сети; E02 остаётся OPEN до подтверждения first/repeat access в живом сеансе.
+
+Routing sample run `4d0b402d...` не дал controller receipt из-за обрыва SSH; он не влияет на PASS-счёт. Manual cleanup receipt подтверждает tasks/root/processes=0 и `Desired=false`.
