@@ -13,8 +13,8 @@ if(-not(Test-Path -LiteralPath $KnownHostsPath -PathType Leaf)){throw 'Known-hos
 $common=@('-i',$KeyPath,'-o',('UserKnownHostsFile='+$KnownHostsPath),'-o','HostKeyAlias=26.68.227.253','-o','StrictHostKeyChecking=yes','-o','ServerAliveInterval=5','-o','ServerAliveCountMax=2','-o','ConnectionAttempts=1','-o','ConnectTimeout=5')
 $last=''
 for($attempt=1;$attempt -le $Attempts;$attempt++){
-    foreach($host in $Address){
-        $args=[Collections.Generic.List[string]]::new();$common|ForEach-Object{$args.Add($_)};$args.Add(($User+'@'+$host));$args.Add($Command)
+    foreach($targetHost in $Address){
+        $args=[Collections.Generic.List[string]]::new();$common|ForEach-Object{$args.Add($_)};$args.Add(($User+'@'+$targetHost));$args.Add($Command)
         $output=& ssh.exe @args 2>&1
         if($LASTEXITCODE -eq 0){$output;exit 0}
         $last=($output|Out-String).Trim()
