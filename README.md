@@ -1,6 +1,6 @@
 # CITA Vector — Standalone Native Preview
 
-Самостоятельный Windows-клиент WireGuard / AmneziaWG. Ветка `codex/native-awg-installer-preview`, версия 0.6.9.
+Самостоятельный Windows-клиент WireGuard / AmneziaWG. Ветка `codex/cita-standalone-preview`, версия 0.1.0.
 WireSock не нужен: нет его поиска, установки и переключателя. Движок и маршрутизатор включены в установщик.
 
 Семейство CITA: [AWG CITA](https://github.com/IthilRosg/AWG-CITA) управляет серверными интерфейсами и конфигами; CITA Route строит клиентские маршруты.

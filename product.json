@@ -1,7 +1,7 @@
 {
   "name": "CITA Route",
   "displayName": "CITA Vector",
-  "version": "0.6.9",
+  "version": "0.1.0",
   "edition": "native",
   "channel": "standalone-preview",
   "repository": "IthilRosg/CITA-Route",

@@ -1,4 +1,4 @@
-# CITA Vector 0.6.9 — Standalone Native Preview
+# CITA Vector 0.1.0 — Standalone Native Preview
 
 Самостоятельный клиент WireGuard / AmneziaWG. WireSock не требуется.
 Нет выбора, поиска и установки внешнего клиента, прежнего SOCKS-моста и скриптов подключения.

@@ -1,4 +1,4 @@
-CITA Vector 0.6.6 Standalone Native Preview — independent client.
+CITA Vector 0.1.0 Standalone Native Preview — independent client.
 
 - Native transport is the only runtime backend. No WireSock discovery, installation, selector or legacy startup controller.
 - First Connect prepares the protected bundled engine and prompts for an IPv4 .conf. Imported profiles are retained for later launches.
